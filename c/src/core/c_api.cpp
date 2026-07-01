@@ -9,6 +9,7 @@
 #include <raft/core/device_resources_snmg.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
 #include <raft/core/resource/device_id.hpp>
+#include <raft/core/resource/device_memory_resource.hpp>
 #include <raft/core/resource/resource_types.hpp>
 #include <raft/core/resources.hpp>
 #include <raft/util/cudart_utils.hpp>
@@ -31,6 +32,9 @@ extern "C" cuvsError_t cuvsResourcesCreate(cuvsResources_t* res)
 {
   return cuvs::core::translate_exceptions([=] {
     auto res_ptr = new raft::resources{};
+    std::size_t free_b{}, total_b{};
+    RAFT_CUDA_TRY(cudaMemGetInfo(&free_b, &total_b));
+    raft::resource::set_workspace_to_pool_resource(*res_ptr, free_b);
     *res         = reinterpret_cast<uintptr_t>(res_ptr);
   });
 }
