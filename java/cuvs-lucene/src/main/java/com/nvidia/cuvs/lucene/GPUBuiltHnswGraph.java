@@ -75,7 +75,12 @@ public class GPUBuiltHnswGraph extends HnswGraph {
       if (rv != null && rv.size() > 0) {
         neighbors[i] = new NeighborArray((int) rv.size(), true);
         for (int j = 0; j < rv.size(); j++) {
-          neighbors[i].addInOrder(rv.getAsInt(j), 1.0f - (j * 0.001f));
+          int neighbor = rv.getAsInt(j);
+          // Native adjacency rows may use a negative value as an empty-slot sentinel. Keep only
+          // ordinals in the full graph's domain so sentinels cannot become serialized HNSW edges.
+          if (neighbor >= 0 && neighbor < this.size) {
+            neighbors[i].addInOrder(neighbor, 1.0f - (j * 0.001f));
+          }
         }
       } else {
         neighbors[i] = new NeighborArray(0, true);
