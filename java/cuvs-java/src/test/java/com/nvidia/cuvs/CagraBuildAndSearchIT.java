@@ -126,6 +126,12 @@ public class CagraBuildAndSearchIT extends CuVSTestCase {
     };
   }
 
+  private static float[][] resizeVectors(float[][] vectors, int dimensions) {
+    return Arrays.stream(vectors)
+        .map(vector -> Arrays.copyOf(vector, dimensions))
+        .toArray(float[][]::new);
+  }
+
   /**
    * A basic test that checks the whole flow - from indexing to search.
    */
@@ -160,6 +166,35 @@ public class CagraBuildAndSearchIT extends CuVSTestCase {
             Files.deleteIfExists(indexPath);
           }
         }
+      }
+    }
+  }
+
+  @Test
+  public void testHostMatrixCanCreateDevicePaddedDatasetDirectly() throws Throwable {
+    List<Map<Integer, Float>> expectedResults = getExpectedResults();
+
+    // Three float columns require padding; four already occupy a 16-byte-aligned row.
+    for (int dimensions : new int[] {3, 4}) {
+      float[][] dataset = resizeVectors(createSampleData(), dimensions);
+      float[][] queries = resizeVectors(createSampleQueries(), dimensions);
+
+      try (CuVSResources resources = CheckedCuVSResources.create();
+          var hostVectors = CuVSMatrix.ofArray(dataset);
+          var index = indexOnce(hostVectors, resources);
+          var indexDataset =
+              index.makePaddedDataset(hostVectors, CuVSMatrix.MemoryKind.DEVICE)) {
+        index.updateDataset(indexDataset);
+
+        // A host-backed CAGRA index is not searchable until a device-padded dataset is attached.
+        // Searching successfully also verifies that the requested target memory kind was honored.
+        queryAndCompare(
+            index,
+            index,
+            SearchResults.IDENTITY_MAPPING,
+            queries,
+            expectedResults,
+            resources);
       }
     }
   }

@@ -255,23 +255,17 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
                 .withDataset(dataset)
                 .withIndexParams(params)
                 .build();
-        var deviceVectors = dataset.toDevice(getCuVSResourcesInstance())) {
-      /*
-       * cuVS rejects makePaddedDataset for a device matrix whose rows already sit at the required
-       * stride, and asks for a view over that storage instead. Copying would be pointless there
-       * anyway, so pick the factory that matches the layout.
-       */
-      if (CagraIndex.isPaddedDataset(deviceVectors)) {
-        try (var indexDatasetView = index.makePaddedDatasetView(deviceVectors)) {
-          index.updateDataset(indexDatasetView);
-          index.serialize(os);
-        }
-      } else {
-        try (var indexDataset = index.makePaddedDataset(deviceVectors)) {
-          index.updateDataset(indexDataset);
-          index.serialize(os);
-        }
-      }
+        /*
+         * A CAGRA index built from host vectors is intentionally host-backed and cannot be
+         * searched until it is given a device-padded dataset. Create that final representation
+         * directly before this GPU-search codec serializes the index. Going through
+         * dataset.toDevice() first would add an avoidable unpadded device allocation and, for
+         * unaligned dimensions, briefly retain two complete device copies.
+         */
+        var indexDataset =
+            index.makePaddedDataset(dataset, CuVSMatrix.MemoryKind.DEVICE)) {
+      index.updateDataset(indexDataset);
+      index.serialize(os);
     }
   }
 

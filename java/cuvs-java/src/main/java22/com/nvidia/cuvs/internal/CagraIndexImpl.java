@@ -424,8 +424,20 @@ public class CagraIndexImpl implements CagraIndex {
 
   @Override
   public CagraIndex.PaddedDataset makePaddedDataset(CuVSMatrix dataset) throws Throwable {
+    Objects.requireNonNull(dataset);
+    CuVSMatrix.MemoryKind targetMemoryKind =
+        dataset instanceof CuVSHostMatrix
+            ? CuVSMatrix.MemoryKind.HOST
+            : CuVSMatrix.MemoryKind.DEVICE;
+    return makePaddedDataset(dataset, targetMemoryKind);
+  }
+
+  @Override
+  public CagraIndex.PaddedDataset makePaddedDataset(
+      CuVSMatrix dataset, CuVSMatrix.MemoryKind targetMemoryKind) throws Throwable {
     checkNotDestroyed();
     Objects.requireNonNull(dataset);
+    Objects.requireNonNull(targetMemoryKind);
     if (!(dataset instanceof CuVSMatrixInternal datasetInternal)) {
       throw new IllegalArgumentException("dataset must be a CuVSMatrixInternal matrix");
     }
@@ -435,9 +447,10 @@ public class CagraIndexImpl implements CagraIndex {
       var cuvsRes = resourcesAccessor.handle();
       var datasetTensor = datasetInternal.toTensor(localArena);
       int targetMemType =
-          (datasetInternal instanceof CuVSHostMatrixImpl)
-              ? CUVS_DATASET_MEM_TYPE_HOST()
-              : CUVS_DATASET_MEM_TYPE_DEVICE();
+          switch (targetMemoryKind) {
+            case HOST -> CUVS_DATASET_MEM_TYPE_HOST();
+            case DEVICE -> CUVS_DATASET_MEM_TYPE_DEVICE();
+          };
       MemorySegment paddedDatasetPtr = localArena.allocate(cuvsDataset_t);
       var returnValue =
           cuvsDatasetMakePadded(cuvsRes, datasetTensor, targetMemType, paddedDatasetPtr);

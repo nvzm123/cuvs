@@ -148,11 +148,38 @@ public interface CagraIndex extends AutoCloseable {
   SearchResults search(CagraQuery query) throws Throwable;
 
   /**
-   * Create an owning padded dataset by allocating padded storage and copying
-   * {@code dataset}. Prefer this when the source matrix is not already padded to CAGRA's
-   * required row stride (e.g. unaligned dimensions).
+   * Create an owning padded dataset in the same memory space as {@code dataset} by allocating
+   * padded storage and copying it. Prefer this when the source matrix is not already padded to
+   * CAGRA's required row stride (e.g. unaligned dimensions).
    */
   PaddedDataset makePaddedDataset(CuVSMatrix dataset) throws Throwable;
+
+  /**
+   * Create an owning padded dataset in {@code targetMemoryKind} by allocating padded storage and
+   * copying {@code dataset}.
+   *
+   * <p>This overload can copy directly between memory spaces. For example, a host matrix can
+   * become a device-padded dataset in one operation, without first allocating an unpadded device
+   * matrix. If an already-padded matrix is already in the requested memory space, use {@link
+   * #makePaddedDatasetView(CuVSMatrix)} instead.
+   *
+   * @param dataset source matrix
+   * @param targetMemoryKind memory space for the owning padded dataset
+   */
+  default PaddedDataset makePaddedDataset(
+      CuVSMatrix dataset, CuVSMatrix.MemoryKind targetMemoryKind) throws Throwable {
+    Objects.requireNonNull(dataset);
+    Objects.requireNonNull(targetMemoryKind);
+    CuVSMatrix.MemoryKind sourceMemoryKind =
+        dataset instanceof CuVSHostMatrix
+            ? CuVSMatrix.MemoryKind.HOST
+            : CuVSMatrix.MemoryKind.DEVICE;
+    if (sourceMemoryKind == targetMemoryKind) {
+      return makePaddedDataset(dataset);
+    }
+    throw new UnsupportedOperationException(
+        "Cross-memory padded dataset creation is not supported by " + getClass().getName());
+  }
 
   /**
    * Create a caller-owned padded dataset view handle from a matrix that is already
@@ -373,10 +400,12 @@ public interface CagraIndex extends AutoCloseable {
    * Reports whether the rows of {@code dataset} already sit at the row stride CAGRA requires, which
    * is the row length in bytes rounded up to a 16 byte boundary.
    *
-   * <p>Use it to pick between the two padded dataset factories: a matrix that is already padded has
-   * to go through {@link #makePaddedDatasetView(CuVSMatrix)}, because cuVS rejects a request to
-   * copy it into padded storage it already occupies, and one that is not has to go through
-   * {@link #makePaddedDataset(CuVSMatrix)}.
+   * <p>When the result will stay in the source matrix's memory space, use this to pick between the
+   * two padded dataset factories: a matrix that is already padded has to go through {@link
+   * #makePaddedDatasetView(CuVSMatrix)}, because cuVS rejects a request to copy it into padded
+   * storage it already occupies, and one that is not has to go through {@link
+   * #makePaddedDataset(CuVSMatrix)}. To copy into a different memory space, use {@link
+   * #makePaddedDataset(CuVSMatrix, CuVSMatrix.MemoryKind)}.
    *
    * @param dataset the matrix to inspect
    * @return true when the rows are already padded the way CAGRA requires

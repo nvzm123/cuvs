@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.List;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.KnnFloatVectorField;
+import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.VectorSimilarityFunction;
@@ -25,13 +26,14 @@ import org.junit.Assume;
 import org.junit.Test;
 
 /**
- * A CAGRA row is padded to a 16 byte boundary, so a device matrix whose dimension is already a
- * multiple of four sits at the required stride. cuVS refuses to build an owning padded copy of such
- * a matrix and asks for a view instead, and the writer swallows a failed CAGRA build by falling
- * back to a brute force index. The two together are silent: search keeps returning correct results
- * while nothing on the GPU is a CAGRA index any more.
+ * A CAGRA row is padded to a 16 byte boundary. Historically, the writer first made an ordinary
+ * device matrix and then had to choose between a view for dimensions that were already aligned and
+ * an owning padded copy for dimensions that were not. A wrong choice silently fell back to a brute
+ * force index, so search kept returning correct results while no CAGRA index was produced.
  *
- * <p>These tests pin the dimensions on both sides of that boundary.
+ * <p>The writer now creates the final device-padded dataset directly from its host matrix. These
+ * tests pin dimensions on both sides of the alignment boundary and continue to ensure that neither
+ * form falls back.
  */
 @SuppressSysoutChecks(bugUrl = "")
 public class TestCagraIndexAtAlignedDimensions extends LuceneTestCase {
@@ -44,7 +46,7 @@ public class TestCagraIndexAtAlignedDimensions extends LuceneTestCase {
 
   @Test
   public void testCagraIsBuiltAtAnUnalignedDimension() throws IOException {
-    // 127 floats is not, so the writer has to fall back to an owning padded copy.
+    // 127 floats is not, so the owning device dataset needs row padding.
     assertCagraIsBuilt(127);
   }
 
@@ -54,6 +56,11 @@ public class TestCagraIndexAtAlignedDimensions extends LuceneTestCase {
 
     RecordingInfoStream infoStream = new RecordingInfoStream();
     try (Directory directory = newDirectory()) {
+      float[] queryVector = new float[dimension];
+      for (int d = 0; d < dimension; d++) {
+        queryVector[d] = random().nextFloat();
+      }
+
       IndexWriterConfig config =
           new IndexWriterConfig()
               .setCodec(
@@ -64,15 +71,25 @@ public class TestCagraIndexAtAlignedDimensions extends LuceneTestCase {
 
       try (IndexWriter writer = new IndexWriter(directory, config)) {
         for (int i = 0; i < 64; i++) {
-          float[] vector = new float[dimension];
-          for (int d = 0; d < dimension; d++) {
-            vector[d] = random().nextFloat();
+          float[] vector = i == 0 ? queryVector : new float[dimension];
+          if (i != 0) {
+            for (int d = 0; d < dimension; d++) {
+              vector[d] = random().nextFloat();
+            }
           }
           Document doc = new Document();
           doc.add(new KnnFloatVectorField("vector", vector, VectorSimilarityFunction.EUCLIDEAN));
           writer.addDocument(doc);
         }
         writer.commit();
+      }
+
+      // Reopen from the serialized bytes and execute GPU search. This exercises deserialization
+      // and the attached device-padded dataset, not merely the build path.
+      try (DirectoryReader reader = DirectoryReader.open(directory)) {
+        var searcher = newSearcher(reader);
+        var query = new GPUKnnFloatVectorQuery("vector", queryVector, 1, null, 1, 1);
+        assertEquals(1, searcher.search(query, 1).scoreDocs.length);
       }
     }
 
