@@ -63,19 +63,20 @@ public class AcceleratedHNSWUtils {
     // Create adjacency list for single node with no neighbors
     int[][] singleNodeAdjacency = new int[][] {{-1}}; // -1 indicates no neighbors
 
-    // Create CuVSMatrix from the adjacency list
-    CuVSMatrix adjacencyMatrix = CuVSMatrix.ofArray(singleNodeAdjacency);
+    // GPUBuiltHnswGraph copies the matrix into Lucene NeighborArrays, so the temporary native
+    // matrix can be released as soon as construction completes.
+    try (CuVSMatrix adjacencyMatrix = CuVSMatrix.ofArray(singleNodeAdjacency)) {
+      // Create layer data for single-level graph
+      List<int[]> layerNodes = new ArrayList<>();
+      List<CuVSMatrix> layerAdjacencies = new ArrayList<>();
 
-    // Create layer data for single-level graph
-    List<int[]> layerNodes = new ArrayList<>();
-    List<CuVSMatrix> layerAdjacencies = new ArrayList<>();
+      // Layer 0: contains all nodes (just the single node)
+      layerNodes.add(null); // Layer 0 contains all nodes, so we don't need to store node list
+      layerAdjacencies.add(adjacencyMatrix);
 
-    // Layer 0: contains all nodes (just the single node)
-    layerNodes.add(null); // Layer 0 contains all nodes, so we don't need to store node list
-    layerAdjacencies.add(adjacencyMatrix);
-
-    // Create the single-layer graph
-    return new GPUBuiltHnswGraph(size, dimensions, layerNodes, layerAdjacencies, 1);
+      // Create the single-layer graph
+      return new GPUBuiltHnswGraph(size, dimensions, layerNodes, layerAdjacencies, 1);
+    }
   }
 
   /**
@@ -105,10 +106,13 @@ public class AcceleratedHNSWUtils {
     int size = (int) vectorDataset.size();
     int M = Math.ceilDiv((int) adjacencyListMatrix.columns(), 2);
 
+    // Keep the original node ordinals selected for each level alongside that level's adjacency
+    // matrix. The two lists use the same level numbering as Lucene's HNSW graph.
     List<int[]> layerNodes = new ArrayList<>();
     List<CuVSMatrix> layerAdjacencies = new ArrayList<>();
 
     // Layer 0: Use full CAGRA adjacency list
+    // Every node is present at level 0, so a separate ordinal list is unnecessary.
     layerNodes.add(null);
     layerAdjacencies.add(adjacencyListMatrix);
 
@@ -117,20 +121,25 @@ public class AcceleratedHNSWUtils {
     Random random = new Random();
 
     while (layerIndex < hnswLayers && currentLayerSize > 1) {
+      // Each higher level samples roughly 1/M of the preceding level, while keeping at least two
+      // nodes so CAGRA can build the subset graph.
       int nextLayerSize = Math.max(2, currentLayerSize / M);
       SortedSet<Integer> selectedNodesSet = new TreeSet<>();
 
       if (layerIndex == 1) {
+        // Level 1 may select any node from the complete level-0 graph.
         while (selectedNodesSet.size() < nextLayerSize) {
           selectedNodesSet.add(random.nextInt(size));
         }
       } else {
+        // Subsequent levels must be subsets of the immediately preceding level.
         int[] prevLayerNodes = layerNodes.get(layerNodes.size() - 1);
         while (selectedNodesSet.size() < nextLayerSize) {
           selectedNodesSet.add(prevLayerNodes[random.nextInt(prevLayerNodes.length)]);
         }
       }
 
+      // Preserve the selected original ordinals in ascending order for this Lucene HNSW level.
       int[] selectedNodes =
           selectedNodesSet.stream().mapToInt(Integer::intValue).sorted().toArray();
       layerNodes.add(selectedNodes);
@@ -141,6 +150,7 @@ public class AcceleratedHNSWUtils {
         for (int i = 0; i < nextLayerSize; i++) {
           vectorDataset.getRow(selectedNodes[i]).toArray(selectedVectors[i]);
         }
+        // Build the subset's CAGRA graph and remap its local neighbors to original ordinals.
         layerAdjacencies.add(
             buildCagraGraphForSubset(
                 selectedVectors, selectedNodes, 0, params, dimensions, quantization));
@@ -151,16 +161,19 @@ public class AcceleratedHNSWUtils {
         for (int i = 0; i < nextLayerSize; i++) {
           vectorDataset.getRow(selectedNodes[i]).toArray(selectedVectors[i]);
         }
+        // Build the subset's CAGRA graph and remap its local neighbors to original ordinals.
         layerAdjacencies.add(
             buildCagraGraphForSubset(
                 selectedVectors, selectedNodes, bytesPerVector, params, dimensions, quantization));
       }
 
+      // Advance to the newly-created level and use a fresh seed for the next sample.
       currentLayerSize = nextLayerSize;
       layerIndex++;
       random = new Random(new Random().nextLong());
     }
 
+    // Combine the full level-0 CAGRA graph and all sampled higher levels into Lucene's graph view.
     return new GPUBuiltHnswGraph(size, dimensions, layerNodes, layerAdjacencies, numThreads);
   }
 

@@ -40,6 +40,50 @@ public class TestWriterThreadsGraphMaterialization extends LuceneTestCase {
   }
 
   @Test
+  public void invalidOrdinalsAreFilteredInSerialAndParallelMaterialization() throws Exception {
+    int[][] adjacency = randomAdjacency(NUM_NODES, DEGREE, new Random(2));
+    Arrays.fill(adjacency[0], -1);
+    adjacency[0][1] = 1;
+    adjacency[0][2] = NUM_NODES - 1;
+    adjacency[0][3] = NUM_NODES;
+
+    try (CuVSMatrix matrix = new ArrayMatrix(adjacency)) {
+      GPUBuiltHnswGraph serial = newSingleLayerGraph(matrix, 1);
+      GPUBuiltHnswGraph parallel = newSingleLayerGraph(matrix, NUM_THREADS);
+
+      assertArrayEquals(new int[] {1, NUM_NODES - 1}, arcsOf(serial, 0, 0));
+      assertEquals(2, serial.getNeighbors(0, 0).size());
+      assertGraphsEqual(serial, parallel);
+    }
+  }
+
+  @Test
+  public void higherLayerNeighborsUseFullGraphOrdinalDomain() throws Exception {
+    int graphSize = 8;
+    int[][] level0Adjacency = new int[graphSize][1];
+    for (int i = 0; i < graphSize; i++) {
+      level0Adjacency[i][0] = i;
+    }
+    int[] higherLayerNodes = new int[] {2, 7};
+    int[][] higherLayerAdjacency = new int[][] {{7, -1, graphSize}, {2, -1, graphSize}};
+
+    try (CuVSMatrix level0 = new ArrayMatrix(level0Adjacency);
+        CuVSMatrix higher = new ArrayMatrix(higherLayerAdjacency)) {
+      List<int[]> layerNodes = new ArrayList<>();
+      layerNodes.add(null);
+      layerNodes.add(higherLayerNodes);
+      GPUBuiltHnswGraph graph =
+          new GPUBuiltHnswGraph(
+              graphSize, /* dimensions= */ 4, layerNodes, List.of(level0, higher), NUM_THREADS);
+
+      assertArrayEquals(new int[] {7}, arcsOf(graph, 1, 2));
+      assertArrayEquals(new int[] {2}, arcsOf(graph, 1, 7));
+      graph.seek(1, 2);
+      assertEquals(1, graph.neighborCount());
+    }
+  }
+
+  @Test
   public void graphCopyBudgetHandlesExpectedDatasetSizesAndOverflow() {
     assertTrue(GPUBuiltHnswGraph.fitsParallelGraphCopyBudget(25_000_000L, 32));
     assertFalse(GPUBuiltHnswGraph.fitsParallelGraphCopyBudget(100_000_000L, 32));

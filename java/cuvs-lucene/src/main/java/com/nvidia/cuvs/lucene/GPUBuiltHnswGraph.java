@@ -63,14 +63,14 @@ public class GPUBuiltHnswGraph extends HnswGraph {
 
     // Process Layer 0 (base layer with all nodes)
     CuVSMatrix layer0Adjacency = layerAdjacencies.get(0);
-    this.layer0Neighbors = fillNeighborArray(layer0Adjacency, size, numThreads);
+    this.layer0Neighbors = fillNeighborArray(layer0Adjacency, size, size, numThreads);
 
     // Process higher layers (1 to numLevels-1)
     for (int level = 1; level < numLevels; level++) {
       int[] nodes = layerNodes.get(level);
       CuVSMatrix adjacency = layerAdjacencies.get(level);
       this.layerNodes.add(nodes);
-      this.layerNeighbors.add(fillNeighborArray(adjacency, nodes.length, numThreads));
+      this.layerNeighbors.add(fillNeighborArray(adjacency, nodes.length, size, numThreads));
     }
   }
 
@@ -95,18 +95,19 @@ public class GPUBuiltHnswGraph extends HnswGraph {
    * read directly in both paths.
    *
    * @param adjacency instance of adjacency CuVSMatrix
-   * @param size the number of nodes
+   * @param rowCount the number of adjacency rows to materialize
+   * @param graphSize the full graph's ordinal upper bound
    * @param numThreads threads to use (1, or fewer than {@value #PARALLEL_MIN_NODES} nodes = serial)
    * @return the NeighborArray
    */
-  private static NeighborArray[] fillNeighborArray(CuVSMatrix adjacency, int size, int numThreads)
-      throws IOException {
-    NeighborArray[] neighbors = new NeighborArray[size];
+  private static NeighborArray[] fillNeighborArray(
+      CuVSMatrix adjacency, int rowCount, int graphSize, int numThreads) throws IOException {
+    NeighborArray[] neighbors = new NeighborArray[rowCount];
     if (numThreads <= 1
-        || size < PARALLEL_MIN_NODES
+        || rowCount < PARALLEL_MIN_NODES
         || (adjacency instanceof CuVSDeviceMatrix
             && !fitsParallelGraphCopyBudget(adjacency.size(), adjacency.columns()))) {
-      fillNeighborRange(adjacency, neighbors, 0, size);
+      fillNeighborRange(adjacency, neighbors, 0, rowCount, graphSize);
       return neighbors;
     }
     CuVSMatrix source = adjacency;
@@ -116,7 +117,7 @@ public class GPUBuiltHnswGraph extends HnswGraph {
       source = hostCopy;
     }
     try {
-      fillNeighborArrayParallel(source, neighbors, size, numThreads);
+      fillNeighborArrayParallel(source, neighbors, rowCount, graphSize, numThreads);
       return neighbors;
     } finally {
       if (hostCopy != null) {
@@ -142,20 +143,21 @@ public class GPUBuiltHnswGraph extends HnswGraph {
    * source} must be a host matrix (stateless {@code getRow}).
    */
   private static void fillNeighborArrayParallel(
-      CuVSMatrix source, NeighborArray[] neighbors, int size, int numThreads) throws IOException {
+      CuVSMatrix source, NeighborArray[] neighbors, int rowCount, int graphSize, int numThreads)
+      throws IOException {
     ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, numThreads - 1));
     try {
-      int perThread = (size + numThreads - 1) / numThreads;
+      int perThread = (rowCount + numThreads - 1) / numThreads;
       List<Callable<Void>> tasks = new ArrayList<>(numThreads);
       for (int t = 0; t < numThreads; t++) {
         final int start = t * perThread;
-        final int end = Math.min(start + perThread, size);
+        final int end = Math.min(start + perThread, rowCount);
         if (start >= end) {
           break;
         }
         tasks.add(
             () -> {
-              fillNeighborRange(source, neighbors, start, end);
+              fillNeighborRange(source, neighbors, start, end, graphSize);
               return null;
             });
       }
@@ -167,13 +169,18 @@ public class GPUBuiltHnswGraph extends HnswGraph {
 
   /** Fills {@code neighbors[start, end)} from the adjacency rows. */
   private static void fillNeighborRange(
-      CuVSMatrix source, NeighborArray[] neighbors, int start, int end) {
+      CuVSMatrix source, NeighborArray[] neighbors, int start, int end, int graphSize) {
     for (int i = start; i < end; i++) {
       RowView rv = source.getRow(i);
       if (rv != null && rv.size() > 0) {
         NeighborArray na = new NeighborArray((int) rv.size(), true);
         for (int j = 0; j < rv.size(); j++) {
-          na.addInOrder(rv.getAsInt(j), 1.0f - (j * 0.001f));
+          int neighbor = rv.getAsInt(j);
+          // Native adjacency rows may use a negative value as an empty-slot sentinel. Keep only
+          // ordinals in the full graph's domain so sentinels cannot become serialized HNSW edges.
+          if (neighbor >= 0 && neighbor < graphSize) {
+            na.addInOrder(neighbor, 1.0f - (j * 0.001f));
+          }
         }
         neighbors[i] = na;
       } else {
