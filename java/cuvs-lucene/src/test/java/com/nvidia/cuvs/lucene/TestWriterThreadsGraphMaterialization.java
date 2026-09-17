@@ -40,12 +40,11 @@ public class TestWriterThreadsGraphMaterialization extends LuceneTestCase {
   }
 
   @Test
-  public void invalidOrdinalsAreFilteredInSerialAndParallelMaterialization() throws Exception {
+  public void negativeSentinelsAreFilteredInSerialAndParallelMaterialization() throws Exception {
     int[][] adjacency = randomAdjacency(NUM_NODES, DEGREE, new Random(2));
     Arrays.fill(adjacency[0], -1);
     adjacency[0][1] = 1;
     adjacency[0][2] = NUM_NODES - 1;
-    adjacency[0][3] = NUM_NODES;
 
     try (CuVSMatrix matrix = new ArrayMatrix(adjacency)) {
       GPUBuiltHnswGraph serial = newSingleLayerGraph(matrix, 1);
@@ -58,6 +57,22 @@ public class TestWriterThreadsGraphMaterialization extends LuceneTestCase {
   }
 
   @Test
+  public void positiveOutOfRangeOrdinalsFailFastInSerialAndParallelMaterialization()
+      throws Exception {
+    int[][] adjacency = randomAdjacency(NUM_NODES, DEGREE, new Random(3));
+    adjacency[0][0] = NUM_NODES;
+
+    try (CuVSMatrix matrix = new ArrayMatrix(adjacency)) {
+      IOException serial = expectThrows(IOException.class, () -> newSingleLayerGraph(matrix, 1));
+      assertTrue(serial.getMessage().contains("outside graph size " + NUM_NODES));
+
+      IOException parallel =
+          expectThrows(IOException.class, () -> newSingleLayerGraph(matrix, NUM_THREADS));
+      assertTrue(parallel.getMessage().contains("outside graph size " + NUM_NODES));
+    }
+  }
+
+  @Test
   public void higherLayerNeighborsUseFullGraphOrdinalDomain() throws Exception {
     int graphSize = 8;
     int[][] level0Adjacency = new int[graphSize][1];
@@ -65,7 +80,7 @@ public class TestWriterThreadsGraphMaterialization extends LuceneTestCase {
       level0Adjacency[i][0] = i;
     }
     int[] higherLayerNodes = new int[] {2, 7};
-    int[][] higherLayerAdjacency = new int[][] {{7, -1, graphSize}, {2, -1, graphSize}};
+    int[][] higherLayerAdjacency = new int[][] {{7, -1}, {2, -1}};
 
     try (CuVSMatrix level0 = new ArrayMatrix(level0Adjacency);
         CuVSMatrix higher = new ArrayMatrix(higherLayerAdjacency)) {

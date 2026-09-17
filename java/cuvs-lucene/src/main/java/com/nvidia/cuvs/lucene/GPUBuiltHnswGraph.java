@@ -169,18 +169,28 @@ public class GPUBuiltHnswGraph extends HnswGraph {
 
   /** Fills {@code neighbors[start, end)} from the adjacency rows. */
   private static void fillNeighborRange(
-      CuVSMatrix source, NeighborArray[] neighbors, int start, int end, int graphSize) {
+      CuVSMatrix source, NeighborArray[] neighbors, int start, int end, int graphSize)
+      throws IOException {
     for (int i = start; i < end; i++) {
       RowView rv = source.getRow(i);
       if (rv != null && rv.size() > 0) {
         NeighborArray na = new NeighborArray((int) rv.size(), true);
         for (int j = 0; j < rv.size(); j++) {
           int neighbor = rv.getAsInt(j);
-          // Native adjacency rows may use a negative value as an empty-slot sentinel. Keep only
-          // ordinals in the full graph's domain so sentinels cannot become serialized HNSW edges.
-          if (neighbor >= 0 && neighbor < graphSize) {
-            na.addInOrder(neighbor, 1.0f - (j * 0.001f));
+          // Native adjacency rows may use a negative value as an empty-slot sentinel.
+          if (neighbor < 0) {
+            continue;
           }
+          if (neighbor >= graphSize) {
+            throw new IOException(
+                "Adjacency row "
+                    + i
+                    + " contains neighbor ordinal "
+                    + neighbor
+                    + " outside graph size "
+                    + graphSize);
+          }
+          na.addInOrder(neighbor, 1.0f - (j * 0.001f));
         }
         neighbors[i] = na;
       } else {

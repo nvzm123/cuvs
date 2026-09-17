@@ -84,7 +84,7 @@ public class AcceleratedHNSWUtils {
    * M = ceil(cagraGraphDegree / 2), where cagraGraphDegree is the CAGRA adjacency list's degree
    * (its column count). Ceil is used to accommodate odd graph degrees.
    * Each layer contains 1/M nodes from the previous layer
-   * Creates layers until the highest layer has <= M nodes
+   * Creates layers until the highest layer has {@code <= M} nodes
    * <p>
    * Vectors for higher-layer subsets are read directly from the native matrix
    * via {@link CuVSMatrix#getRow(long)} and {@link RowView#toArray(float[])},
@@ -116,65 +116,80 @@ public class AcceleratedHNSWUtils {
     layerNodes.add(null);
     layerAdjacencies.add(adjacencyListMatrix);
 
-    int currentLayerSize = size;
-    int layerIndex = 1;
-    Random random = new Random();
+    try {
+      int currentLayerSize = size;
+      int layerIndex = 1;
+      Random random = new Random();
 
-    while (layerIndex < hnswLayers && currentLayerSize > 1) {
-      // Each higher level samples roughly 1/M of the preceding level, while keeping at least two
-      // nodes so CAGRA can build the subset graph.
-      int nextLayerSize = Math.max(2, currentLayerSize / M);
-      SortedSet<Integer> selectedNodesSet = new TreeSet<>();
+      while (layerIndex < hnswLayers && currentLayerSize > 1) {
+        // Each higher level samples roughly 1/M of the preceding level, while keeping at least two
+        // nodes so CAGRA can build the subset graph.
+        int nextLayerSize = Math.max(2, currentLayerSize / M);
+        SortedSet<Integer> selectedNodesSet = new TreeSet<>();
 
-      if (layerIndex == 1) {
-        // Level 1 may select any node from the complete level-0 graph.
-        while (selectedNodesSet.size() < nextLayerSize) {
-          selectedNodesSet.add(random.nextInt(size));
+        if (layerIndex == 1) {
+          // Level 1 may select any node from the complete level-0 graph.
+          while (selectedNodesSet.size() < nextLayerSize) {
+            selectedNodesSet.add(random.nextInt(size));
+          }
+        } else {
+          // Subsequent levels must be subsets of the immediately preceding level.
+          int[] prevLayerNodes = layerNodes.get(layerNodes.size() - 1);
+          while (selectedNodesSet.size() < nextLayerSize) {
+            selectedNodesSet.add(prevLayerNodes[random.nextInt(prevLayerNodes.length)]);
+          }
         }
-      } else {
-        // Subsequent levels must be subsets of the immediately preceding level.
-        int[] prevLayerNodes = layerNodes.get(layerNodes.size() - 1);
-        while (selectedNodesSet.size() < nextLayerSize) {
-          selectedNodesSet.add(prevLayerNodes[random.nextInt(prevLayerNodes.length)]);
+
+        // Preserve the selected original ordinals in ascending order for this Lucene HNSW level.
+        int[] selectedNodes =
+            selectedNodesSet.stream().mapToInt(Integer::intValue).sorted().toArray();
+        layerNodes.add(selectedNodes);
+
+        if (quantization == QuantizationType.NONE) {
+          // Read only the sampled rows from the native matrix — no full-dataset heap copy
+          float[][] selectedVectors = new float[nextLayerSize][dimensions];
+          for (int i = 0; i < nextLayerSize; i++) {
+            vectorDataset.getRow(selectedNodes[i]).toArray(selectedVectors[i]);
+          }
+          // Build the subset's CAGRA graph and remap its local neighbors to original ordinals.
+          layerAdjacencies.add(
+              buildCagraGraphForSubset(
+                  selectedVectors, selectedNodes, 0, params, dimensions, quantization));
+        } else {
+          // Byte width comes from the matrix itself: binary packs 8 dims/byte, scalar is 1
+          // byte/dim.
+          int bytesPerVector = (int) vectorDataset.columns();
+          byte[][] selectedVectors = new byte[nextLayerSize][bytesPerVector];
+          for (int i = 0; i < nextLayerSize; i++) {
+            vectorDataset.getRow(selectedNodes[i]).toArray(selectedVectors[i]);
+          }
+          // Build the subset's CAGRA graph and remap its local neighbors to original ordinals.
+          layerAdjacencies.add(
+              buildCagraGraphForSubset(
+                  selectedVectors,
+                  selectedNodes,
+                  bytesPerVector,
+                  params,
+                  dimensions,
+                  quantization));
         }
+
+        // Advance to the newly-created level and use a fresh seed for the next sample.
+        currentLayerSize = nextLayerSize;
+        layerIndex++;
+        random = new Random(new Random().nextLong());
       }
 
-      // Preserve the selected original ordinals in ascending order for this Lucene HNSW level.
-      int[] selectedNodes =
-          selectedNodesSet.stream().mapToInt(Integer::intValue).sorted().toArray();
-      layerNodes.add(selectedNodes);
-
-      if (quantization == QuantizationType.NONE) {
-        // Read only the sampled rows from the native matrix — no full-dataset heap copy
-        float[][] selectedVectors = new float[nextLayerSize][dimensions];
-        for (int i = 0; i < nextLayerSize; i++) {
-          vectorDataset.getRow(selectedNodes[i]).toArray(selectedVectors[i]);
-        }
-        // Build the subset's CAGRA graph and remap its local neighbors to original ordinals.
-        layerAdjacencies.add(
-            buildCagraGraphForSubset(
-                selectedVectors, selectedNodes, 0, params, dimensions, quantization));
-      } else {
-        // Byte width comes from the matrix itself: binary packs 8 dims/byte, scalar is 1 byte/dim.
-        int bytesPerVector = (int) vectorDataset.columns();
-        byte[][] selectedVectors = new byte[nextLayerSize][bytesPerVector];
-        for (int i = 0; i < nextLayerSize; i++) {
-          vectorDataset.getRow(selectedNodes[i]).toArray(selectedVectors[i]);
-        }
-        // Build the subset's CAGRA graph and remap its local neighbors to original ordinals.
-        layerAdjacencies.add(
-            buildCagraGraphForSubset(
-                selectedVectors, selectedNodes, bytesPerVector, params, dimensions, quantization));
+      // Combine the full level-0 CAGRA graph and all sampled higher levels into Lucene's graph
+      // view.
+      return new GPUBuiltHnswGraph(size, dimensions, layerNodes, layerAdjacencies, numThreads);
+    } finally {
+      // Level 0 belongs to the caller's CagraIndex. Higher-level matrices are created here and can
+      // be released once GPUBuiltHnswGraph has copied their rows into Lucene NeighborArrays.
+      for (int level = 1; level < layerAdjacencies.size(); level++) {
+        layerAdjacencies.get(level).close();
       }
-
-      // Advance to the newly-created level and use a fresh seed for the next sample.
-      currentLayerSize = nextLayerSize;
-      layerIndex++;
-      random = new Random(new Random().nextLong());
     }
-
-    // Combine the full level-0 CAGRA graph and all sampled higher levels into Lucene's graph view.
-    return new GPUBuiltHnswGraph(size, dimensions, layerNodes, layerAdjacencies, numThreads);
   }
 
   /**
