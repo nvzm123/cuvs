@@ -20,6 +20,7 @@ import com.nvidia.cuvs.BruteForceIndex;
 import com.nvidia.cuvs.BruteForceIndexParams;
 import com.nvidia.cuvs.CagraIndex;
 import com.nvidia.cuvs.CagraIndexParams;
+import com.nvidia.cuvs.CuVSDeviceMatrix;
 import com.nvidia.cuvs.CuVSMatrix;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -200,11 +201,16 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
       cagraIndexOffset = cuvsIndex.getFilePointer();
       if (indexType.isCagra()) {
         var cagraIndexOutputStream = new IndexOutputOutputStream(cuvsIndex);
+        boolean cagraWriteCompleted = false;
         try {
-          CuVSMatrix cagraDataset =
-              Utils.createFloatMatrix(vectors, fieldInfo.getVectorDimension());
+          CuVSDeviceMatrix cagraDataset =
+              createDeviceFloatMatrix(vectors, fieldInfo.getVectorDimension());
           writeCagraIndex(cagraIndexOutputStream, cagraDataset);
+          cagraWriteCompleted = true;
         } catch (Throwable t) {
+          if (!canFallbackToBruteForce(t)) {
+            throw Utils.handleThrowable(t);
+          }
           // Fallback to brute force in a few cases, for now.
           // Log it to make it more obvious that this is what is happening.
           info(
@@ -214,10 +220,10 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
                   + fieldInfo.name
                   + "\", falling back to a brute force index: "
                   + t);
-          Utils.handleThrowableWithIgnore(t, t.getMessage());
           indexType = IndexType.BRUTE_FORCE;
         }
-        cagraIndexLength = cuvsIndex.getFilePointer() - cagraIndexOffset;
+        cagraIndexLength =
+            completedIndexLength(cagraWriteCompleted, cagraIndexOffset, cuvsIndex.getFilePointer());
       }
       bruteForceIndexOffset = cuvsIndex.getFilePointer();
       if (indexType.isBruteForce()) {
@@ -241,21 +247,56 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
   }
 
   /**
+   * Creates the GPU-search input directly on the device. Accelerated HNSW intentionally uses the
+   * shared host-backed matrix helpers because it does not retain a searchable device dataset.
+   */
+  private CuVSDeviceMatrix createDeviceFloatMatrix(List<float[]> vectors, int dimensions) {
+    try (CuVSMatrix.Builder<CuVSDeviceMatrix> builder =
+        CuVSMatrix.deviceBuilder(
+            getCuVSResourcesInstance(), vectors.size(), dimensions, CuVSMatrix.DataType.FLOAT)) {
+      for (float[] vector : vectors) {
+        builder.addVector(vector);
+      }
+      return builder.build();
+    }
+  }
+
+  static boolean canFallbackToBruteForce(Throwable failure) {
+    return failure instanceof RuntimeException;
+  }
+
+  static long completedIndexLength(boolean completed, long offset, long filePointer) {
+    return completed ? filePointer - offset : 0L;
+  }
+
+  /**
    * Builds and writes the CAGRA index.
    *
    * @param os Instance of the OutputStream
-   * @param dataset The instance of CuVSMatrix holding the dataset
+   * @param dataset device-backed matrix holding the dataset
    * @throws Throwable
    */
-  private void writeCagraIndex(OutputStream os, CuVSMatrix dataset) throws Throwable {
-    CagraIndexParams params =
-        CagraIndexParamsFactory.create(gpuSearchParams, dataset.size(), dataset.columns());
-    try (CagraIndex index =
-            CagraIndex.newBuilder(getCuVSResourcesInstance())
-                .withDataset(dataset)
-                .withIndexParams(params)
-                .build();
-        var deviceVectors = dataset.toDevice(getCuVSResourcesInstance())) {
+  private void writeCagraIndex(OutputStream os, CuVSDeviceMatrix dataset) throws Throwable {
+    final CagraIndex index;
+    try {
+      CagraIndexParams params =
+          CagraIndexParamsFactory.create(gpuSearchParams, dataset.size(), dataset.columns());
+      index =
+          CagraIndex.newBuilder(getCuVSResourcesInstance())
+              .withDataset(dataset)
+              .withIndexParams(params)
+              .build();
+    } catch (Throwable t) {
+      try {
+        dataset.close();
+      } catch (Throwable closeError) {
+        t.addSuppressed(closeError);
+      }
+      throw t;
+    }
+
+    Throwable primaryFailure = null;
+    try (var deviceVectors = dataset.toDevice(getCuVSResourcesInstance())) {
       /*
        * cuVS rejects makePaddedDataset for a device matrix whose rows already sit at the required
        * stride, and asks for a view over that storage instead. Copying would be pointless there
@@ -272,6 +313,33 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
           index.serialize(os);
         }
       }
+    } catch (Throwable t) {
+      primaryFailure = t;
+      throw t;
+    } finally {
+      try {
+        closeIndexWithDatasetFallback(index, dataset);
+      } catch (Throwable closeFailure) {
+        if (primaryFailure != null) {
+          primaryFailure.addSuppressed(closeFailure);
+        } else {
+          throw closeFailure;
+        }
+      }
+    }
+  }
+
+  static void closeIndexWithDatasetFallback(AutoCloseable index, AutoCloseable dataset)
+      throws Throwable {
+    try {
+      index.close();
+    } catch (Throwable indexCloseFailure) {
+      try {
+        dataset.close();
+      } catch (Throwable datasetCloseFailure) {
+        indexCloseFailure.addSuppressed(datasetCloseFailure);
+      }
+      throw indexCloseFailure;
     }
   }
 
