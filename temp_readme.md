@@ -134,6 +134,12 @@ concurrency tests errored because `cudaMallocAsync` was unsupported by the activ
 Treat that as an environment failure, not as a green run and not as evidence of a code regression.
 The requested second-machine run should repeat the complete GPU suite.
 
+A fresh native rebuild on this machine also stopped during CMake configuration before compiling
+cuVS: CMake 4.3 first required an explicit legacy-policy minimum for hnswlib, then the configure
+created the `hnswlib` target twice. The successful handoff Java rerun therefore used the already
+installed native cuVS libraries. This is not recorded as a successful clean native build; repeat
+the clean native build on the second machine and preserve any failure separately from Java tests.
+
 ### Recovered CAGRA-HNSW performance
 
 The following cold-source runs used Deep1B, Euclidean distance, default heuristics, graph degree
