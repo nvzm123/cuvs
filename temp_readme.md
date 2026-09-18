@@ -16,8 +16,8 @@ PR 2476 was still open when this branch was assembled. Its implementation commit
 |---|---|---|
 | `b10b7bdbf` | Bounded parallel CAGRA-adjacency materialization | Safe post-ingest work recovered from PR 2481 |
 | `9cce52973` | Bounded parallel level-zero HNSW serialization | Safe post-ingest work recovered from PR 2481 |
-| `bae51728f` | Correct accelerated-HNSW merges with deleted vectors | Correctness found while validating the recovered path |
-| `a7fdae341` | Harden graph ordinal validation, ownership, and cleanup | Correctness found while validating the recovered path |
+| `bae51728f` | Correct accelerated-HNSW merges with deleted vectors | PR 2476 review follow-up that also protects the recovered path |
+| `a7fdae341` | Harden graph ordinal validation, ownership, and cleanup | PR 2476 correctness hardening, including the recovered materializer |
 | `59ca30473` | Restore direct-device input for GPU-search CAGRA | Targeted follow-up to PR 2476 |
 
 No custom CAGRA, IVF-PQ, `pq_dim`, list, or probe heuristic is included.
@@ -74,7 +74,7 @@ path. It does not undo PR 2476 for accelerated HNSW.
 - Pass the existing writer-thread setting through ordinary, scalar-quantized, and
   binary-quantized accelerated-HNSW writers.
 
-### Correctness and lifecycle hardening around the recovered path
+### PR 2476 review follow-up and recovered-path hardening
 
 - Count vectors actually yielded by the live-vector iterator during deleted-document merges,
   rather than trusting the merged view's raw size.
@@ -144,10 +144,16 @@ The following cold-source runs used Deep1B, Euclidean distance, default heuristi
 |---|---:|---:|---:|---|
 | Deep1B 10M, one segment | 34.955 s | 26.674 s | 97.7669% vs 97.7665% | Single matched runs |
 | Deep1B 100M, one segment | 456.642 s | 393.827 s and 397.696 s | 94.9715% vs 94.9587% and 94.9763% | One control, two candidate runs |
+| Deep1B 10M, four segments | 35.735 s | 27.583 s | 98.7880% vs 98.7665% | Single matched runs |
+| Deep1B 100M, four segments | 339.010 s | 249.722 s | 96.6743% vs 96.6210% | Single matched runs |
 
-The final hardened Deep1B 10M one-segment run measured 26.026 s indexing, 8.60074 ms mean search
-latency, and 97.7721% recall. These limited repetitions establish direction, not a confidence
-interval.
+The historical four-segment controls and candidates used the same harness, hardware, JVM/native
+artifacts, cold-source state, and effective configuration. Their control commit was `bba9010bd`,
+which has no Java-module difference from the later PR-2476 head. The Deep1B 10M candidate commit
+was `446043068`; its two performance patches are patch-identical to `b10b7bdbf` and `9cce52973`.
+The Deep1B 100M candidate was the final hardened commit. The final hardened Deep1B 10M one-segment
+run measured 26.026 s indexing, 8.60074 ms mean search latency, and 97.7721% recall. These limited
+repetitions establish direction, not a confidence interval.
 
 ### Correctness-hardening no-regression checks
 
