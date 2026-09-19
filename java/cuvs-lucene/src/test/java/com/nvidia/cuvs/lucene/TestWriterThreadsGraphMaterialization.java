@@ -40,6 +40,26 @@ public class TestWriterThreadsGraphMaterialization extends LuceneTestCase {
   }
 
   @Test
+  public void testNativeMatrixOverloadSupportsWriterThreads() throws Throwable {
+    int[][] adjacency = randomAdjacency(NUM_NODES, DEGREE, new Random(3));
+
+    try (CuVSMatrix matrix = new IntGraphTestMatrix(adjacency)) {
+      GPUBuiltHnswGraph expected = newSingleLayerGraph(matrix, 4);
+      GPUBuiltHnswGraph actual =
+          AcceleratedHNSWUtils.createMultiLayerHnswGraph(
+              null,
+              /* dimensions= */ 4,
+              matrix,
+              matrix,
+              /* hnswLayers= */ 1,
+              null,
+              QuantizationType.NONE,
+              /* requestedWorkers= */ 4);
+      assertGraphsEqual(expected, actual);
+    }
+  }
+
+  @Test
   public void testGraphCopyBudgetHandlesLargeShapesWithoutOverflow() {
     assertTrue(GPUBuiltHnswGraph.fitsParallelGraphCopyBudget(25_000_000L, 32));
     assertFalse(GPUBuiltHnswGraph.fitsParallelGraphCopyBudget(100_000_000L, 32));

@@ -209,6 +209,31 @@ public class AcceleratedHNSWUtils {
       CagraIndexParams params,
       QuantizationType quantization)
       throws Throwable {
+    return createMultiLayerHnswGraph(
+        fieldInfo,
+        dimensions,
+        adjacencyListMatrix,
+        vectorDataset,
+        hnswLayers,
+        params,
+        quantization,
+        1);
+  }
+
+  /**
+   * Creates a multi-layer HNSW graph from a native matrix while bounding graph materialization to
+   * the requested writer threads.
+   */
+  static GPUBuiltHnswGraph createMultiLayerHnswGraph(
+      FieldInfo fieldInfo,
+      int dimensions,
+      CuVSMatrix adjacencyListMatrix,
+      CuVSMatrix vectorDataset,
+      int hnswLayers,
+      CagraIndexParams params,
+      QuantizationType quantization,
+      int requestedWorkers)
+      throws Throwable {
     int size = Math.toIntExact(vectorDataset.size());
     int columns = Math.toIntExact(vectorDataset.columns());
     List<?> vectors =
@@ -239,7 +264,8 @@ public class AcceleratedHNSWUtils {
         vectors,
         hnswLayers,
         params,
-        quantization);
+        quantization,
+        requestedWorkers);
   }
 
   /**
