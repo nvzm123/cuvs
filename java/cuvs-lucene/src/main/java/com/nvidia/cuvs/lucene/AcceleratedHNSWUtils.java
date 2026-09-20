@@ -388,10 +388,8 @@ public class AcceleratedHNSWUtils {
   /** Node count below which parallel level-zero serialization costs more than it saves. */
   static final int PARALLEL_MIN_NODES = 1 << 16;
 
-  /** Maximum encoded payload retained by one parallel wave before it is written to the index. */
-  static final long MAX_PARALLEL_ENCODE_BYTES = 64L << 20;
-
-  private static final int MAX_VINT_BYTES = 5;
+  /** Maximum number of level-zero nodes encoded before a parallel wave is written to the index. */
+  static final int SERIALIZATION_WAVE_NODES = 1 << 20;
 
   private static void writeLevelSerial(
       GPUBuiltHnswGraph graph,
@@ -428,7 +426,7 @@ public class AcceleratedHNSWUtils {
         return;
       }
 
-      int waveSize = nodesPerSerializationWave(maxConn);
+      int waveSize = SERIALIZATION_WAVE_NODES;
       for (int waveStart = 0; waveStart < nodes.length; ) {
         int waveEnd = (int) Math.min(nodes.length, (long) waveStart + waveSize);
         int nodesInWave = waveEnd - waveStart;
@@ -460,12 +458,6 @@ public class AcceleratedHNSWUtils {
         waveStart = waveEnd;
       }
     }
-  }
-
-  static int nodesPerSerializationWave(int maxConn) {
-    long maxBytesPerNode = (Math.max(0L, maxConn) + 1L) * MAX_VINT_BYTES;
-    return Math.toIntExact(
-        Math.max(1L, Math.min(Integer.MAX_VALUE, MAX_PARALLEL_ENCODE_BYTES / maxBytesPerNode)));
   }
 
   private static void encodeNode(

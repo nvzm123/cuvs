@@ -15,6 +15,7 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.tests.util.LuceneTestCase;
+import org.apache.lucene.util.hnsw.HnswGraph.NodesIterator;
 import org.apache.lucene.util.hnsw.NeighborArray;
 import org.junit.Test;
 
@@ -22,16 +23,19 @@ public class TestWriterThreadsGraphSerialization extends LuceneTestCase {
 
   private static final int NUM_NODES = AcceleratedHNSWUtils.PARALLEL_MIN_NODES + 1_000;
   private static final int DEGREE = 12;
-  private static final int REPORTED_MAX_CONN = 512;
 
   @Test
-  public void testParallelSerializationMatchesSerialAcrossWaves() throws Exception {
+  public void testParallelSerializationMatchesSerial() throws Exception {
     int[][] adjacency = randomAdjacency(NUM_NODES, DEGREE, new Random(2));
 
     try (CuVSMatrix matrix = new IntGraphTestMatrix(adjacency);
         Directory directory = new ByteBuffersDirectory()) {
-      GPUBuiltHnswGraph serialGraph = new ReportedMaxConnGraph(matrix);
-      GPUBuiltHnswGraph parallelGraph = new ReportedMaxConnGraph(matrix);
+      GPUBuiltHnswGraph serialGraph =
+          new GPUBuiltHnswGraph(
+              NUM_NODES, /* dimensions= */ 4, Arrays.asList((int[]) null), List.of(matrix));
+      GPUBuiltHnswGraph parallelGraph =
+          new GPUBuiltHnswGraph(
+              NUM_NODES, /* dimensions= */ 4, Arrays.asList((int[]) null), List.of(matrix));
 
       int[][] serialOffsets;
       try (IndexOutput output = directory.createOutput("serial", IOContext.DEFAULT)) {
@@ -47,9 +51,27 @@ public class TestWriterThreadsGraphSerialization extends LuceneTestCase {
         assertArrayEquals(serialOffsets[level], parallelOffsets[level]);
       }
       assertArrayEquals(readAllBytes(directory, "serial"), readAllBytes(directory, "parallel"));
-      assertTrue(
-          "test must cross a bounded-wave boundary",
-          AcceleratedHNSWUtils.nodesPerSerializationWave(REPORTED_MAX_CONN) < NUM_NODES);
+    }
+  }
+
+  @Test
+  public void testParallelSerializationMatchesSerialAcrossFixedWaveBoundary() throws Exception {
+    int nodeCount = AcceleratedHNSWUtils.SERIALIZATION_WAVE_NODES + 1;
+    GPUBuiltHnswGraph graph = new EmptyGraph(nodeCount);
+
+    try (Directory directory = new ByteBuffersDirectory()) {
+      int[][] serialOffsets;
+      try (IndexOutput output = directory.createOutput("serial", IOContext.DEFAULT)) {
+        serialOffsets = AcceleratedHNSWUtils.writeGraph(graph, output, 1, 4);
+      }
+      int[][] parallelOffsets;
+      try (IndexOutput output = directory.createOutput("parallel", IOContext.DEFAULT)) {
+        parallelOffsets = AcceleratedHNSWUtils.writeGraph(graph, output, 4, 4);
+      }
+
+      assertArrayEquals(serialOffsets[0], parallelOffsets[0]);
+      assertArrayEquals(readAllBytes(directory, "serial"), readAllBytes(directory, "parallel"));
+      assertEquals(nodeCount, serialOffsets[0].length);
     }
   }
 
@@ -67,21 +89,6 @@ public class TestWriterThreadsGraphSerialization extends LuceneTestCase {
     SerializedGraph empty = serialize(new LiteralGraph(1, new NeighborArray(0, true)));
     assertArrayEquals(new byte[] {0}, empty.bytes());
     assertArrayEquals(new int[] {1}, empty.offsets()[0]);
-  }
-
-  @Test
-  public void testSerializationWaveHonorsByteBudget() {
-    for (int maxConn : new int[] {0, 1, 32, 88, 152, 512, Integer.MAX_VALUE}) {
-      int nodes = AcceleratedHNSWUtils.nodesPerSerializationWave(maxConn);
-      long maximumBytesPerNode = (Math.max(0L, maxConn) + 1L) * 5L;
-      assertTrue(nodes > 0);
-      if (maximumBytesPerNode > AcceleratedHNSWUtils.MAX_PARALLEL_ENCODE_BYTES) {
-        assertEquals(1, nodes);
-      } else {
-        assertTrue(
-            (long) nodes * maximumBytesPerNode <= AcceleratedHNSWUtils.MAX_PARALLEL_ENCODE_BYTES);
-      }
-    }
   }
 
   @Test
@@ -143,14 +150,59 @@ public class TestWriterThreadsGraphSerialization extends LuceneTestCase {
     return adjacency;
   }
 
-  private static final class ReportedMaxConnGraph extends GPUBuiltHnswGraph {
-    ReportedMaxConnGraph(CuVSMatrix adjacency) {
-      super(NUM_NODES, /* dimensions= */ 4, Arrays.asList((int[]) null), List.of(adjacency));
+  private static final class EmptyGraph extends GPUBuiltHnswGraph {
+    private final int graphSize;
+    private final NeighborArray emptyNeighbors = new NeighborArray(0, true);
+
+    EmptyGraph(int graphSize) {
+      super(
+          1,
+          /* dimensions= */ 1,
+          Arrays.asList((int[]) null),
+          List.of(new IntGraphTestMatrix(new int[][] {{}})));
+      this.graphSize = graphSize;
+    }
+
+    @Override
+    public int size() {
+      return graphSize;
     }
 
     @Override
     public int maxConn() {
-      return REPORTED_MAX_CONN;
+      return 0;
+    }
+
+    @Override
+    public NeighborArray getNeighbors(int level, int node) {
+      return emptyNeighbors;
+    }
+
+    @Override
+    public NodesIterator getNodesOnLevel(int level) {
+      int size = level == 0 ? graphSize : 0;
+      return new NodesIterator(size) {
+        private int current = -1;
+
+        @Override
+        public boolean hasNext() {
+          return current + 1 < size;
+        }
+
+        @Override
+        public int nextInt() {
+          return ++current;
+        }
+
+        @Override
+        public int consume(int[] destination) {
+          int count = Math.min(destination.length, size - current - 1);
+          for (int index = 0; index < count; index++) {
+            destination[index] = ++current;
+          }
+          return count;
+        }
+      };
     }
   }
 
