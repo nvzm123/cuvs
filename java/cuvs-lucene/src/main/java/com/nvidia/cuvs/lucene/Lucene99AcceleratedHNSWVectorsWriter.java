@@ -57,6 +57,8 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
   private static final long SHALLOW_RAM_BYTES_USED =
       shallowSizeOfInstance(Lucene99AcceleratedHNSWVectorsWriter.class);
   private static final String COMPONENT = "Lucene99AcceleratedHNSWVectorsWriter";
+  private static final String POST_INGEST_OVERLAP_PROPERTY =
+      "cuvs.lucene.experimentalPostIngestOverlap";
   private static final LuceneProvider LUCENE_PROVIDER;
   private static final Integer VERSION_CURRENT;
 
@@ -64,6 +66,8 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
   private final FlatVectorsWriter flatVectorsWriter;
   private final List<FieldWriter> fields = new ArrayList<>();
   private final InfoStream infoStream;
+  private final boolean postIngestOverlapEnabled;
+  private final String segmentName;
   private IndexOutput hnswMeta = null;
   private IndexOutput hnswVectorIndex = null;
   private String vemFileName;
@@ -95,6 +99,8 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
     super();
     this.flatVectorsWriter = flatVectorsWriter;
     this.infoStream = state.infoStream;
+    this.postIngestOverlapEnabled = Boolean.getBoolean(POST_INGEST_OVERLAP_PROPERTY);
+    this.segmentName = state.segmentInfo.name;
     this.acceleratedHNSWParams = acceleratedHNSWParams;
     vemFileName =
         IndexFileNames.segmentFileName(
@@ -153,7 +159,12 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
     if (writeTrivialField(fieldInfo, vectors.size())) {
       return;
     }
+    long startedAt = System.nanoTime();
     CuVSMatrix dataset = Utils.createHostFloatMatrix(vectors, fieldInfo.getVectorDimension());
+    reportPhase(
+        "host_matrix_materialization",
+        startedAt,
+        (long) vectors.size() * fieldInfo.getVectorDimension() * Float.BYTES);
     writeNonTrivialField(fieldInfo, dataset);
   }
 
@@ -170,13 +181,18 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
       int size = (int) dataset.size();
       CagraIndexParams params =
           CagraIndexParamsFactory.create(acceleratedHNSWParams, dataset.size(), dataset.columns());
+      long startedAt = System.nanoTime();
       CagraIndex cagraIndex =
           CagraIndex.newBuilder(getCuVSResourcesInstance())
               .withDataset(dataset)
               .withIndexParams(params)
               .build();
+      reportPhase("cagra_build", startedAt);
+      startedAt = System.nanoTime();
       CuVSMatrix adjacencyListMatrix = cagraIndex.getGraph();
+      reportPhase("cagra_graph_access", startedAt);
       int dimensions = fieldInfo.getVectorDimension();
+      startedAt = System.nanoTime();
       GPUBuiltHnswGraph hnswGraph =
           createMultiLayerHnswGraph(
               fieldInfo,
@@ -187,10 +203,15 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
               params,
               QuantizationType.NONE,
               acceleratedHNSWParams.getWriterThreads());
+      reportPhase("hnsw_graph_materialization", startedAt);
       long vectorIndexOffset = hnswVectorIndex.getFilePointer();
+      startedAt = System.nanoTime();
       int[][] graphLevelNodeOffsets =
           writeGraph(hnswGraph, hnswVectorIndex, acceleratedHNSWParams.getWriterThreads());
       long vectorIndexLength = hnswVectorIndex.getFilePointer() - vectorIndexOffset;
+      reportPhase("hnsw_graph_serialization", startedAt, vectorIndexLength);
+      long metadataStart = System.nanoTime();
+      long metadataBytesBefore = hnswVectorIndex.getFilePointer() + hnswMeta.getFilePointer();
       writeMeta(
           hnswVectorIndex,
           hnswMeta,
@@ -200,7 +221,13 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
           size,
           hnswGraph,
           graphLevelNodeOffsets);
+      reportPhase(
+          "hnsw_metadata_serialization",
+          metadataStart,
+          hnswVectorIndex.getFilePointer() + hnswMeta.getFilePointer() - metadataBytesBefore);
+      startedAt = System.nanoTime();
       cagraIndex.close();
+      reportPhase("cagra_close", startedAt);
     } catch (Throwable t) {
       Utils.handleThrowable(t);
     }
@@ -224,13 +251,111 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
    */
   @Override
   public void flush(int maxDoc, DocMap sortMap) throws IOException {
-    flatVectorsWriter.flush(maxDoc, sortMap);
-    for (var field : fields) {
-      if (sortMap == null) {
-        writeField(field);
+    long flushStartedAt = System.nanoTime();
+    try {
+      if (postIngestOverlapEnabled) {
+        long preparationStartedAt = System.nanoTime();
+        List<PendingGraphField> graphFields = prepareGraphFields(fields, sortMap);
+        reportPhase("graph_input_preparation", preparationStartedAt);
+        PostIngestFlushCoordinator.runOverlapped(
+            () -> timedFlatFlush(maxDoc, sortMap), () -> timedGraphWrite(graphFields));
       } else {
-        writeSortingField(field, sortMap);
+        timedFlatFlush(maxDoc, sortMap);
+        long graphStartedAt = System.nanoTime();
+        try {
+          for (var field : fields) {
+            if (sortMap == null) {
+              writeField(field);
+            } else {
+              writeSortingField(field, sortMap);
+            }
+          }
+        } finally {
+          reportPhase("graph_branch", graphStartedAt);
+        }
       }
+    } finally {
+      reportPhase("flush_total", flushStartedAt);
+    }
+  }
+
+  private void timedFlatFlush(int maxDoc, DocMap sortMap) throws IOException {
+    long startedAt = System.nanoTime();
+    try {
+      flatVectorsWriter.flush(maxDoc, sortMap);
+    } finally {
+      reportPhase("flat_vector_flush", startedAt, floatPayloadBytes(fields));
+    }
+  }
+
+  private void timedGraphWrite(List<PendingGraphField> graphFields) throws IOException {
+    long startedAt = System.nanoTime();
+    try {
+      for (PendingGraphField graphField : graphFields) {
+        writeFieldInternal(graphField.fieldInfo(), graphField.vectors());
+      }
+    } finally {
+      reportPhase("graph_branch", startedAt);
+    }
+  }
+
+  static List<PendingGraphField> prepareGraphFields(List<FieldWriter> fields, Sorter.DocMap sortMap)
+      throws IOException {
+    List<PendingGraphField> graphFields = new ArrayList<>(fields.size());
+    for (FieldWriter field : fields) {
+      List<float[]> vectors = field.getFloatVectors();
+      if (sortMap != null) {
+        DocsWithFieldSet docsWithField = field.getDocsWithFieldSet();
+        int[] newToOldOrdinal = new int[docsWithField.cardinality()];
+        mapOldOrdToNewOrd(docsWithField, sortMap, null, newToOldOrdinal, null);
+        List<float[]> sortedVectors = new ArrayList<>(vectors.size());
+        for (int oldOrdinal : newToOldOrdinal) {
+          sortedVectors.add(vectors.get(oldOrdinal));
+        }
+        vectors = sortedVectors;
+      }
+      graphFields.add(new PendingGraphField(field.fieldInfo(), vectors));
+    }
+    return List.copyOf(graphFields);
+  }
+
+  private static long floatPayloadBytes(List<FieldWriter> fields) {
+    long bytes = 0L;
+    for (FieldWriter field : fields) {
+      bytes +=
+          (long) field.getFloatVectors().size()
+              * field.fieldInfo().getVectorDimension()
+              * Float.BYTES;
+    }
+    return bytes;
+  }
+
+  record PendingGraphField(FieldInfo fieldInfo, List<float[]> vectors) {}
+
+  private void reportPhase(String phase, long startedAt) {
+    reportPhase(phase, startedAt, -1L);
+  }
+
+  private void reportPhase(String phase, long startedAt, long bytes) {
+    reportPhase(infoStream, segmentName, phase, startedAt, bytes);
+  }
+
+  static void reportPhase(
+      InfoStream infoStream, String segmentName, String phase, long startedAt, long bytes) {
+    String byteMetric = bytes < 0L ? "" : " bytes=" + bytes;
+    try {
+      printInfoStream(
+          infoStream,
+          COMPONENT,
+          "benchmark_phase="
+              + phase
+              + " segment="
+              + segmentName
+              + " duration_ns="
+              + (System.nanoTime() - startedAt)
+              + byteMetric);
+    } catch (RuntimeException ignored) {
+      // Optional benchmark telemetry must not change indexing success or failure semantics.
     }
   }
 
@@ -298,16 +423,20 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
    */
   private void vectorBasedMerge(FieldInfo fieldInfo, MergeState mergeState) throws IOException {
     try {
+      long startedAt = System.nanoTime();
       int size = countMergedVectors(fieldInfo, mergeState);
+      reportPhase("merged_vector_count", startedAt);
       if (writeTrivialField(fieldInfo, size)) {
         return;
       }
       FloatVectorValues mergedVectors =
           KnnVectorsWriter.MergedVectorValues.mergeFloatVectorValues(fieldInfo, mergeState);
       int dims = fieldInfo.getVectorDimension();
+      startedAt = System.nanoTime();
       CuVSHostMatrix dataset =
           buildMergedDataset(
               mergedVectors, size, CuVSMatrix.hostBuilder(size, dims, CuVSMatrix.DataType.FLOAT));
+      reportPhase("merged_matrix_materialization", startedAt, (long) size * dims * Float.BYTES);
       writeNonTrivialField(fieldInfo, dataset);
     } catch (Throwable t) {
       Utils.handleThrowable(t);
@@ -366,8 +495,18 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
    */
   @Override
   public void mergeOneField(FieldInfo fieldInfo, MergeState mergeState) throws IOException {
-    flatVectorsWriter.mergeOneField(fieldInfo, mergeState);
-    vectorBasedMerge(fieldInfo, mergeState);
+    long startedAt = System.nanoTime();
+    try {
+      flatVectorsWriter.mergeOneField(fieldInfo, mergeState);
+    } finally {
+      reportPhase("flat_vector_merge", startedAt);
+    }
+    startedAt = System.nanoTime();
+    try {
+      vectorBasedMerge(fieldInfo, mergeState);
+    } finally {
+      reportPhase("graph_merge", startedAt);
+    }
   }
 
   /**
@@ -379,14 +518,24 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
       throw new IllegalStateException("already finished");
     }
     finished = true;
-    flatVectorsWriter.finish();
-    if (hnswMeta != null) {
-      // write end of fields marker
-      hnswMeta.writeInt(-1);
-      CodecUtil.writeFooter(hnswMeta);
+    long startedAt = System.nanoTime();
+    try {
+      flatVectorsWriter.finish();
+    } finally {
+      reportPhase("flat_vector_finish", startedAt);
     }
-    if (hnswVectorIndex != null) {
-      CodecUtil.writeFooter(hnswVectorIndex);
+    startedAt = System.nanoTime();
+    try {
+      if (hnswMeta != null) {
+        // write end of fields marker
+        hnswMeta.writeInt(-1);
+        CodecUtil.writeFooter(hnswMeta);
+      }
+      if (hnswVectorIndex != null) {
+        CodecUtil.writeFooter(hnswVectorIndex);
+      }
+    } finally {
+      reportPhase("hnsw_finish", startedAt);
     }
   }
 
@@ -396,8 +545,13 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
   @Override
   public void close() throws IOException {
     printInfoStream(infoStream, COMPONENT, "Closing resources");
-    IOUtils.close(hnswMeta, hnswVectorIndex, flatVectorsWriter);
-    closeCuVSResourcesInstance();
+    long startedAt = System.nanoTime();
+    try {
+      IOUtils.close(hnswMeta, hnswVectorIndex, flatVectorsWriter);
+      closeCuVSResourcesInstance();
+    } finally {
+      reportPhase("writer_close", startedAt);
+    }
   }
 
   /**
