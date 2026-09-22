@@ -35,12 +35,22 @@ Initializes the `CuVS2510GPUVectorsReader`, checks and loads the index.
 | --- | --- |
 | `IOException` | I/O exception |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:87`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:97`_
 
 ### CuVS2510GPUVectorsReader
 
 ```java
 CuVS2510GPUVectorsReader( SegmentReadState state, FlatVectorsReader flatReader, FilterBitsetCache filterBitsetCache) throws IOException
+```
+
+Initializes the reader with the cache owned by its vectors format.
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:107`_
+
+### CuVS2510GPUVectorsReader
+
+```java
+CuVS2510GPUVectorsReader( SegmentReadState state, FlatVectorsReader flatReader, FilterBitsetCache filterBitsetCache, CuVSReaderResourcesFactory readerResourcesFactory) throws IOException
 ```
 
 Initializes the reader with the cache owned by its vectors format.
@@ -59,7 +69,7 @@ Initializes the reader with the cache owned by its vectors format.
 | --- | --- |
 | `IOException` | I/O exception |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:100`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:125`_
 
 ### readSimilarityFunction
 
@@ -85,7 +95,7 @@ an instance of VectorSimilarityFunction
 | --- | --- |
 | `IOException` |  |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:228`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:279`_
 
 ### readVectorEncoding
 
@@ -111,7 +121,7 @@ the vector encoding
 | --- | --- |
 | `IOException` |  |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:243`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:294`_
 
 ### getFieldEntry
 
@@ -132,7 +142,7 @@ cuVS index for it.
 
 the meta information for the field, or `null`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:306`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:357`_
 
 ### openCagraIndexForMerge
 
@@ -165,17 +175,27 @@ a freshly loaded CAGRA index, or `null` if this segment has none for the field
 | --- | --- |
 | `IOException` | I/O exception |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:325`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:376`_
+
+### withSequentialFlatVectors
+
+```java
+static <T> T withSequentialFlatVectors( FlatVectorsReader reader, boolean readerAlreadySequential, FlatReaderOperation<T> operation, ResultCleanup<? super T> resultCleanup) throws IOException
+```
+
+Runs synchronous flat-vector replay under Lucene's sequential-reader lifecycle.
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:590`_
 
 ### close
 
 ```java
-@Override public void close() throws IOException
+@Override public synchronized void close() throws IOException
 ```
 
 Closes the resources.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:394`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:636`_
 
 ### checkIntegrity
 
@@ -185,7 +205,7 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVecto
 
 Checks consistency of this reader.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:412`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:661`_
 
 ### getFloatVectorValues
 
@@ -195,7 +215,7 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVecto
 
 Returns the FloatVectorValues for the given field.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:421`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:670`_
 
 ### getByteVectorValues
 
@@ -207,7 +227,7 @@ Returns the ByteVectorValues for the given field.
 
 This is not supported.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:431`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:680`_
 
 ### search
 
@@ -217,7 +237,7 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVecto
 
 Returns the k nearest neighbor documents using cuVS's CAGRA or brute force algorithm for this field, to the given vector.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:455`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:704`_
 
 ### search
 
@@ -229,12 +249,12 @@ Return the k nearest neighbor documents as determined by comparison of their vec
 
 This is not supported.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:609`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:849`_
 
 ### readEntry
 
 ```java
-static FieldEntry readEntry( IndexInput input, VectorEncoding vectorEncoding, VectorSimilarityFunction similarityFunction) throws IOException
+static FieldEntry readEntry( IndexInput input, VectorEncoding vectorEncoding, VectorSimilarityFunction similarityFunction, int version) throws IOException
 ```
 
 Returns an instance of FieldEntry.
@@ -257,7 +277,7 @@ an instance of FieldEntry
 | --- | --- |
 | `IOException` | I/O Exceptions |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:637`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:878`_
 
 ### getCagraIndexForField
 
@@ -278,7 +298,7 @@ Returns the `CagraIndex` for the given field, or `null` if unavailable
 
 the CAGRA index, or `null`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:689`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:942`_
 
 ### getFilterBitsetCache
 
@@ -288,7 +308,7 @@ FilterBitsetCache getFilterBitsetCache()
 
 Returns the filter cache owned by the vectors format that created this reader.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:699`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:952`_
 
 ### getFieldInfos
 
@@ -302,7 +322,7 @@ Gets the instance of FieldInfos.
 
 the instance of FieldInfos
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:708`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:961`_
 
 ### getCuvsIndexes
 
@@ -316,7 +336,7 @@ Gets the map of `GPUIndex` objects.
 
 the map of GPU index objects
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:717`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:970`_
 
 ### getFieldEntries
 
@@ -330,6 +350,6 @@ Gets the map of FieldEntry objects that hold the meta information for the field.
 
 the map of FieldEntry objects
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:726`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:979`_
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:59`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsReader.java:65`_

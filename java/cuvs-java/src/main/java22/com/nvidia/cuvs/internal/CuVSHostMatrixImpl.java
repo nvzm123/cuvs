@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 package com.nvidia.cuvs.internal;
@@ -223,7 +223,8 @@ public class CuVSHostMatrixImpl extends CuVSMatrixBaseImpl implements CuVSHostMa
 
   @Override
   public MemorySegment toTensor(Arena arena) {
-    var strides = rowStride >= 0 ? new long[] {rowStride, columnStride} : null;
+    var strides =
+        rowStride >= 0 ? new long[] {rowStride, columnStride >= 0 ? columnStride : 1} : null;
     return prepareTensor(
         arena, memorySegment, new long[] {size, columns}, strides, code(), bits(), kDLCPU());
   }

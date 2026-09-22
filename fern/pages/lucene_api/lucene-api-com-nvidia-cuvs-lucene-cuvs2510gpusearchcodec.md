@@ -98,6 +98,30 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearc
 ### CuVS2510GPUSearchCodec
 
 ```java
+public CuVS2510GPUSearchCodec( GPUSearchParams params, FilterBitsetCacheConfig filterCacheConfig, CuVSReaderResourcesFactory readerResourcesFactory) throws Exception
+```
+
+Initialize the codec with GPU search, filter-cache, and reader-resource configuration.
+
+**Parameters**
+
+| Name | Description |
+| --- | --- |
+| `params` | GPU index and search parameters |
+| `filterCacheConfig` | filter-bitset-cache configuration |
+| `readerResourcesFactory` | factory for independently owned reader resources |
+
+**Throws**
+
+| Type | Description |
+| --- | --- |
+| `Exception` | Exception raised when initializing the codec |
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:80`_
+
+### CuVS2510GPUSearchCodec
+
+```java
 public CuVS2510GPUSearchCodec( String name, Codec delegate, GPUSearchParams params, FilterBitsetCacheConfig filterCacheConfig)
 ```
 
@@ -112,7 +136,28 @@ Initialize a named codec with explicit delegate, GPU search, and filter-cache pa
 | `params` | GPU index and search parameters |
 | `filterCacheConfig` | filter-bitset-cache configuration |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:80`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:96`_
+
+### CuVS2510GPUSearchCodec
+
+```java
+public CuVS2510GPUSearchCodec( String name, Codec delegate, GPUSearchParams params, FilterBitsetCacheConfig filterCacheConfig, CuVSReaderResourcesFactory readerResourcesFactory)
+```
+
+Initialize a named codec with explicit delegate, GPU search, filter-cache, and reader-resource
+configuration.
+
+**Parameters**
+
+| Name | Description |
+| --- | --- |
+| `name` | the name of the codec |
+| `delegate` | the delegate codec |
+| `params` | GPU index and search parameters |
+| `filterCacheConfig` | filter-bitset-cache configuration |
+| `readerResourcesFactory` | factory for independently owned reader resources |
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:119`_
 
 ### knnVectorsFormat
 
@@ -126,7 +171,7 @@ Get the configured `KnnVectorsFormat`.
 
 the instance of the `KnnVectorsFormat`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:111`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:154`_
 
 ### setKnnFormat
 
@@ -142,6 +187,6 @@ Set the `KnnVectorsFormat`.
 | --- | --- |
 | `format` | the `KnnVectorsFormat` to set |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:121`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:164`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.java:20`_

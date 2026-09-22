@@ -13,6 +13,9 @@ import com.carrotsearch.randomizedtesting.RandomizedRunner;
 import com.nvidia.cuvs.CagraIndexParams.CagraGraphBuildAlgo;
 import com.nvidia.cuvs.CagraIndexParams.CuvsDistanceType;
 import com.nvidia.cuvs.spi.CuVSProvider;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.Linker;
 import java.lang.foreign.MemoryLayout;
@@ -196,6 +199,283 @@ public class CagraBuildAndSearchIT extends CuVSTestCase {
       } finally {
         Files.deleteIfExists(indexPath);
       }
+    }
+  }
+
+  @Test
+  public void testGraphOnlyRoundTripAttachesAndOwnsUnpaddedHostDataset() throws Throwable {
+    float[][] dataset = createSampleData();
+    Path graphPath = Files.createTempFile("cagra-graph-only", ".cag");
+
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var sourceIndex = indexOnce(CuVSMatrix.ofArray(dataset), resources)) {
+      try (var outputStream = Files.newOutputStream(graphPath)) {
+        sourceIndex.serializeGraph(outputStream, 16);
+      }
+
+      CuVSMatrix attachedDataset = CuVSMatrix.ofArray(dataset);
+      CagraIndex loadedIndex;
+      try (var inputStream = Files.newInputStream(graphPath)) {
+        try {
+          loadedIndex =
+              CagraIndex.newBuilder(resources)
+                  .fromGraph(inputStream)
+                  .withDataset(attachedDataset)
+                  .build();
+        } catch (Throwable t) {
+          attachedDataset.close();
+          throw t;
+        }
+      }
+
+      try (loadedIndex) {
+        queryAndCompare(
+            loadedIndex,
+            loadedIndex,
+            SearchResults.IDENTITY_MAPPING,
+            createSampleQueries(),
+            getExpectedResults(),
+            resources);
+      }
+    } finally {
+      Files.deleteIfExists(graphPath);
+    }
+  }
+
+  @Test
+  public void testGraphOnlyRoundTripReleasesUnpaddedDeviceDataset() throws Throwable {
+    float[][] dataset = createSampleData();
+    Path graphPath = Files.createTempFile("cagra-device-graph-only", ".cag");
+
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var sourceIndex = indexOnce(CuVSMatrix.ofArray(dataset), resources)) {
+      try (var outputStream = Files.newOutputStream(graphPath)) {
+        sourceIndex.serializeGraph(outputStream, 16);
+      }
+
+      CuVSMatrix attachedDataset;
+      try (var hostDataset = CuVSMatrix.ofArray(dataset)) {
+        attachedDataset = hostDataset.toDevice(resources);
+      }
+
+      CagraIndex loadedIndex;
+      try (var inputStream = Files.newInputStream(graphPath)) {
+        try {
+          loadedIndex =
+              CagraIndex.newBuilder(resources)
+                  .fromGraph(inputStream)
+                  .withDataset(attachedDataset)
+                  .build();
+        } catch (Throwable t) {
+          attachedDataset.close();
+          throw t;
+        }
+      }
+
+      try (loadedIndex) {
+        queryAndCompare(
+            loadedIndex,
+            loadedIndex,
+            SearchResults.IDENTITY_MAPPING,
+            createSampleQueries(),
+            getExpectedResults(),
+            resources);
+      }
+    } finally {
+      Files.deleteIfExists(graphPath);
+    }
+  }
+
+  @Test
+  public void testGraphOnlyRoundTripOwnsAlignedDeviceDataset() throws Throwable {
+    float[][] dataset = {
+      {0.74021935f, 0.9209938f, 0.0f, 0.0f},
+      {0.03902049f, 0.9689629f, 0.0f, 0.0f},
+      {0.92514056f, 0.4463501f, 0.0f, 0.0f},
+      {0.6673192f, 0.10993068f, 0.0f, 0.0f}
+    };
+    float[][] queries = {
+      {0.48216683f, 0.0428398f, 0.0f, 0.0f},
+      {0.5084142f, 0.6545497f, 0.0f, 0.0f},
+      {0.51260436f, 0.2643005f, 0.0f, 0.0f},
+      {0.05198065f, 0.5789965f, 0.0f, 0.0f}
+    };
+    Path graphPath = Files.createTempFile("cagra-aligned-graph-only", ".cag");
+
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var sourceIndex = indexOnce(CuVSMatrix.ofArray(dataset), resources)) {
+      try (var outputStream = Files.newOutputStream(graphPath)) {
+        sourceIndex.serializeGraph(outputStream, 16);
+      }
+
+      CuVSMatrix attachedDataset;
+      try (var hostDataset = CuVSMatrix.ofArray(dataset)) {
+        attachedDataset = hostDataset.toDevice(resources);
+      }
+
+      CagraIndex loadedIndex;
+      try (var inputStream = Files.newInputStream(graphPath)) {
+        try {
+          loadedIndex =
+              CagraIndex.newBuilder(resources)
+                  .fromGraph(inputStream)
+                  .withDataset(attachedDataset)
+                  .build();
+        } catch (Throwable t) {
+          attachedDataset.close();
+          throw t;
+        }
+      }
+
+      try (loadedIndex) {
+        queryAndCompare(
+            loadedIndex,
+            loadedIndex,
+            SearchResults.IDENTITY_MAPPING,
+            queries,
+            getExpectedResults(),
+            resources);
+      }
+    } finally {
+      Files.deleteIfExists(graphPath);
+    }
+  }
+
+  @Test
+  public void testGraphOnlySerializationRejectsInvalidBufferBeforeNativeWork() throws Throwable {
+    Path tempFile = Path.of(UUID.randomUUID() + ".cag");
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var index = indexOnce(CuVSMatrix.ofArray(createSampleData()), resources)) {
+      var error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> index.serializeGraph(OutputStream.nullOutputStream(), tempFile, 0));
+      assertEquals("bufferLength must be greater than 0", error.getMessage());
+      assertFalse(Files.exists(tempFile));
+    }
+  }
+
+  @Test
+  public void testCombinedSerializationRejectsInvalidBufferBeforeNativeWork() throws Throwable {
+    Path tempFile = Path.of(UUID.randomUUID() + ".cag");
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var index = indexOnce(CuVSMatrix.ofArray(createSampleData()), resources)) {
+      var error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> index.serialize(OutputStream.nullOutputStream(), tempFile, 0));
+      assertEquals("bufferLength must be greater than 0", error.getMessage());
+      assertFalse(Files.exists(tempFile));
+    }
+  }
+
+  @Test
+  public void testGraphOnlyLoadRejectsWrongRowCountWithoutTakingDatasetOwnership()
+      throws Throwable {
+    float[][] sourceData = createSampleData();
+    float[][] wrongData = Arrays.copyOf(sourceData, sourceData.length - 1);
+    Path graphPath = Files.createTempFile("cagra-row-count", ".cag");
+
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var sourceIndex = indexOnce(CuVSMatrix.ofArray(sourceData), resources);
+        var hostDataset = CuVSMatrix.ofArray(wrongData);
+        var callerOwnedDataset = hostDataset.toDevice(resources)) {
+      try (var outputStream = Files.newOutputStream(graphPath)) {
+        sourceIndex.serializeGraph(outputStream);
+      }
+
+      try (var inputStream = Files.newInputStream(graphPath)) {
+        var error =
+            assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                    CagraIndex.newBuilder(resources)
+                        .fromGraph(inputStream)
+                        .withDataset(callerOwnedDataset)
+                        .build());
+        assertEquals(
+            "dataset row count 3 does not match serialized graph row count 4", error.getMessage());
+      }
+
+      float[][] roundTrip = new float[wrongData.length][wrongData[0].length];
+      callerOwnedDataset.toArray(roundTrip);
+      assertSame2dArray(
+          callerOwnedDataset.size(), callerOwnedDataset.columns(), wrongData, roundTrip);
+    } finally {
+      Files.deleteIfExists(graphPath);
+    }
+  }
+
+  @Test
+  public void testGraphOnlyLoadRejectsWrongDimensionWithoutTakingDatasetOwnership()
+      throws Throwable {
+    float[][] sourceData = createSampleData();
+    float[][] wrongData = {
+      {0.1f, 0.2f, 0.3f},
+      {0.4f, 0.5f, 0.6f},
+      {0.7f, 0.8f, 0.9f},
+      {1.0f, 1.1f, 1.2f}
+    };
+    Path graphPath = Files.createTempFile("cagra-dimension", ".cag");
+
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var sourceIndex = indexOnce(CuVSMatrix.ofArray(sourceData), resources);
+        var hostDataset = CuVSMatrix.ofArray(wrongData);
+        var callerOwnedDataset = hostDataset.toDevice(resources)) {
+      try (var outputStream = Files.newOutputStream(graphPath)) {
+        sourceIndex.serializeGraph(outputStream);
+      }
+
+      try (var inputStream = Files.newInputStream(graphPath)) {
+        var error =
+            assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                    CagraIndex.newBuilder(resources)
+                        .fromGraph(inputStream)
+                        .withDataset(callerOwnedDataset)
+                        .build());
+        assertEquals(
+            "dataset dimension 3 does not match serialized graph dimension 2", error.getMessage());
+      }
+
+      float[][] roundTrip = new float[wrongData.length][wrongData[0].length];
+      callerOwnedDataset.toArray(roundTrip);
+      assertSame2dArray(
+          callerOwnedDataset.size(), callerOwnedDataset.columns(), wrongData, roundTrip);
+    } finally {
+      Files.deleteIfExists(graphPath);
+    }
+  }
+
+  @Test
+  public void testTruncatedGraphLoadDoesNotTakeDatasetOwnership() throws Throwable {
+    float[][] dataset = createSampleData();
+    byte[] graph;
+
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var sourceIndex = indexOnce(CuVSMatrix.ofArray(dataset), resources);
+        var outputStream = new ByteArrayOutputStream()) {
+      sourceIndex.serializeGraph(outputStream);
+      graph = outputStream.toByteArray();
+    }
+
+    byte[] truncatedGraph = Arrays.copyOf(graph, graph.length / 2);
+    try (CuVSResources resources = CheckedCuVSResources.create();
+        var hostDataset = CuVSMatrix.ofArray(dataset);
+        var callerOwnedDataset = hostDataset.toDevice(resources)) {
+      assertThrows(
+          Throwable.class,
+          () ->
+              CagraIndex.newBuilder(resources)
+                  .fromGraph(new ByteArrayInputStream(truncatedGraph))
+                  .withDataset(callerOwnedDataset)
+                  .build());
+
+      float[][] roundTrip = new float[dataset.length][dataset[0].length];
+      callerOwnedDataset.toArray(roundTrip);
+      assertSame2dArray(
+          callerOwnedDataset.size(), callerOwnedDataset.columns(), dataset, roundTrip);
     }
   }
 

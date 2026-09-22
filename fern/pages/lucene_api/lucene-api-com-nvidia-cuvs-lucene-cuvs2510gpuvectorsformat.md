@@ -29,7 +29,7 @@ Initializes the `CuVS2510GPUVectorsFormat` with default parameter values.
 | --- | --- |
 | `LibraryException` | if the native library fails to load |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:55`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:61`_
 
 ### CuVS2510GPUVectorsFormat
 
@@ -51,7 +51,7 @@ Initializes the `CuVS2510GPUVectorsFormat` with an instance of `GPUSearchParams`
 | --- | --- |
 | `LibraryException` | if the native library fails to load |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:65`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:74`_
 
 ### CuVS2510GPUVectorsFormat
 
@@ -74,7 +74,34 @@ Initializes the format with GPU search and filter-bitset-cache parameters.
 | --- | --- |
 | `LibraryException` | if the native library fails to load |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:76`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:88`_
+
+### CuVS2510GPUVectorsFormat
+
+```java
+public CuVS2510GPUVectorsFormat( GPUSearchParams gpuSearchParams, FilterBitsetCacheConfig filterCacheConfig, CuVSReaderResourcesFactory readerResourcesFactory)
+```
+
+Initializes the format with GPU search, filter-cache, and reader-resource configuration.
+
+The factory is invoked once for each non-merge reader. Each returned resources instance is
+owned and eventually closed by that reader.
+
+**Parameters**
+
+| Name | Description |
+| --- | --- |
+| `gpuSearchParams` | GPU index and search parameters |
+| `filterCacheConfig` | filter-bitset-cache configuration |
+| `readerResourcesFactory` | factory for independently owned reader resources |
+
+**Throws**
+
+| Type | Description |
+| --- | --- |
+| `LibraryException` | if the native library fails to load |
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:107`_
 
 ### fieldsWriter
 
@@ -84,7 +111,7 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVecto
 
 Returns a KnnVectorsReader instance to write the vectors to the index.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:86`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:121`_
 
 ### fieldsReader
 
@@ -94,7 +121,7 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVecto
 
 Returns a KnnVectorsReader instance to read the vectors from the index.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:96`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:131`_
 
 ### getMaxDimensions
 
@@ -104,6 +131,6 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVecto
 
 Returns the maximum number of vector dimensions supported by this codec for the given field name.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:106`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:140`_
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:25`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.java:26`_

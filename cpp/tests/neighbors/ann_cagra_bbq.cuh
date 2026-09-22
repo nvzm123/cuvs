@@ -283,6 +283,7 @@ class AnnCagraBbqTest : public ::testing::TestWithParam<AnnCagraBbqInputs> {
 
     ASSERT_EQ(index.graph_size(), static_cast<uint32_t>(ps.n_rows));
     ASSERT_EQ(index.graph_degree(), static_cast<uint32_t>(ps.graph_degree));
+    EXPECT_EQ(index.dim(), static_cast<uint32_t>(ps.dim));
     EXPECT_EQ(index.dataset().n_rows(), 0);
     EXPECT_TRUE(index.dataset().quantizers.empty());
   }
