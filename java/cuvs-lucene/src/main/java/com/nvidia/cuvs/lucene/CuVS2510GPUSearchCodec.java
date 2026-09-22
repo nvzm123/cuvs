@@ -71,6 +71,22 @@ public class CuVS2510GPUSearchCodec extends FilterCodec {
   }
 
   /**
+   * Initialize the codec with GPU search, filter-cache, and reader-resource configuration.
+   *
+   * @param params GPU index and search parameters
+   * @param filterCacheConfig filter-bitset-cache configuration
+   * @param readerResourcesFactory factory for independently owned reader resources
+   * @throws Exception Exception raised when initializing the codec
+   */
+  public CuVS2510GPUSearchCodec(
+      GPUSearchParams params,
+      FilterBitsetCacheConfig filterCacheConfig,
+      CuVSReaderResourcesFactory readerResourcesFactory)
+      throws Exception {
+    this(NAME, LuceneProvider.getCodec("101"), params, filterCacheConfig, readerResourcesFactory);
+  }
+
+  /**
    * Initialize a named codec with explicit delegate, GPU search, and filter-cache parameters.
    *
    * @param name the name of the codec
@@ -83,8 +99,32 @@ public class CuVS2510GPUSearchCodec extends FilterCodec {
       Codec delegate,
       GPUSearchParams params,
       FilterBitsetCacheConfig filterCacheConfig) {
+    this(
+        name,
+        delegate,
+        params,
+        filterCacheConfig,
+        ThreadLocalCuVSResourcesProvider::createRequiredIndependentCuVSResourcesInstance);
+  }
+
+  /**
+   * Initialize a named codec with explicit delegate, GPU search, filter-cache, and reader-resource
+   * configuration.
+   *
+   * @param name the name of the codec
+   * @param delegate the delegate codec
+   * @param params GPU index and search parameters
+   * @param filterCacheConfig filter-bitset-cache configuration
+   * @param readerResourcesFactory factory for independently owned reader resources
+   */
+  public CuVS2510GPUSearchCodec(
+      String name,
+      Codec delegate,
+      GPUSearchParams params,
+      FilterBitsetCacheConfig filterCacheConfig,
+      CuVSReaderResourcesFactory readerResourcesFactory) {
     super(name, delegate);
-    initializeFormat(params, filterCacheConfig);
+    initializeFormat(params, filterCacheConfig, readerResourcesFactory);
   }
 
   /**
@@ -93,9 +133,12 @@ public class CuVS2510GPUSearchCodec extends FilterCodec {
    * @param params an instance of {@link GPUSearchParams}
    * @param filterCacheConfig filter-bitset-cache configuration
    */
-  private void initializeFormat(GPUSearchParams params, FilterBitsetCacheConfig filterCacheConfig) {
+  private void initializeFormat(
+      GPUSearchParams params,
+      FilterBitsetCacheConfig filterCacheConfig,
+      CuVSReaderResourcesFactory readerResourcesFactory) {
     try {
-      format = new CuVS2510GPUVectorsFormat(params, filterCacheConfig);
+      format = new CuVS2510GPUVectorsFormat(params, filterCacheConfig, readerResourcesFactory);
       setKnnFormat(format);
     } catch (LibraryException ex) {
       log.log(

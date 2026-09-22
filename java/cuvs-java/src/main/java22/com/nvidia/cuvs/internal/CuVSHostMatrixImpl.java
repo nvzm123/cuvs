@@ -223,7 +223,8 @@ public class CuVSHostMatrixImpl extends CuVSMatrixBaseImpl implements CuVSHostMa
 
   @Override
   public MemorySegment toTensor(Arena arena) {
-    var strides = rowStride >= 0 ? new long[] {rowStride, columnStride} : null;
+    var strides =
+        rowStride >= 0 ? new long[] {rowStride, columnStride >= 0 ? columnStride : 1} : null;
     return prepareTensor(
         arena, memorySegment, new long[] {size, columns}, strides, code(), bits(), kDLCPU());
   }

@@ -8,6 +8,7 @@ import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.assertIsSu
 
 import com.nvidia.cuvs.LibraryException;
 import java.io.IOException;
+import java.util.Objects;
 import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.KnnVectorsWriter;
@@ -33,10 +34,15 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
   public static final String CUVS_INDEX_CODEC_NAME = "Lucene102CuVSVectorsFormatIndex";
   public static final String CUVS_INDEX_EXT = "vcag";
   public static final int VERSION_START = 0;
-  public static final int VERSION_CURRENT = VERSION_START;
+
+  /** Adds the per-field CAGRA persistence mode. */
+  public static final int VERSION_GRAPH_ONLY_PERSISTENCE = 1;
+
+  public static final int VERSION_CURRENT = VERSION_GRAPH_ONLY_PERSISTENCE;
 
   private final GPUSearchParams gpuSearchParams;
   private final FilterBitsetCache filterBitsetCache;
+  private final CuVSReaderResourcesFactory readerResourcesFactory;
 
   static {
     try {
@@ -54,7 +60,10 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
    * @throws LibraryException if the native library fails to load
    */
   public CuVS2510GPUVectorsFormat() {
-    this(new GPUSearchParams.Builder().build(), FilterBitsetCacheConfig.DEFAULT);
+    this(
+        new GPUSearchParams.Builder().build(),
+        FilterBitsetCacheConfig.DEFAULT,
+        ThreadLocalCuVSResourcesProvider::createRequiredIndependentCuVSResourcesInstance);
   }
 
   /**
@@ -64,7 +73,10 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
    * @throws LibraryException if the native library fails to load
    */
   public CuVS2510GPUVectorsFormat(GPUSearchParams gpuSearchParams) {
-    this(gpuSearchParams, FilterBitsetCacheConfig.DEFAULT);
+    this(
+        gpuSearchParams,
+        FilterBitsetCacheConfig.DEFAULT,
+        ThreadLocalCuVSResourcesProvider::createRequiredIndependentCuVSResourcesInstance);
   }
 
   /**
@@ -76,9 +88,32 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
    */
   public CuVS2510GPUVectorsFormat(
       GPUSearchParams gpuSearchParams, FilterBitsetCacheConfig filterCacheConfig) {
+    this(
+        gpuSearchParams,
+        filterCacheConfig,
+        ThreadLocalCuVSResourcesProvider::createRequiredIndependentCuVSResourcesInstance);
+  }
+
+  /**
+   * Initializes the format with GPU search, filter-cache, and reader-resource configuration.
+   *
+   * <p>The factory is invoked once for each non-merge reader. Each returned resources instance is
+   * owned and eventually closed by that reader.
+   *
+   * @param gpuSearchParams GPU index and search parameters
+   * @param filterCacheConfig filter-bitset-cache configuration
+   * @param readerResourcesFactory factory for independently owned reader resources
+   * @throws LibraryException if the native library fails to load
+   */
+  public CuVS2510GPUVectorsFormat(
+      GPUSearchParams gpuSearchParams,
+      FilterBitsetCacheConfig filterCacheConfig,
+      CuVSReaderResourcesFactory readerResourcesFactory) {
     super("CuVS2510GPUVectorsFormat");
     this.gpuSearchParams = gpuSearchParams;
     this.filterBitsetCache = new FilterBitsetCache(filterCacheConfig);
+    this.readerResourcesFactory =
+        Objects.requireNonNull(readerResourcesFactory, "readerResourcesFactory");
   }
 
   /**
@@ -96,9 +131,8 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
    */
   @Override
   public KnnVectorsReader fieldsReader(SegmentReadState state) throws IOException {
-    assertIsSupported();
     return new CuVS2510GPUVectorsReader(
-        state, FLAT_VECTORS_FORMAT.fieldsReader(state), filterBitsetCache);
+        state, FLAT_VECTORS_FORMAT.fieldsReader(state), filterBitsetCache, readerResourcesFactory);
   }
 
   /**

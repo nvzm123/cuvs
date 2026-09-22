@@ -134,15 +134,27 @@ public class GPUIndex implements Closeable {
    * @throws IOException
    */
   private void destroyIndices() throws IOException {
-    try {
-      if (cagraIndex != null) {
-        cagraIndex.close();
+    closeAll(cagraIndex, bruteforceIndex);
+  }
+
+  static void closeAll(AutoCloseable... closeables) throws IOException {
+    Throwable failure = null;
+    for (AutoCloseable closeable : closeables) {
+      if (closeable == null) {
+        continue;
       }
-      if (bruteforceIndex != null) {
-        bruteforceIndex.close();
+      try {
+        closeable.close();
+      } catch (Throwable closeFailure) {
+        if (failure == null) {
+          failure = closeFailure;
+        } else {
+          failure.addSuppressed(closeFailure);
+        }
       }
-    } catch (Throwable t) {
-      Utils.handleThrowable(t);
+    }
+    if (failure != null) {
+      throw Utils.handleThrowable(failure);
     }
   }
 }

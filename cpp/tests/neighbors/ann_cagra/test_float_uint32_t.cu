@@ -153,4 +153,57 @@ TEST(AnnCagraMultiPartition, MixedGraphDegreeRejected)
                                        cagra::search_params{});
 }
 
+// A manually assembled graph may not know its expected dataset dimension. Attaching its first
+// dataset remains supported and makes that dimension observable.
+TEST(AnnCagraIndexMetadata, UnknownDimensionAcceptsFirstDataset)
+{
+  raft::resources res;
+  auto graph = raft::make_host_matrix<uint32_t, int64_t>(4, 1);
+  for (int64_t row = 0; row < graph.extent(0); ++row) {
+    graph(row, 0) = static_cast<uint32_t>((row + 1) % graph.extent(0));
+  }
+
+  cagra::device_padded_index<float> graph_only(res);
+  graph_only.update_graph(res, raft::make_const_mdspan(graph.view()));
+  EXPECT_EQ(graph_only.dim(), 0);
+
+  auto queries   = raft::make_device_matrix<float, int64_t>(res, 1, 3);
+  auto neighbors = raft::make_device_matrix<uint32_t, int64_t>(res, 1, 1);
+  auto distances = raft::make_device_matrix<float, int64_t>(res, 1, 1);
+  try {
+    cagra::search(res,
+                  cagra::search_params{},
+                  graph_only,
+                  raft::make_const_mdspan(queries.view()),
+                  neighbors.view(),
+                  distances.view());
+    FAIL() << "search accepted a graph without an attached dataset";
+  } catch (std::exception const& error) {
+    EXPECT_NE(std::string(error.what()).find("without an attached dataset"), std::string::npos)
+      << error.what();
+  }
+
+  auto storage = raft::make_device_matrix<float, int64_t>(res, 4, 4);
+  cuvs::neighbors::device_padded_dataset_view<float, int64_t> dataset(
+    raft::make_const_mdspan(storage.view()), 3);
+  auto attached = cagra::update_dataset(res, std::move(graph_only), dataset);
+  EXPECT_EQ(attached.dim(), 3);
+  EXPECT_EQ(attached.dataset().n_rows(), 4);
+}
+
+TEST(AnnCagraIndexMetadata, ExplicitDimensionIsAvailableWithoutDataset)
+{
+  raft::resources res;
+  cagra::device_padded_index<float> legacy_default(res);
+  cagra::device_padded_index<float> legacy_metric(res, cuvs::distance::DistanceType::InnerProduct);
+  cagra::device_padded_index<float> graph_only(res, cuvs::distance::DistanceType::L2Expanded, 3);
+
+  EXPECT_EQ(legacy_default.metric(), cuvs::distance::DistanceType::L2Expanded);
+  EXPECT_EQ(legacy_default.dim(), 0);
+  EXPECT_EQ(legacy_metric.metric(), cuvs::distance::DistanceType::InnerProduct);
+  EXPECT_EQ(legacy_metric.dim(), 0);
+  EXPECT_EQ(graph_only.dataset().n_rows(), 0);
+  EXPECT_EQ(graph_only.dim(), 3);
+}
+
 }  // namespace cuvs::neighbors::cagra

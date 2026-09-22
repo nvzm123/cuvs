@@ -11,12 +11,13 @@
 #include <dlpack/dlpack.h>
 
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <cstring>
 #include <cuvs/neighbors/cagra.h>
 #include <cuvs/neighbors/hnsw.h>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unistd.h>
 
@@ -472,7 +473,7 @@ TEST(CagraC, BuildExtendSearch)
   rmm::device_uvector<float> main_d(main_data_size * dimensions, stream);
   rmm::device_uvector<int32_t> main_labels_d(main_data_size, stream);
   raft::copy(main_d.data(), random_data_d.data(), main_data_size * dimensions, stream);
-  DLManagedTensor dataset_tensor;
+  DLManagedTensor dataset_tensor{};
   dataset_tensor.dl_tensor.data               = main_d.data();
   dataset_tensor.dl_tensor.device.device_type = kDLCUDA;
   dataset_tensor.dl_tensor.ndim               = 2;
@@ -498,7 +499,8 @@ TEST(CagraC, BuildExtendSearch)
   cuvsCagraIndexParams_t build_params;
   cuvsCagraIndexParamsCreate(&build_params);
   cuvsDataset_t dataset_view;
-  ASSERT_EQ(cuvsDatasetMakePaddedView(res, &dataset_tensor, &dataset_view), CUVS_SUCCESS);
+  ASSERT_EQ(cuvsDatasetMakePaddedView(res, &dataset_tensor, &dataset_view), CUVS_SUCCESS)
+    << cuvsGetLastErrorText();
   ASSERT_EQ(cuvsCagraBuild(res, build_params, dataset_view, index), CUVS_SUCCESS);
 
   cuvsStreamSync(res);
@@ -524,7 +526,7 @@ TEST(CagraC, BuildExtendSearch)
              additional_d.data(),
              additional_data_size * dimensions,
              stream);
-  DLManagedTensor extended_dataset_tensor;
+  DLManagedTensor extended_dataset_tensor{};
   extended_dataset_tensor.dl_tensor.data               = extended_d.data();
   extended_dataset_tensor.dl_tensor.device.device_type = kDLCUDA;
   extended_dataset_tensor.dl_tensor.ndim               = 2;
@@ -537,7 +539,8 @@ TEST(CagraC, BuildExtendSearch)
   extended_dataset_tensor.dl_tensor.strides            = nullptr;
   cuvsDataset_t extended_dataset_view;
   ASSERT_EQ(cuvsDatasetMakePaddedView(res, &extended_dataset_tensor, &extended_dataset_view),
-            CUVS_SUCCESS);
+            CUVS_SUCCESS)
+    << cuvsGetLastErrorText();
   ASSERT_EQ(cuvsCagraExtend(res, extend_params, extended_dataset_view, main_data_size, index),
             CUVS_SUCCESS);
 
@@ -547,7 +550,7 @@ TEST(CagraC, BuildExtendSearch)
              random_data_d.data() + (main_data_size + additional_data_size) * dimensions,
              num_queries * dimensions,
              stream);
-  DLManagedTensor queries_tensor;
+  DLManagedTensor queries_tensor{};
   queries_tensor.dl_tensor.data               = queries_d.data();
   queries_tensor.dl_tensor.device.device_type = kDLCUDA;
   queries_tensor.dl_tensor.ndim               = 2;
@@ -605,7 +608,7 @@ TEST(CagraC, BuildExtendSearch)
   // create neighbors DLTensor
   rmm::device_uvector<uint32_t> neighbors_d(4, stream);
 
-  DLManagedTensor neighbors_tensor;
+  DLManagedTensor neighbors_tensor{};
   neighbors_tensor.dl_tensor.data               = neighbors_d.data();
   neighbors_tensor.dl_tensor.device.device_type = kDLCUDA;
   neighbors_tensor.dl_tensor.ndim               = 2;
@@ -621,7 +624,7 @@ TEST(CagraC, BuildExtendSearch)
 
   distances_d.resize(4, stream);
 
-  DLManagedTensor distances_tensor;
+  DLManagedTensor distances_tensor{};
   distances_tensor.dl_tensor.data               = distances_d.data();
   distances_tensor.dl_tensor.device.device_type = kDLCUDA;
   distances_tensor.dl_tensor.ndim               = 2;
@@ -1308,7 +1311,7 @@ TEST(CagraC, ExplicitSerializationSemantics) {
   ASSERT_EQ(cuvsCagraIndexParamsCreate(&params), CUVS_SUCCESS);
   cuvsCagraIndex_t source;
   ASSERT_EQ(cuvsCagraIndexCreate(&source), CUVS_SUCCESS);
-  ASSERT_EQ(cuvsCagraBuild(res, params, host_view, source), CUVS_SUCCESS);
+  ASSERT_EQ(cuvsCagraBuild(res, params, host_view, source), CUVS_SUCCESS) << cuvsGetLastErrorText();
 
   auto prefix = "/tmp/cuvs-cagra-explicit-" + std::to_string(getpid());
   auto full_path = prefix + "-full.bin";
@@ -1318,7 +1321,9 @@ TEST(CagraC, ExplicitSerializationSemantics) {
   ASSERT_EQ(cuvsCagraSerializeGraph(res, graph_path.c_str(), source),
             CUVS_SUCCESS);
 
-  auto expect_search = [&](cuvsCagraIndex_t index) {
+  auto expect_search = [&](cuvsCagraIndex_t index,
+                           cuvsError_t expected_status     = CUVS_SUCCESS,
+                           std::string_view expected_error = {}) {
     rmm::device_uvector<float> queries_d(8, stream);
     raft::copy(queries_d.data(), reinterpret_cast<float *>(queries), 8, stream);
     int64_t queries_shape[2] = {4, 2};
@@ -1349,11 +1354,17 @@ TEST(CagraC, ExplicitSerializationSemantics) {
     cuvsCagraSearchParams_t search_params;
     ASSERT_EQ(cuvsCagraSearchParamsCreate(&search_params), CUVS_SUCCESS);
     cuvsFilter no_filter{0, NO_FILTER};
-    ASSERT_EQ(cuvsCagraSearch(res, search_params, index, &queries_tensor,
-                              &neighbors_tensor, &distances_tensor, no_filter),
-              CUVS_SUCCESS);
-    EXPECT_TRUE(cuvs::devArrMatchHost(neighbors_exp, neighbors_d.data(), 4,
-                                      cuvs::Compare<uint32_t>()));
+    auto const search_status = cuvsCagraSearch(
+      res, search_params, index, &queries_tensor, &neighbors_tensor, &distances_tensor, no_filter);
+    EXPECT_EQ(search_status, expected_status);
+    if (search_status == CUVS_SUCCESS) {
+      EXPECT_TRUE(
+        cuvs::devArrMatchHost(neighbors_exp, neighbors_d.data(), 4, cuvs::Compare<uint32_t>()));
+    } else if (!expected_error.empty()) {
+      auto const* error_text = cuvsGetLastErrorText();
+      ASSERT_NE(error_text, nullptr);
+      EXPECT_NE(std::string_view(error_text).find(expected_error), std::string_view::npos);
+    }
     cuvsCagraSearchParamsDestroy(search_params);
   };
 
@@ -1438,6 +1449,9 @@ TEST(CagraC, ExplicitSerializationSemantics) {
   ASSERT_EQ(cuvsCagraIndexCreate(&graph_from_full), CUVS_SUCCESS);
   ASSERT_EQ(cuvsCagraDeserializeGraph(res, full_path.c_str(), graph_from_full),
             CUVS_SUCCESS);
+  int64_t graph_from_full_dim = 0;
+  ASSERT_EQ(cuvsCagraIndexGetDims(graph_from_full, &graph_from_full_dim), CUVS_SUCCESS);
+  EXPECT_EQ(graph_from_full_dim, 2);
   auto sentinel_path = prefix + "-sentinel.bin";
   {
     std::ofstream sentinel(sentinel_path, std::ios::binary);
@@ -1457,6 +1471,14 @@ TEST(CagraC, ExplicitSerializationSemantics) {
   ASSERT_EQ(cuvsCagraIndexCreate(&graph_only), CUVS_SUCCESS);
   ASSERT_EQ(cuvsCagraDeserializeGraph(res, graph_path.c_str(), graph_only),
             CUVS_SUCCESS);
+  int64_t graph_only_dim = 0;
+  ASSERT_EQ(cuvsCagraIndexGetDims(graph_only, &graph_only_dim), CUVS_SUCCESS);
+  EXPECT_EQ(graph_only_dim, 2);
+
+  // The graph metadata is available before attachment, but search fails
+  // explicitly rather than reaching a kernel with an empty dataset view.
+  expect_search(graph_only, CUVS_ERROR, "without an attached dataset");
+
   rmm::device_uvector<float> device_dataset(8, stream);
   raft::copy(device_dataset.data(), reinterpret_cast<float *>(dataset), 8,
              stream);

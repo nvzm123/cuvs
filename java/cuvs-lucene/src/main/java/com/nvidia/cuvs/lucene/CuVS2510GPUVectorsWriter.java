@@ -9,6 +9,8 @@ import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.CUVS_INDEX_EXT;
 import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.CUVS_META_CODEC_EXT;
 import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.CUVS_META_CODEC_NAME;
 import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.VERSION_CURRENT;
+import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.VERSION_START;
+import static com.nvidia.cuvs.lucene.GPUSearchParams.CagraPersistenceMode.GRAPH_ONLY;
 import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.closeCuVSResourcesInstance;
 import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.getCuVSResourcesInstance;
 import static com.nvidia.cuvs.lucene.Utils.info;
@@ -66,6 +68,7 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
   private static final int MIN_CAGRA_INDEX_SIZE = 2;
 
   private final GPUSearchParams gpuSearchParams;
+  private final int formatVersion;
   private final FlatVectorsWriter flatVectorsWriter;
   private final List<GPUFieldWriter> fields = new ArrayList<>();
   private final InfoStream infoStream;
@@ -124,6 +127,10 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
       throws IOException {
     super();
     this.gpuSearchParams = gpuSearchParams;
+    // Preserve the exact v0 format for the default behavior. Only the opt-in graph-only format
+    // needs the v1 per-field mode byte.
+    this.formatVersion =
+        gpuSearchParams.getCagraPersistenceMode() == GRAPH_ONLY ? VERSION_CURRENT : VERSION_START;
     this.flatVectorsWriter = flatVectorsWriter;
     this.infoStream = state.infoStream;
     String metaFileName =
@@ -138,13 +145,13 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
       CodecUtil.writeIndexHeader(
           meta,
           CUVS_META_CODEC_NAME,
-          VERSION_CURRENT,
+          formatVersion,
           state.segmentInfo.getId(),
           state.segmentSuffix);
       CodecUtil.writeIndexHeader(
           cuvsIndex,
           CUVS_INDEX_CODEC_NAME,
-          VERSION_CURRENT,
+          formatVersion,
           state.segmentInfo.getId(),
           state.segmentSuffix);
       success = true;
@@ -253,25 +260,30 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
     CagraIndexParams params =
         CagraIndexParamsFactory.create(gpuSearchParams, dataset.size(), dataset.columns());
     try (CagraIndex index =
-            CagraIndex.newBuilder(getCuVSResourcesInstance())
-                .withDataset(dataset)
-                .withIndexParams(params)
-                .build();
-        var deviceVectors = dataset.toDevice(getCuVSResourcesInstance())) {
-      /*
-       * cuVS rejects makePaddedDataset for a device matrix whose rows already sit at the required
-       * stride, and asks for a view over that storage instead. Copying would be pointless there
-       * anyway, so pick the factory that matches the layout.
-       */
-      if (CagraIndex.isPaddedDataset(deviceVectors)) {
-        try (var indexDatasetView = index.makePaddedDatasetView(deviceVectors)) {
-          index.updateDataset(indexDatasetView);
-          index.serialize(os);
-        }
-      } else {
-        try (var indexDataset = index.makePaddedDataset(deviceVectors)) {
-          index.updateDataset(indexDataset);
-          index.serialize(os);
+        CagraIndex.newBuilder(getCuVSResourcesInstance())
+            .withDataset(dataset)
+            .withIndexParams(params)
+            .build()) {
+      if (gpuSearchParams.getCagraPersistenceMode() == GRAPH_ONLY) {
+        index.serializeGraph(os, gpuSearchParams.getCagraSerializationBufferSize());
+        return;
+      }
+      try (var deviceVectors = dataset.toDevice(getCuVSResourcesInstance())) {
+        /*
+         * cuVS rejects makePaddedDataset for a device matrix whose rows already sit at the required
+         * stride, and asks for a view over that storage instead. Copying would be pointless there
+         * anyway, so pick the factory that matches the layout.
+         */
+        if (CagraIndex.isPaddedDataset(deviceVectors)) {
+          try (var indexDatasetView = index.makePaddedDatasetView(deviceVectors)) {
+            index.updateDataset(indexDatasetView);
+            index.serialize(os, gpuSearchParams.getCagraSerializationBufferSize());
+          }
+        } else {
+          try (var indexDataset = index.makePaddedDataset(deviceVectors)) {
+            index.updateDataset(indexDataset);
+            index.serialize(os, gpuSearchParams.getCagraSerializationBufferSize());
+          }
         }
       }
     }
@@ -376,6 +388,9 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
     meta.writeInt(distFuncToOrd(field.getVectorSimilarityFunction()));
     meta.writeInt(field.getVectorDimension());
     meta.writeInt(count);
+    if (formatVersion >= CuVS2510GPUVectorsFormat.VERSION_GRAPH_ONLY_PERSISTENCE) {
+      meta.writeInt(gpuSearchParams.getCagraPersistenceMode().id());
+    }
     meta.writeVLong(cagraIndexOffset);
     meta.writeVLong(cagraIndexLength);
     meta.writeVLong(bruteForceIndexOffset);
@@ -621,7 +636,17 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
         Path tmpFile =
             Files.createTempFile(getCuVSResourcesInstance().tempDirectory(), "mergedindex", "cag");
         try {
-          mergedIndex.serialize(new IndexOutputOutputStream(cuvsIndex), tmpFile);
+          if (gpuSearchParams.getCagraPersistenceMode() == GRAPH_ONLY) {
+            mergedIndex.serializeGraph(
+                new IndexOutputOutputStream(cuvsIndex),
+                tmpFile,
+                gpuSearchParams.getCagraSerializationBufferSize());
+          } else {
+            mergedIndex.serialize(
+                new IndexOutputOutputStream(cuvsIndex),
+                tmpFile,
+                gpuSearchParams.getCagraSerializationBufferSize());
+          }
         } finally {
           // cuVS removes the file once it has read it back, but not when serializing failed.
           Files.deleteIfExists(tmpFile);

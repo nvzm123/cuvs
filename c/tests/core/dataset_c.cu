@@ -20,6 +20,7 @@ namespace {
 
 struct MatrixTensor {
   int64_t shape[2];
+  int64_t strides[2];
   DLManagedTensor tensor{};
 
   MatrixTensor(void* data, int64_t n_rows, int64_t n_cols, DLDeviceType device, uint8_t bits)
@@ -34,6 +35,13 @@ struct MatrixTensor {
     tensor.dl_tensor.dtype.lanes        = 1;
     tensor.dl_tensor.shape              = shape;
     tensor.dl_tensor.strides            = nullptr;
+  }
+
+  void set_row_stride(int64_t row_stride)
+  {
+    strides[0]               = row_stride;
+    strides[1]               = 1;
+    tensor.dl_tensor.strides = strides;
   }
 };
 
@@ -125,6 +133,49 @@ TEST(DatasetC, MakePaddedFromDeviceAlignedFailsUseView)
   ASSERT_NE(view, nullptr);
 
   ASSERT_EQ(cuvsDatasetDestroy(view), CUVS_SUCCESS);
+  ASSERT_EQ(cuvsResourcesDestroy(res), CUVS_SUCCESS);
+}
+
+TEST(DatasetC, MakePaddedViewAcceptsAlignedRowStride)
+{
+  cuvsResources_t res;
+  ASSERT_EQ(cuvsResourcesCreate(&res), CUVS_SUCCESS);
+  cudaStream_t stream;
+  ASSERT_EQ(cuvsStreamGet(res, &stream), CUVS_SUCCESS);
+
+  constexpr int64_t n_rows     = 64;
+  constexpr int64_t n_cols     = 95;
+  constexpr int64_t row_stride = 96;
+  std::vector<float> host(n_rows * row_stride, 3.0f);
+  rmm::device_uvector<float> device(host.size(), stream);
+  raft::copy(device.data(), host.data(), host.size(), stream);
+
+  MatrixTensor matrix(device.data(), n_rows, n_cols, kDLCUDA, 32);
+  matrix.set_row_stride(row_stride);
+  cuvsDataset_t view;
+  ASSERT_EQ(cuvsDatasetMakePaddedView(res, &matrix.tensor, &view), CUVS_SUCCESS)
+    << cuvsGetLastErrorText();
+  ASSERT_NE(view, nullptr);
+
+  ASSERT_EQ(cuvsDatasetDestroy(view), CUVS_SUCCESS);
+  ASSERT_EQ(cuvsResourcesDestroy(res), CUVS_SUCCESS);
+}
+
+TEST(DatasetC, MakePaddedViewRejectsMultipleDtypeLanes)
+{
+  cuvsResources_t res;
+  ASSERT_EQ(cuvsResourcesCreate(&res), CUVS_SUCCESS);
+
+  constexpr int64_t n_rows = 64;
+  constexpr int64_t n_cols = 32;
+  std::vector<float> host(n_rows * n_cols, 3.0f);
+  MatrixTensor matrix(host.data(), n_rows, n_cols, kDLCPU, 32);
+  matrix.tensor.dl_tensor.dtype.lanes = 2;
+
+  cuvsDataset_t view = nullptr;
+  EXPECT_EQ(cuvsDatasetMakePaddedView(res, &matrix.tensor, &view), CUVS_ERROR);
+  EXPECT_EQ(view, nullptr);
+
   ASSERT_EQ(cuvsResourcesDestroy(res), CUVS_SUCCESS);
 }
 

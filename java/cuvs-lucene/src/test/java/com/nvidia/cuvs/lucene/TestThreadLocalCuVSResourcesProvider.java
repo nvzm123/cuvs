@@ -5,11 +5,23 @@
 package com.nvidia.cuvs.lucene;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 
 import org.junit.Test;
 
 /** GPU-free tests for thread-local cuVS resource configuration. */
 public class TestThreadLocalCuVSResourcesProvider {
+
+  @Test
+  public void vectorsFormatRejectsNullReaderResourcesFactory() {
+    NullPointerException failure =
+        assertThrows(
+            NullPointerException.class,
+            () ->
+                new CuVS2510GPUVectorsFormat(
+                    new GPUSearchParams.Builder().build(), FilterBitsetCacheConfig.DEFAULT, null));
+    assertEquals("readerResourcesFactory", failure.getMessage());
+  }
 
   @Test
   public void absentOrZeroValueDisablesPool() {
