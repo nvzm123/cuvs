@@ -5,6 +5,7 @@
 package com.nvidia.cuvs;
 
 import com.nvidia.cuvs.spi.CuVSProvider;
+import java.util.Objects;
 
 /**
  * This represents a wrapper for a dataset to be used for index construction.
@@ -140,7 +141,8 @@ public interface CuVSMatrix extends AutoCloseable {
    *
    * @param size      Number of rows (e.g. vectors in a dataset)
    * @param columns   Number of columns (e.g. dimension of each vector in the dataset)
-   * @param rowStride The stride (in number of elements) for each row. Must be -1 or > than {@code columns}
+   * @param rowStride The stride (in number of elements) for each row. Must be -1 or greater than or
+   *     equal to {@code columns}
    * @param columnStride The stride for each column. Currently, it is not supported (must be -1)
    * @param dataType  The data type of the dataset elements
    * @return a builder for creating a {@link CuVSDeviceMatrix}
@@ -171,7 +173,8 @@ public interface CuVSMatrix extends AutoCloseable {
    * @param resources CuVS resources used to allocate the device memory needed
    * @param size      Number of rows (e.g. vectors in a dataset)
    * @param columns   Number of columns (e.g. dimension of each vector in the dataset)
-   * @param rowStride The stride (in number of elements) for each row. Must be -1 or > than {@code columns}
+   * @param rowStride The stride (in number of elements) for each row. Must be -1 or greater than or
+   *     equal to {@code columns}
    * @param columnStride The stride for each column. Currently, it is not supported (must be -1)
    * @param dataType  The data type of the dataset elements
    * @return a builder for creating a {@link CuVSDeviceMatrix}
@@ -185,6 +188,38 @@ public interface CuVSMatrix extends AutoCloseable {
       DataType dataType) {
     return CuVSProvider.provider()
         .newDeviceMatrixBuilder(resources, size, columns, rowStride, columnStride, dataType);
+  }
+
+  /**
+   * Returns a device-matrix builder whose physical row width satisfies CAGRA's 16-byte alignment
+   * requirement.
+   *
+   * <p>The matrix retains {@code columns} as its logical width. When alignment requires a wider
+   * physical row, the trailing padding bytes are initialized to zero. The resulting matrix can be
+   * passed directly to {@link CagraIndex#makePaddedDatasetView(CuVSMatrix)} without first creating
+   * another dataset-sized padded allocation.
+   *
+   * @param resources CuVS resources used to allocate device memory
+   * @param size number of rows
+   * @param columns logical number of columns in each row
+   * @param dataType element type
+   * @return a builder for a CAGRA-compatible padded device matrix
+   */
+  static Builder<CuVSDeviceMatrix> cagraPaddedDeviceBuilder(
+      CuVSResources resources, long size, long columns, DataType dataType) {
+    Objects.requireNonNull(resources, "resources");
+    Objects.requireNonNull(dataType, "dataType");
+    if (size < 0) {
+      throw new IllegalArgumentException("size must be non-negative");
+    }
+    if (columns <= 0) {
+      throw new IllegalArgumentException("columns must be greater than 0");
+    }
+    long rowBytes = Math.multiplyExact(columns, dataType.bytes());
+    long paddedRowBytes = Math.multiplyExact(Math.floorDiv(Math.addExact(rowBytes, 15L), 16L), 16L);
+    Math.multiplyExact(size, paddedRowBytes);
+    int rowStride = Math.toIntExact(paddedRowBytes / dataType.bytes());
+    return deviceBuilder(resources, size, columns, rowStride, -1, dataType);
   }
 
   /**

@@ -444,7 +444,7 @@ Construct a graph-only index with a zero-row dataset view placeholder.
 explicit index(raft::resources const& res,
 cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded)
 requires(cuvs::neighbors::ann_dataset_view<DatasetViewT, int64_t>)
-: cuvs::neighbors::index(),;
+: index(res, metric, 0);
 ```
 
 **Parameters**
@@ -453,6 +453,32 @@ requires(cuvs::neighbors::ann_dataset_view<DatasetViewT, int64_t>)
 | --- | --- | --- | --- |
 | `res` |  | `raft::resources const&` |  |
 | `metric` |  | [`cuvs::distance::DistanceType`](/api-reference/cpp-api-distance-distance#distance-distancetype) | Default: `cuvs::distance::DistanceType::L2Expanded`. |
+
+**Returns**
+
+`explicit`
+
+**Additional overload:** `neighbors::cagra::index::index`
+
+Construct a graph-only index with its expected dataset dimension.
+
+```cpp
+explicit index(raft::resources const& res,
+cuvs::distance::DistanceType metric,
+uint32_t expected_dim)
+requires(cuvs::neighbors::ann_dataset_view<DatasetViewT, int64_t>)
+: cuvs::neighbors::index(),;
+```
+
+Deserializers and graph-only builders use this overload so dimension metadata remains available before a dataset is attached.
+
+**Parameters**
+
+| Name | Direction | Type | Description |
+| --- | --- | --- | --- |
+| `res` |  | `raft::resources const&` |  |
+| `metric` |  | [`cuvs::distance::DistanceType`](/api-reference/cpp-api-distance-distance#distance-distancetype) |  |
+| `expected_dim` |  | `uint32_t` |  |
 
 **Returns**
 

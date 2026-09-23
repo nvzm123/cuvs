@@ -6,6 +6,8 @@
 package com.nvidia.cuvs.lucene;
 
 import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_CAGRA_GRAPH_BUILD_ALGO;
+import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_CAGRA_PERSISTENCE_MODE;
+import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_CAGRA_SERIALIZATION_BUFFER_SIZE;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_CUVS_DISTANCE_TYPE;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_GRAPH_DEGREE;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_INDEX_TYPE;
@@ -13,6 +15,7 @@ import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_INT_GRAPH_DEGREE;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_NN_DESCENT_NUM_ITERATIONS;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_STRATEGY;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.DEFAULT_WRITER_THREADS;
+import static com.nvidia.cuvs.lucene.GPUSearchParams.MAX_CAGRA_SERIALIZATION_BUFFER_SIZE;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.MAX_GRAPH_DEG;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.MAX_INT_GRAPH_DEG;
 import static com.nvidia.cuvs.lucene.GPUSearchParams.MAX_NN_DESCENT_NUM_ITERATIONS;
@@ -50,6 +53,8 @@ public class TestGPUSearchParams extends LuceneTestCase {
     assertEquals(DEFAULT_STRATEGY, params.getStrategy());
     assertEquals(DEFAULT_CUVS_DISTANCE_TYPE, params.getCuvsDistanceType());
     assertEquals(DEFAULT_NN_DESCENT_NUM_ITERATIONS, params.getnNDescentNumIterations());
+    assertEquals(DEFAULT_CAGRA_PERSISTENCE_MODE, params.getCagraPersistenceMode());
+    assertEquals(DEFAULT_CAGRA_SERIALIZATION_BUFFER_SIZE, params.getCagraSerializationBufferSize());
   }
 
   @Test
@@ -129,6 +134,59 @@ public class TestGPUSearchParams extends LuceneTestCase {
           IllegalArgumentException.class,
           () -> new GPUSearchParams.Builder().withNNDescentNumIterations(v).build());
     }
+  }
+
+  @Test
+  public void testGPUSearchParamsInvalidCagraPersistenceMode() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new GPUSearchParams.Builder().withCagraPersistenceMode(null).build());
+  }
+
+  @Test
+  public void testGPUSearchParamsInvalidCagraSerializationBufferSize() {
+    for (int value :
+        new int[] {MIN_VALUE, -1, 0, MAX_CAGRA_SERIALIZATION_BUFFER_SIZE + 1, MAX_VALUE}) {
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> new GPUSearchParams.Builder().withCagraSerializationBufferSize(value).build());
+    }
+  }
+
+  @Test
+  public void testGPUSearchParamsMaximumCagraSerializationBufferSize() {
+    assertEquals(
+        MAX_CAGRA_SERIALIZATION_BUFFER_SIZE,
+        new GPUSearchParams.Builder()
+            .withCagraSerializationBufferSize(MAX_CAGRA_SERIALIZATION_BUFFER_SIZE)
+            .build()
+            .getCagraSerializationBufferSize());
+  }
+
+  @Test
+  public void testGPUSearchParamsCagraPersistenceSettings() {
+    GPUSearchParams params =
+        new GPUSearchParams.Builder()
+            .withCagraPersistenceMode(GPUSearchParams.CagraPersistenceMode.GRAPH_ONLY)
+            .withCagraSerializationBufferSize(16 * 1024 * 1024)
+            .build();
+
+    assertEquals(GPUSearchParams.CagraPersistenceMode.GRAPH_ONLY, params.getCagraPersistenceMode());
+    assertEquals(16 * 1024 * 1024, params.getCagraSerializationBufferSize());
+  }
+
+  @Test
+  public void testCagraPersistenceModeIdsAreStable() {
+    assertEquals(0, GPUSearchParams.CagraPersistenceMode.GRAPH_AND_DATASET.id());
+    assertEquals(1, GPUSearchParams.CagraPersistenceMode.GRAPH_ONLY.id());
+    assertEquals(
+        GPUSearchParams.CagraPersistenceMode.GRAPH_AND_DATASET,
+        GPUSearchParams.CagraPersistenceMode.fromId(0));
+    assertEquals(
+        GPUSearchParams.CagraPersistenceMode.GRAPH_ONLY,
+        GPUSearchParams.CagraPersistenceMode.fromId(1));
+    assertThrows(
+        IllegalArgumentException.class, () -> GPUSearchParams.CagraPersistenceMode.fromId(2));
   }
 
   @BeforeClass

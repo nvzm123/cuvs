@@ -635,10 +635,15 @@ void deserialize_impl(
     }
 
     if (dataset_owner) {
+      RAFT_EXPECTS(dim == 0 || dataset_owner->dim() == dim,
+                   "cagra::deserialize: serialized dataset dimension %u does not match index "
+                   "dimension %u",
+                   dataset_owner->dim(),
+                   dim);
       *index_ = index_t(
         res, metric, dataset_owner->as_dataset_view(), raft::make_const_mdspan(graph.view()));
     } else {
-      *index_ = index_t(res, metric);
+      *index_ = index_t(res, metric, dim);
       if constexpr (raft::is_device_mdspan_v<decltype(graph.view())>) {
         index_->update_graph(res, std::move(graph));
       } else {

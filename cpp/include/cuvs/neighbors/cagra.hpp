@@ -512,7 +512,9 @@ struct CUVS_EXPORT index : cuvs::neighbors::index {
   /** Dimensionality of the data. */
   [[nodiscard]] constexpr inline auto dim() const noexcept -> uint32_t
   {
-    return dataset_fd_.has_value() ? dim_ : dataset_.dim();
+    if (dataset_fd_.has_value()) { return static_cast<uint32_t>(dim_); }
+    auto const dataset_dim = dataset_.dim();
+    return dataset_dim != 0 ? dataset_dim : static_cast<uint32_t>(dim_);
   }
   /** Graph degree */
   [[nodiscard]] constexpr inline auto graph_degree() const noexcept -> uint32_t
@@ -589,11 +591,26 @@ struct CUVS_EXPORT index : cuvs::neighbors::index {
   explicit index(raft::resources const& res,
                  cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded)
     requires(cuvs::neighbors::ann_dataset_view<DatasetViewT, int64_t>)
+    : index(res, metric, 0)
+  {
+  }
+
+  /**
+   * Construct a graph-only index with its expected dataset dimension.
+   *
+   * Deserializers and graph-only builders use this overload so dimension metadata remains
+   * available before a dataset is attached.
+   */
+  explicit index(raft::resources const& res,
+                 cuvs::distance::DistanceType metric,
+                 uint32_t expected_dim)
+    requires(cuvs::neighbors::ann_dataset_view<DatasetViewT, int64_t>)
     : cuvs::neighbors::index(),
       metric_(metric),
       graph_(raft::make_device_matrix<graph_index_type, int64_t>(res, 0, 0)),
       dataset_{},
-      dataset_norms_(std::nullopt)
+      dataset_norms_(std::nullopt),
+      dim_(expected_dim)
   {
   }
 

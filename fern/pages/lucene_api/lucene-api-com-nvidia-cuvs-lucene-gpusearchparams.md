@@ -12,6 +12,26 @@ public class GPUSearchParams
 
 ## Public Members
 
+### GRAPH_AND_DATASET
+
+```java
+GRAPH_AND_DATASET(0), /** Persist only the graph and reconstruct its dataset from Lucene's flat vectors on open. */ GRAPH_ONLY(1)
+```
+
+Persist both the graph and its dataset, matching the original on-disk format.
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:19`_
+
+### GRAPH_ONLY
+
+```java
+GRAPH_ONLY(1)
+```
+
+Persist only the graph and reconstruct its dataset from Lucene's flat vectors on open.
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:21`_
+
 ### getWriterThreads
 
 ```java
@@ -24,7 +44,7 @@ Get the cuVS writer threads parameter
 
 cuVS writer threads parameter
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:118`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:155`_
 
 ### getIntermediateGraphDegree
 
@@ -38,7 +58,7 @@ Get the intermediate graph degree
 
 the graph degree parameter
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:127`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:164`_
 
 ### getGraphdegree
 
@@ -52,7 +72,7 @@ Get the graph degree
 
 the graph degree parameter
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:136`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:173`_
 
 ### getCagraGraphBuildAlgo
 
@@ -66,7 +86,7 @@ Get the CAGRA build algorithm parameter value
 
 the CAGRA build algorithm parameter value
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:145`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:182`_
 
 ### getIndexType
 
@@ -80,7 +100,7 @@ Get the index type parameter
 
 the index type parameter
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:154`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:191`_
 
 ### getCuVSIvfPqParams
 
@@ -94,7 +114,7 @@ Get the instance of CuVSIvfPqParams
 
 an instance of CuVSIvfPqParams
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:163`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:200`_
 
 ### getStrategy
 
@@ -111,7 +131,7 @@ When CUSTOM is chosen, the build algorithm and its parameters (either defaults o
 
 get the chosen `Strategy`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:176`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:213`_
 
 ### getCuvsDistanceType
 
@@ -125,7 +145,7 @@ Get the cuvs distance type
 
 the distance type
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:185`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:222`_
 
 ### getnNDescentNumIterations
 
@@ -139,7 +159,7 @@ get the number of Iterations to run if building with NN_DESCENT
 
 the number of iterations for NN_DESCENT
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:194`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:231`_
 
 ### getBuildQuality
 
@@ -154,7 +174,27 @@ Strategy#HEURISTIC\} strategy.
 
 the build quality
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:204`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:241`_
+
+### getCagraPersistenceMode
+
+```java
+public CagraPersistenceMode getCagraPersistenceMode()
+```
+
+Returns how CAGRA indexes are persisted.
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:246`_
+
+### getCagraSerializationBufferSize
+
+```java
+public int getCagraSerializationBufferSize()
+```
+
+Returns the copy buffer used while moving native serialized bytes into Lucene outputs.
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:251`_
 
 ### withWriterThreads
 
@@ -176,7 +216,7 @@ Default value - \{@value DEFAULT_WRITER_THREADS\}
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:257`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:310`_
 
 ### withIntermediateGraphDegree
 
@@ -198,7 +238,7 @@ Default value - \{@value DEFAULT_INT_GRAPH_DEGREE\}
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:270`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:323`_
 
 ### withGraphDegree
 
@@ -220,7 +260,7 @@ Default value - \{@value DEFAULT_GRAPH_DEGREE\}
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:283`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:336`_
 
 ### withCagraGraphBuildAlgo
 
@@ -241,7 +281,7 @@ Cannot be null, defaults to NN_DESCENT
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:295`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:348`_
 
 ### withIndexType
 
@@ -262,7 +302,7 @@ Cannot be null, defaults to CAGRA
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:307`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:360`_
 
 ### withCuVSIvfPqParams
 
@@ -282,7 +322,7 @@ Set the instance of `CuVSIvfPqParams`
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:318`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:371`_
 
 ### withStrategy
 
@@ -308,7 +348,7 @@ Default value - HEURISTIC
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:335`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:388`_
 
 ### withCuvsDistanceType
 
@@ -328,7 +368,7 @@ Set the CuvsDistanceType
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:346`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:399`_
 
 ### withNNDescentNumIterations
 
@@ -351,7 +391,7 @@ Default value - \{@value DEFAULT_NN_DESCENT_NUM_ITERATIONS\}
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:360`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:413`_
 
 ### withBuildQuality
 
@@ -378,7 +418,30 @@ Default value - \{@value DEFAULT_BUILD_QUALITY\}
 
 instance of `Builder`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:378`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:431`_
+
+### withCagraPersistenceMode
+
+```java
+public Builder withCagraPersistenceMode(CagraPersistenceMode cagraPersistenceMode)
+```
+
+Sets which parts of a CAGRA index are persisted. Graph-only persistence reconstructs the
+dataset from Lucene's flat vectors when the segment is opened.
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:440`_
+
+### withCagraSerializationBufferSize
+
+```java
+public Builder withCagraSerializationBufferSize(int cagraSerializationBufferSize)
+```
+
+Sets the copy buffer used while moving a native serialized CAGRA file into Lucene's index
+output. The value must be positive and no larger than \{@value
+MAX_CAGRA_SERIALIZATION_BUFFER_SIZE\} bytes.
+
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:450`_
 
 ### build
 
@@ -392,6 +455,6 @@ Creates and returns an instance of `GPUSearchParams`
 
 instance of `GPUSearchParams`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:446`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:528`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUSearchParams.java:15`_

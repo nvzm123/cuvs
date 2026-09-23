@@ -247,6 +247,51 @@ public interface CagraIndex extends AutoCloseable {
   void serialize(OutputStream outputStream, Path tempFile, int bufferLength) throws Throwable;
 
   /**
+   * Persists only the CAGRA graph. The dataset is intentionally omitted and must be supplied with
+   * {@link Builder#fromGraph(InputStream)} and {@link Builder#withDataset(CuVSMatrix)} when the
+   * graph is loaded.
+   *
+   * @param outputStream an instance of {@link OutputStream} to write the graph bytes into
+   */
+  default void serializeGraph(OutputStream outputStream) throws Throwable {
+    serializeGraph(outputStream, 1024);
+  }
+
+  /**
+   * Persists only the CAGRA graph using the requested copy buffer size.
+   *
+   * @param outputStream an instance of {@link OutputStream} to write the graph bytes into
+   * @param bufferLength the positive length of the buffer used to copy graph bytes
+   */
+  default void serializeGraph(OutputStream outputStream, int bufferLength) throws Throwable {
+    throw new UnsupportedOperationException(
+        "Graph-only serialization is not supported by this CagraIndex implementation");
+  }
+
+  /**
+   * Persists only the CAGRA graph using the requested temporary file.
+   *
+   * @param outputStream an instance of {@link OutputStream} to write the graph bytes into
+   * @param tempFile an intermediate {@link Path} where the graph is written temporarily
+   */
+  default void serializeGraph(OutputStream outputStream, Path tempFile) throws Throwable {
+    serializeGraph(outputStream, tempFile, 1024);
+  }
+
+  /**
+   * Persists only the CAGRA graph using the requested temporary file and copy buffer size.
+   *
+   * @param outputStream an instance of {@link OutputStream} to write the graph bytes into
+   * @param tempFile an intermediate {@link Path} where the graph is written temporarily
+   * @param bufferLength the positive length of the buffer used to copy graph bytes
+   */
+  default void serializeGraph(OutputStream outputStream, Path tempFile, int bufferLength)
+      throws Throwable {
+    throw new UnsupportedOperationException(
+        "Graph-only serialization is not supported by this CagraIndex implementation");
+  }
+
+  /**
    * A method to create and persist HNSW index from CAGRA index using an instance
    * of {@link OutputStream} and path to the intermediate temporary file.
    *
@@ -410,6 +455,22 @@ public interface CagraIndex extends AutoCloseable {
      * @return an instance of this Builder
      */
     Builder from(InputStream inputStream, DeserializeDataset outDataset);
+
+    /**
+     * Loads a serialized CAGRA graph without a dataset. A dataset must also be supplied with
+     * {@link #withDataset(CuVSMatrix)}. A successful build transfers ownership of that dataset to
+     * the returned index, uploads it to device memory when necessary, pads it when necessary, and
+     * leaves the index ready to search. When padding requires an owning copy, the source dataset is
+     * released before {@link #build()} returns. A padded device dataset is retained because the index
+     * attaches a non-owning view of its storage.
+     *
+     * @param inputStream an instance of {@link InputStream} containing a serialized CAGRA graph
+     * @return an instance of this Builder
+     */
+    default Builder fromGraph(InputStream inputStream) {
+      throw new UnsupportedOperationException(
+          "Graph-only deserialization is not supported by this CagraIndex.Builder implementation");
+    }
 
     /**
      * Sets a CAGRA graph instance to re-create an index from a

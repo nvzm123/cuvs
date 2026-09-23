@@ -333,7 +333,7 @@ auto build(raft::resources const& res, const index_params& params, DatasetViewT 
                                         static_cast<size_t>(dataset.n_rows()));
     auto cagra_graph = detail::iterative_build_graph<T, IdxT>(res, effective_params, dataset);
 
-    index_type idx(res, effective_params.metric);
+    index_type idx(res, effective_params.metric, static_cast<uint32_t>(dataset.dim()));
     idx.update_graph(res, std::move(cagra_graph));
     if (effective_params.attach_dataset_on_build) {
       idx = cuvs::neighbors::cagra::update_dataset(res, std::move(idx), dataset);
@@ -407,6 +407,9 @@ void search_with_filtering(raft::resources const& res,
                            raft::device_matrix_view<float, int64_t, raft::row_major> distances,
                            CagraSampleFilterT sample_filter = CagraSampleFilterT())
 {
+  RAFT_EXPECTS(idx.dataset().n_rows() > 0,
+               "Cannot search a CAGRA index without an attached dataset. Call "
+               "cagra::update_dataset(res, std::move(index), dataset) first.");
   RAFT_EXPECTS(
     queries.extent(0) == neighbors.extent(0) && queries.extent(0) == distances.extent(0),
     "Number of rows in output neighbors and distances matrices must equal the number of queries.");
@@ -582,6 +585,9 @@ void search(
 
   for (const auto* idx : indices) {
     RAFT_EXPECTS(idx != nullptr, "Index partitions must not be null.");
+    RAFT_EXPECTS(idx->dataset().n_rows() > 0,
+                 "Cannot search a CAGRA index partition without an attached dataset. Call "
+                 "cagra::update_dataset(res, std::move(index), dataset) first.");
     RAFT_EXPECTS(queries.extent(1) == idx->dim(),
                  "Number of query dimensions should equal number of dimensions in the index.");
   }

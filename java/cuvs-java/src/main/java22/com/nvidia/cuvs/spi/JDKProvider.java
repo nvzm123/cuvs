@@ -703,6 +703,23 @@ final class JDKProvider implements CuVSProvider {
       return matrix;
     }
 
+    protected final void initializeRowPadding(MemorySegment stream) {
+      if (size == 0 || rowSize == rowBytes) {
+        return;
+      }
+
+      checkCudaError(
+          cudaMemset2DAsync(
+              matrix.memorySegment().asSlice(rowBytes),
+              rowSize,
+              0,
+              rowSize - rowBytes,
+              size,
+              stream),
+          "cudaMemset2DAsync");
+      checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
+    }
+
     protected final void ensureOpen() {
       if (closed) {
         throw new IllegalStateException("matrix builder is closed");
@@ -811,6 +828,7 @@ final class JDKProvider implements CuVSProvider {
         var hostBuffer = CuVSResourcesImpl.getHostBuffer(access);
         flushBuffer(hostBuffer);
       }
+      initializeRowPadding(stream);
       return transferOwnership();
     }
   }
@@ -866,6 +884,8 @@ final class JDKProvider implements CuVSProvider {
 
     @Override
     public CuVSDeviceMatrix build() {
+      ensureOpen();
+      initializeRowPadding(stream);
       return transferOwnership();
     }
   }

@@ -9,9 +9,11 @@ import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.CUVS_INDEX_EXT;
 import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.CUVS_META_CODEC_EXT;
 import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.CUVS_META_CODEC_NAME;
 import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.VERSION_CURRENT;
+import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.VERSION_GRAPH_ONLY_PERSISTENCE;
 import static com.nvidia.cuvs.lucene.CuVS2510GPUVectorsFormat.VERSION_START;
-import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.closeCuVSResourcesInstance;
+import static com.nvidia.cuvs.lucene.GPUSearchParams.CagraPersistenceMode.GRAPH_AND_DATASET;
 import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.getCuVSResourcesInstance;
+import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 
 import com.nvidia.cuvs.BruteForceIndex;
 import com.nvidia.cuvs.BruteForceQuery;
@@ -19,7 +21,10 @@ import com.nvidia.cuvs.CagraIndex;
 import com.nvidia.cuvs.CagraQuery;
 import com.nvidia.cuvs.CagraSearchParams;
 import com.nvidia.cuvs.CuVSMatrix;
+import com.nvidia.cuvs.CuVSResources;
+import java.io.Closeable;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Iterator;
 import java.util.List;
@@ -36,6 +41,7 @@ import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.IndexFileNames;
+import org.apache.lucene.index.KnnVectorValues;
 import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
@@ -66,7 +72,11 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
   private final IntObjectHashMap<FieldEntry> fields;
   private final IntObjectHashMap<GPUIndex> cuvsIndices;
   private final IndexInput cuvsIndexInput;
+  private final CuVSResources indexResources;
   private final FilterBitsetCache filterBitsetCache;
+  private final boolean mergeContext;
+  private final boolean flatVectorsAlreadySequential;
+  private boolean closed;
 
   static {
     try {
@@ -87,7 +97,22 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
    */
   public CuVS2510GPUVectorsReader(SegmentReadState state, FlatVectorsReader flatReader)
       throws IOException {
-    this(state, flatReader, new FilterBitsetCache(FilterBitsetCacheConfig.DEFAULT));
+    this(
+        state,
+        flatReader,
+        new FilterBitsetCache(FilterBitsetCacheConfig.DEFAULT),
+        ThreadLocalCuVSResourcesProvider::createRequiredIndependentCuVSResourcesInstance);
+  }
+
+  /** Initializes the reader with the cache owned by its vectors format. */
+  CuVS2510GPUVectorsReader(
+      SegmentReadState state, FlatVectorsReader flatReader, FilterBitsetCache filterBitsetCache)
+      throws IOException {
+    this(
+        state,
+        flatReader,
+        filterBitsetCache,
+        ThreadLocalCuVSResourcesProvider::createRequiredIndependentCuVSResourcesInstance);
   }
 
   /**
@@ -99,51 +124,77 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
    * @throws IOException I/O exception
    */
   CuVS2510GPUVectorsReader(
-      SegmentReadState state, FlatVectorsReader flatReader, FilterBitsetCache filterBitsetCache)
+      SegmentReadState state,
+      FlatVectorsReader flatReader,
+      FilterBitsetCache filterBitsetCache,
+      CuVSReaderResourcesFactory readerResourcesFactory)
       throws IOException {
     this.flatVectorsReader = flatReader;
     this.filterBitsetCache = filterBitsetCache;
     this.fieldInfos = state.fieldInfos;
+    this.mergeContext = state.context.context().equals(Context.MERGE);
+    this.flatVectorsAlreadySequential =
+        state.context.context().equals(Context.MERGE)
+            || state.context.context().equals(Context.FLUSH);
     this.fields = new IntObjectHashMap<>();
-    String metaFileName =
-        IndexFileNames.segmentFileName(
-            state.segmentInfo.name, state.segmentSuffix, CUVS_META_CODEC_EXT);
     boolean success = false;
     int versionMeta = -1;
-    try (ChecksumIndexInput meta = state.directory.openChecksumInput(metaFileName)) {
-      Throwable priorException = null;
-      try {
-        versionMeta =
-            CodecUtil.checkIndexHeader(
-                meta,
-                CUVS_META_CODEC_NAME,
-                VERSION_START,
-                VERSION_CURRENT,
-                state.segmentInfo.getId(),
-                state.segmentSuffix);
-        readFields(meta);
-      } catch (Throwable exception) {
-        priorException = exception;
-      } finally {
-        CodecUtil.checkFooter(meta, priorException);
+    try {
+      this.indexResources = mergeContext ? null : createIndexResources(readerResourcesFactory);
+      String metaFileName =
+          IndexFileNames.segmentFileName(
+              state.segmentInfo.name, state.segmentSuffix, CUVS_META_CODEC_EXT);
+      try (ChecksumIndexInput meta = state.directory.openChecksumInput(metaFileName)) {
+        Throwable priorException = null;
+        try {
+          versionMeta =
+              CodecUtil.checkIndexHeader(
+                  meta,
+                  CUVS_META_CODEC_NAME,
+                  VERSION_START,
+                  VERSION_CURRENT,
+                  state.segmentInfo.getId(),
+                  state.segmentSuffix);
+          readFields(meta, versionMeta);
+        } catch (Throwable exception) {
+          priorException = exception;
+        } finally {
+          CodecUtil.checkFooter(meta, priorException);
+        }
+        var ioContext = state.context.withReadAdvice(ReadAdvice.SEQUENTIAL);
+        cuvsIndexInput = openCuVSInput(state, versionMeta, ioContext);
+        /*
+         * Only load indexes on the GPU when this reader is opening for searches.
+         * Do not load indexes on the GPU when this reader is opening during merge calls.
+         * With this approach we reduce device memory usage by approximately 50% during merges.
+         */
+        if (mergeContext) {
+          cuvsIndices = null;
+        } else {
+          cuvsIndices = loadCuVSIndices();
+        }
+        success = true;
       }
-      var ioContext = state.context.withReadAdvice(ReadAdvice.SEQUENTIAL);
-      cuvsIndexInput = openCuVSInput(state, versionMeta, ioContext);
-      /*
-       * Only load indexes on the GPU when this reader is opening for searches.
-       * Do not load indexes on the GPU when this reader is opening during merge calls.
-       * With this approach we reduce device memory usage by approximately 50% during merges.
-       */
-      if (state.context.context().equals(Context.MERGE)) {
-        cuvsIndices = null;
-      } else {
-        cuvsIndices = loadCuVSIndices();
-      }
-      success = true;
     } finally {
       if (success == false) {
         IOUtils.closeWhileHandlingException(this);
       }
+    }
+  }
+
+  private static CuVSResources createIndexResources(
+      CuVSReaderResourcesFactory readerResourcesFactory) throws IOException {
+    if (readerResourcesFactory == null) {
+      throw new NullPointerException("readerResourcesFactory");
+    }
+    try {
+      CuVSResources resources = readerResourcesFactory.create();
+      if (resources == null) {
+        throw new IllegalStateException("readerResourcesFactory returned null");
+      }
+      return resources;
+    } catch (Throwable t) {
+      throw Utils.handleThrowable(t);
     }
   }
 
@@ -207,13 +258,13 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
    * @param meta instance of the ChecksumIndexInput
    * @throws IOException
    */
-  private void readFields(ChecksumIndexInput meta) throws IOException {
+  private void readFields(ChecksumIndexInput meta, int version) throws IOException {
     for (int fieldNumber = meta.readInt(); fieldNumber != -1; fieldNumber = meta.readInt()) {
       FieldInfo info = fieldInfos.fieldInfo(fieldNumber);
       if (info == null) {
         throw new CorruptIndexException("Invalid field number: " + fieldNumber, meta);
       }
-      FieldEntry fieldEntry = readField(meta, info);
+      FieldEntry fieldEntry = readField(meta, info, version);
       validateFieldEntry(info, fieldEntry);
       fields.put(info.number, fieldEntry);
     }
@@ -257,7 +308,7 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
    * @return the field entry
    * @throws IOException
    */
-  private FieldEntry readField(IndexInput input, FieldInfo info) throws IOException {
+  private FieldEntry readField(IndexInput input, FieldInfo info, int version) throws IOException {
     VectorEncoding vectorEncoding = readVectorEncoding(input);
     VectorSimilarityFunction similarityFunction = readSimilarityFunction(input);
     if (similarityFunction != info.getVectorSimilarityFunction()) {
@@ -269,7 +320,7 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
               + " != "
               + info.getVectorSimilarityFunction());
     }
-    return FieldEntry.readEntry(input, vectorEncoding, info.getVectorSimilarityFunction());
+    return FieldEntry.readEntry(input, vectorEncoding, info.getVectorSimilarityFunction(), version);
   }
 
   /**
@@ -332,7 +383,11 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
             cuvsIndexInput.slice(
                 "cagra index", fieldEntry.cagraIndexOffset(), fieldEntry.cagraIndexLength());
         var in = new IndexInputInputStream(slice)) {
-      return CagraIndex.newBuilder(getCuVSResourcesInstance()).from(in).build();
+      CuVSResources mergeResources = getCuVSResourcesInstance();
+      if (mergeResources == null) {
+        throw new UnsupportedOperationException("cuVS is not supported");
+      }
+      return loadCagraIndex(field, fieldEntry, in, mergeResources);
     } catch (Throwable t) {
       Utils.handleThrowable(t);
       throw new AssertionError("unreachable");
@@ -347,13 +402,28 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
    */
   private IntObjectHashMap<GPUIndex> loadCuVSIndices() throws IOException {
     var indices = new IntObjectHashMap<GPUIndex>();
-    for (var field : fields) {
-      var fieldEntry = field.value;
-      int fieldNumber = field.key;
-      var cuvsIndex = loadCuVSIndex(fieldEntry);
-      indices.put(fieldNumber, cuvsIndex);
+    try {
+      for (var field : fields) {
+        var fieldEntry = field.value;
+        int fieldNumber = field.key;
+        FieldInfo fieldInfo = fieldInfos.fieldInfo(fieldNumber);
+        if (fieldInfo == null) {
+          throw new CorruptIndexException("Invalid field number: " + fieldNumber, cuvsIndexInput);
+        }
+        var cuvsIndex = loadCuVSIndex(fieldInfo.name, fieldEntry);
+        indices.put(fieldNumber, cuvsIndex);
+      }
+      return indices;
+    } catch (Throwable t) {
+      for (var index : indices) {
+        try {
+          index.value.close();
+        } catch (Throwable closeFailure) {
+          t.addSuppressed(closeFailure);
+        }
+      }
+      throw Utils.handleThrowable(t);
     }
-    return indices;
   }
 
   /**
@@ -363,7 +433,7 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
    * @return return the instance of {@link GPUIndex}
    * @throws IOException
    */
-  private GPUIndex loadCuVSIndex(FieldEntry fieldEntry) throws IOException {
+  private GPUIndex loadCuVSIndex(String field, FieldEntry fieldEntry) throws IOException {
     CagraIndex cagraIndex = null;
     BruteForceIndex bruteForceIndex = null;
     try {
@@ -372,7 +442,7 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
         long off = fieldEntry.cagraIndexOffset();
         try (var slice = cuvsIndexInput.slice("cagra index", off, len);
             var in = new IndexInputInputStream(slice)) {
-          cagraIndex = CagraIndex.newBuilder(getCuVSResourcesInstance()).from(in).build();
+          cagraIndex = loadCagraIndex(field, fieldEntry, in, indexResources);
         }
       }
       len = fieldEntry.bruteForceIndexLength();
@@ -380,27 +450,206 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
         long off = fieldEntry.bruteForceIndexOffset();
         try (var slice = cuvsIndexInput.slice("bf index", off, len);
             var in = new IndexInputInputStream(slice)) {
-          bruteForceIndex = BruteForceIndex.newBuilder(getCuVSResourcesInstance()).from(in).build();
+          bruteForceIndex = BruteForceIndex.newBuilder(indexResources).from(in).build();
         }
       }
     } catch (Throwable t) {
-      Utils.handleThrowable(t);
+      closeAndSuppress(t, bruteForceIndex);
+      closeAndSuppress(t, cagraIndex);
+      throw Utils.handleThrowable(t);
     }
     return new GPUIndex(cagraIndex, bruteForceIndex);
+  }
+
+  static void closeAndSuppress(Throwable failure, AutoCloseable closeable) {
+    if (closeable == null) {
+      return;
+    }
+    try {
+      closeable.close();
+    } catch (Throwable closeFailure) {
+      failure.addSuppressed(closeFailure);
+    }
+  }
+
+  /** Loads either the original graph-and-dataset format or a graph hydrated from flat vectors. */
+  private CagraIndex loadCagraIndex(
+      String field,
+      FieldEntry fieldEntry,
+      IndexInputInputStream inputStream,
+      CuVSResources resources)
+      throws Throwable {
+    if (fieldEntry.cagraPersistenceMode() == GRAPH_AND_DATASET) {
+      return CagraIndex.newBuilder(resources).from(inputStream).build();
+    }
+
+    CuVSMatrix dataset =
+        withSequentialFlatVectors(
+            flatVectorsReader,
+            flatVectorsAlreadySequential,
+            hydrationReader -> replayFlatVectors(field, fieldEntry, hydrationReader, resources),
+            CuVSMatrix::close);
+    try {
+      return CagraIndex.newBuilder(resources).fromGraph(inputStream).withDataset(dataset).build();
+    } catch (Throwable t) {
+      closeAndSuppress(t, dataset);
+      throw t;
+    }
+  }
+
+  /** Replays the flat-vector ordinals exactly, because CAGRA row ids are vector ordinals. */
+  private CuVSMatrix replayFlatVectors(
+      String field,
+      FieldEntry fieldEntry,
+      FlatVectorsReader hydrationReader,
+      CuVSResources resources)
+      throws IOException {
+    FloatVectorValues values = hydrationReader.getFloatVectorValues(field);
+    if (values == null) {
+      throw new CorruptIndexException(
+          "Missing flat vectors for CAGRA field \"" + field + "\"", cuvsIndexInput);
+    }
+    if (values.dimension() != fieldEntry.dims()) {
+      throw new CorruptIndexException(
+          "Flat-vector dimension mismatch for field \""
+              + field
+              + "\": expected "
+              + fieldEntry.dims()
+              + " but got "
+              + values.dimension(),
+          cuvsIndexInput);
+    }
+    if (values.size() != fieldEntry.count()) {
+      throw new CorruptIndexException(
+          "Flat-vector count mismatch for field \""
+              + field
+              + "\": expected "
+              + fieldEntry.count()
+              + " but got "
+              + values.size(),
+          cuvsIndexInput);
+    }
+
+    try (CuVSMatrix.Builder<?> builder =
+        CuVSMatrix.cagraPaddedDeviceBuilder(
+            resources, fieldEntry.count(), fieldEntry.dims(), CuVSMatrix.DataType.FLOAT)) {
+      KnnVectorValues.DocIndexIterator iterator = values.iterator();
+      int expectedOrdinal = 0;
+      for (int doc = iterator.nextDoc(); doc != NO_MORE_DOCS; doc = iterator.nextDoc()) {
+        int ordinal = iterator.index();
+        if (ordinal != expectedOrdinal) {
+          throw new CorruptIndexException(
+              "Non-contiguous flat-vector ordinal for field \""
+                  + field
+                  + "\": expected "
+                  + expectedOrdinal
+                  + " but got "
+                  + ordinal,
+              cuvsIndexInput);
+        }
+        float[] vector = values.vectorValue(ordinal);
+        if (vector.length != fieldEntry.dims()) {
+          throw new CorruptIndexException(
+              "Flat-vector row dimension mismatch for field \""
+                  + field
+                  + "\" at ordinal "
+                  + ordinal
+                  + ": expected "
+                  + fieldEntry.dims()
+                  + " but got "
+                  + vector.length,
+              cuvsIndexInput);
+        }
+        builder.addVector(vector);
+        expectedOrdinal++;
+      }
+      if (expectedOrdinal != fieldEntry.count()) {
+        throw new CorruptIndexException(
+            "Flat-vector replay count mismatch for field \""
+                + field
+                + "\": expected "
+                + fieldEntry.count()
+                + " but replayed "
+                + expectedOrdinal,
+            cuvsIndexInput);
+      }
+      return builder.build();
+    }
+  }
+
+  @FunctionalInterface
+  interface FlatReaderOperation<T> {
+    T apply(FlatVectorsReader reader) throws Throwable;
+  }
+
+  @FunctionalInterface
+  interface ResultCleanup<T> {
+    void close(T result) throws Throwable;
+  }
+
+  /** Runs synchronous flat-vector replay under Lucene's sequential-reader lifecycle. */
+  static <T> T withSequentialFlatVectors(
+      FlatVectorsReader reader,
+      boolean readerAlreadySequential,
+      FlatReaderOperation<T> operation,
+      ResultCleanup<? super T> resultCleanup)
+      throws IOException {
+    if (readerAlreadySequential) {
+      // MERGE/FLUSH IOContexts are required to use SEQUENTIAL advice. Lucene's flat reader keeps
+      // that advice when its constructor asks for RANDOM, so finishMerge() here would incorrectly
+      // reset a reader that remains owned by the surrounding operation.
+      try {
+        return operation.apply(reader);
+      } catch (Throwable t) {
+        throw Utils.handleThrowable(t);
+      }
+    }
+
+    FlatVectorsReader sequentialReader = reader.getMergeInstance();
+    T result;
+    try {
+      result = operation.apply(sequentialReader);
+    } catch (Throwable operationFailure) {
+      try {
+        sequentialReader.finishMerge();
+      } catch (Throwable finishFailure) {
+        operationFailure.addSuppressed(finishFailure);
+      }
+      throw Utils.handleThrowable(operationFailure);
+    }
+
+    try {
+      sequentialReader.finishMerge();
+    } catch (Throwable finishFailure) {
+      try {
+        resultCleanup.close(result);
+      } catch (Throwable cleanupFailure) {
+        finishFailure.addSuppressed(cleanupFailure);
+      }
+      throw Utils.handleThrowable(finishFailure);
+    }
+    return result;
   }
 
   /**
    * Closes the resources.
    */
   @Override
-  public void close() throws IOException {
-    var closeableStream = Stream.of(flatVectorsReader, cuvsIndexInput);
-    IOUtils.close(closeableStream::iterator);
-    if (cuvsIndices != null) {
-      var indexClosableStream = stream(cuvsIndices.values().iterator()).map(cursor -> cursor.value);
-      IOUtils.close(indexClosableStream::iterator);
+  public synchronized void close() throws IOException {
+    if (closed) {
+      return;
     }
-    closeCuVSResourcesInstance();
+    closed = true;
+    List<Closeable> closeables = new ArrayList<>();
+    closeables.add(flatVectorsReader);
+    closeables.add(cuvsIndexInput);
+    if (cuvsIndices != null) {
+      stream(cuvsIndices.values().iterator()).map(cursor -> cursor.value).forEach(closeables::add);
+    }
+    if (indexResources != null) {
+      closeables.add(indexResources::close);
+    }
+    IOUtils.close(closeables);
   }
 
   static <T> Stream<T> stream(Iterator<T> iterator) {
@@ -522,31 +771,22 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
         }
         CagraIndex cagraIndex = cuvsIndex.getCagraIndex();
         assert cagraIndex != null;
-        CagraQuery query = null;
-
-        CuVSMatrix.Builder<?> builder =
-            CuVSMatrix.deviceBuilder(
-                getCuVSResourcesInstance(), 1, target.length, CuVSMatrix.DataType.FLOAT);
-        builder.addVector(target);
-        CuVSMatrix queryVector = builder.build();
-
-        if (acceptDocs != null) {
-          query =
-              new CagraQuery.Builder(getCuVSResourcesInstance())
-                  .withTopK(topK)
-                  .withSearchParams(searchParams)
-                  .withQueryVectors(queryVector)
-                  .withPrefilter(mask[0], maskLength)
-                  .build();
-        } else {
-          query =
-              new CagraQuery.Builder(getCuVSResourcesInstance())
-                  .withTopK(topK)
-                  .withSearchParams(searchParams)
-                  .withQueryVectors(queryVector)
-                  .build();
+        CuVSResources queryResources = getCuVSResourcesInstance();
+        try (CuVSMatrix.Builder<?> builder =
+            CuVSMatrix.deviceBuilder(queryResources, 1, target.length, CuVSMatrix.DataType.FLOAT)) {
+          builder.addVector(target);
+          try (CuVSMatrix queryVector = builder.build()) {
+            CagraQuery.Builder queryBuilder =
+                new CagraQuery.Builder(queryResources)
+                    .withTopK(topK)
+                    .withSearchParams(searchParams)
+                    .withQueryVectors(queryVector);
+            if (acceptDocs != null) {
+              queryBuilder.withPrefilter(mask[0], maskLength);
+            }
+            searchResult = cagraIndex.search(queryBuilder.build()).getResults();
+          }
         }
-        searchResult = cagraIndex.search(query).getResults();
       } else {
         BruteForceIndex bruteforceIndex = cuvsIndex.getBruteforceIndex();
         assert bruteforceIndex != null;
@@ -624,7 +864,8 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
       long cagraIndexOffset,
       long cagraIndexLength,
       long bruteForceIndexOffset,
-      long bruteForceIndexLength) {
+      long bruteForceIndexLength,
+      GPUSearchParams.CagraPersistenceMode cagraPersistenceMode) {
 
     /**
      * Returns an instance of FieldEntry.
@@ -638,10 +879,21 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
     static FieldEntry readEntry(
         IndexInput input,
         VectorEncoding vectorEncoding,
-        VectorSimilarityFunction similarityFunction)
+        VectorSimilarityFunction similarityFunction,
+        int version)
         throws IOException {
       var dims = input.readInt();
       var count = input.readInt();
+      GPUSearchParams.CagraPersistenceMode persistenceMode = GRAPH_AND_DATASET;
+      if (version >= VERSION_GRAPH_ONLY_PERSISTENCE) {
+        int persistenceModeId = input.readInt();
+        try {
+          persistenceMode = GPUSearchParams.CagraPersistenceMode.fromId(persistenceModeId);
+        } catch (IllegalArgumentException e) {
+          throw new CorruptIndexException(
+              "Invalid CAGRA persistence mode: " + persistenceModeId, input);
+        }
+      }
       var cagraIndexOffset = input.readVLong();
       var cagraIndexLength = input.readVLong();
       var bruteForceIndexOffset = input.readVLong();
@@ -654,7 +906,8 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
           cagraIndexOffset,
           cagraIndexLength,
           bruteForceIndexOffset,
-          bruteForceIndexLength);
+          bruteForceIndexLength,
+          persistenceMode);
     }
   }
 

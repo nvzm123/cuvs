@@ -14,6 +14,33 @@ import java.util.function.Supplier;
 
 public class GPUSearchParams {
 
+  /** Controls which parts of a CAGRA index are persisted in the cuVS index file. */
+  public enum CagraPersistenceMode {
+    /** Persist both the graph and its dataset, matching the original on-disk format. */
+    GRAPH_AND_DATASET(0),
+    /** Persist only the graph and reconstruct its dataset from Lucene's flat vectors on open. */
+    GRAPH_ONLY(1);
+
+    private final int id;
+
+    CagraPersistenceMode(int id) {
+      this.id = id;
+    }
+
+    int id() {
+      return id;
+    }
+
+    static CagraPersistenceMode fromId(int id) {
+      for (CagraPersistenceMode mode : values()) {
+        if (mode.id == id) {
+          return mode;
+        }
+      }
+      throw new IllegalArgumentException("Unknown CAGRA persistence mode id: " + id);
+    }
+  }
+
   public static enum Strategy {
     /*
      * This strategy lets cuVS auto-select the CAGRA build algorithm (and its parameters) for the
@@ -53,6 +80,10 @@ public class GPUSearchParams {
   public static final Strategy DEFAULT_STRATEGY = Strategy.HEURISTIC;
   public static final CuvsDistanceType DEFAULT_CUVS_DISTANCE_TYPE = CuvsDistanceType.L2Expanded;
   public static final int DEFAULT_NN_DESCENT_NUM_ITERATIONS = 20;
+  public static final CagraPersistenceMode DEFAULT_CAGRA_PERSISTENCE_MODE =
+      CagraPersistenceMode.GRAPH_AND_DATASET;
+  public static final int DEFAULT_CAGRA_SERIALIZATION_BUFFER_SIZE = 1024;
+  public static final int MAX_CAGRA_SERIALIZATION_BUFFER_SIZE = 32 * 1024 * 1024;
 
   /** cuVS' own default for the build-quality heuristic input. */
   public static final int DEFAULT_BUILD_QUALITY = 7;
@@ -72,6 +103,8 @@ public class GPUSearchParams {
   private final CuvsDistanceType cuvsDistanceType;
   private final int nnDescentNumIterations;
   private final int buildQuality;
+  private final CagraPersistenceMode cagraPersistenceMode;
+  private final int cagraSerializationBufferSize;
 
   /**
    * Constructs an instance of {@link GPUSearchParams} with specific parameter values.
@@ -97,7 +130,9 @@ public class GPUSearchParams {
       Strategy strategy,
       CuvsDistanceType cuvsDistanceType,
       int nnDescentNumIterations,
-      int buildQuality) {
+      int buildQuality,
+      CagraPersistenceMode cagraPersistenceMode,
+      int cagraSerializationBufferSize) {
     super();
     this.writerThreads = writerThreads;
     this.intermediateGraphDegree = intermediateGraphDegree;
@@ -109,6 +144,8 @@ public class GPUSearchParams {
     this.cuvsDistanceType = cuvsDistanceType;
     this.nnDescentNumIterations = nnDescentNumIterations;
     this.buildQuality = buildQuality;
+    this.cagraPersistenceMode = cagraPersistenceMode;
+    this.cagraSerializationBufferSize = cagraSerializationBufferSize;
   }
 
   /**
@@ -206,6 +243,16 @@ public class GPUSearchParams {
     return buildQuality;
   }
 
+  /** Returns how CAGRA indexes are persisted. */
+  public CagraPersistenceMode getCagraPersistenceMode() {
+    return cagraPersistenceMode;
+  }
+
+  /** Returns the copy buffer used while moving native serialized bytes into Lucene outputs. */
+  public int getCagraSerializationBufferSize() {
+    return cagraSerializationBufferSize;
+  }
+
   @Override
   public String toString() {
     return "GPUSearchParams [writerThreads="
@@ -228,6 +275,10 @@ public class GPUSearchParams {
         + nnDescentNumIterations
         + ", buildQuality="
         + buildQuality
+        + ", cagraPersistenceMode="
+        + cagraPersistenceMode
+        + ", cagraSerializationBufferSize="
+        + cagraSerializationBufferSize
         + "]";
   }
 
@@ -246,6 +297,8 @@ public class GPUSearchParams {
     private CuvsDistanceType cuvsDistanceType = DEFAULT_CUVS_DISTANCE_TYPE;
     private int nnDescentNumIterations = DEFAULT_NN_DESCENT_NUM_ITERATIONS;
     private int buildQuality = DEFAULT_BUILD_QUALITY;
+    private CagraPersistenceMode cagraPersistenceMode = DEFAULT_CAGRA_PERSISTENCE_MODE;
+    private int cagraSerializationBufferSize = DEFAULT_CAGRA_SERIALIZATION_BUFFER_SIZE;
 
     /**
      * Set the number of cuVS writer threads while building the index
@@ -382,6 +435,25 @@ public class GPUSearchParams {
     }
 
     /**
+     * Sets which parts of a CAGRA index are persisted. Graph-only persistence reconstructs the
+     * dataset from Lucene's flat vectors when the segment is opened.
+     */
+    public Builder withCagraPersistenceMode(CagraPersistenceMode cagraPersistenceMode) {
+      this.cagraPersistenceMode = cagraPersistenceMode;
+      return this;
+    }
+
+    /**
+     * Sets the copy buffer used while moving a native serialized CAGRA file into Lucene's index
+     * output. The value must be positive and no larger than {@value
+     * MAX_CAGRA_SERIALIZATION_BUFFER_SIZE} bytes.
+     */
+    public Builder withCagraSerializationBufferSize(int cagraSerializationBufferSize) {
+      this.cagraSerializationBufferSize = cagraSerializationBufferSize;
+      return this;
+    }
+
+    /**
      * Validates the input parameters.
      *
      * @throws IllegalArgumentException
@@ -437,6 +509,16 @@ public class GPUSearchParams {
         throw new IllegalArgumentException(
             "buildQuality must not be less than " + MIN_BUILD_QUALITY + ".");
       }
+      if (Objects.isNull(cagraPersistenceMode)) {
+        throw new IllegalArgumentException("cagraPersistenceMode cannot be null.");
+      }
+      if (cagraSerializationBufferSize <= 0
+          || cagraSerializationBufferSize > MAX_CAGRA_SERIALIZATION_BUFFER_SIZE) {
+        throw new IllegalArgumentException(
+            "cagraSerializationBufferSize must be in the range [1, "
+                + MAX_CAGRA_SERIALIZATION_BUFFER_SIZE
+                + "].");
+      }
     }
 
     /**
@@ -459,7 +541,9 @@ public class GPUSearchParams {
           strategy,
           cuvsDistanceType,
           nnDescentNumIterations,
-          buildQuality);
+          buildQuality,
+          cagraPersistenceMode,
+          cagraSerializationBufferSize);
     }
   }
 }

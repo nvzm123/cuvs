@@ -625,6 +625,56 @@ static void make_host_padded_dataset(raft::resources* res_ptr,
 }
 
 template <typename T>
+struct dlpack_row_strided_matrix {
+  T const* data;
+  int64_t rows;
+  int64_t columns;
+  int64_t row_stride;
+};
+
+template <typename T>
+static auto parse_row_strided_matrix(DLManagedTensor* dataset_tensor)
+{
+  auto const& dataset = dataset_tensor->dl_tensor;
+  RAFT_EXPECTS(dataset.dtype.lanes == 1, "More than 1 DLTensor lanes not supported");
+  RAFT_EXPECTS(dataset.ndim == 2, "Expected a two-dimensional matrix");
+  RAFT_EXPECTS(dataset.shape != nullptr, "Expected matrix shape metadata");
+  RAFT_EXPECTS(dataset.shape[0] >= 0 && dataset.shape[1] >= 0,
+               "Matrix dimensions must be non-negative");
+  RAFT_EXPECTS(dataset.data != nullptr || dataset.shape[0] == 0,
+               "Expected matrix data for a non-empty matrix");
+  RAFT_EXPECTS(dataset.byte_offset % alignof(T) == 0,
+               "Matrix byte offset must preserve element alignment");
+
+  auto const row_stride = dataset.strides == nullptr ? dataset.shape[1] : dataset.strides[0];
+  if (dataset.strides != nullptr) {
+    RAFT_EXPECTS(dataset.strides[1] == 1, "Expected unit stride in the trailing dimension");
+  }
+  RAFT_EXPECTS(row_stride >= dataset.shape[1],
+               "Row stride must be at least the logical column count");
+
+  auto* bytes = static_cast<std::uint8_t*>(dataset.data);
+  auto* data = bytes == nullptr ? nullptr : reinterpret_cast<T const*>(bytes + dataset.byte_offset);
+  return dlpack_row_strided_matrix<T>{data, dataset.shape[0], dataset.shape[1], row_stride};
+}
+
+template <typename T>
+static auto make_device_row_strided_view(DLManagedTensor* dataset_tensor)
+{
+  auto const matrix = parse_row_strided_matrix<T>(dataset_tensor);
+  return raft::make_device_strided_matrix_view<T const, int64_t, raft::layout_c_contiguous>(
+    matrix.data, matrix.rows, matrix.columns, matrix.row_stride);
+}
+
+template <typename T>
+static auto make_host_row_strided_view(DLManagedTensor* dataset_tensor)
+{
+  auto const matrix = parse_row_strided_matrix<T>(dataset_tensor);
+  return raft::make_host_strided_matrix_view<T const, int64_t, raft::layout_c_contiguous>(
+    matrix.data, matrix.rows, matrix.columns, matrix.row_stride);
+}
+
+template <typename T>
 static void make_device_padded_dataset_view(raft::resources* res_ptr,
                                             DLManagedTensor* dataset_tensor,
                                             cuvsDataset_t* output_padded_dataset)
@@ -635,8 +685,7 @@ static void make_device_padded_dataset_view(raft::resources* res_ptr,
     delete out;
     RAFT_FAIL("cuvsDatasetMakePaddedView: dataset must have device-compatible memory");
   }
-  using mdspan_type = raft::device_matrix_view<T const, int64_t, raft::row_major>;
-  auto mds          = cuvs::core::from_dlpack<mdspan_type>(dataset_tensor);
+  auto mds               = make_device_row_strided_view<T>(dataset_tensor);
   auto ds_view      = cuvs::neighbors::make_device_padded_dataset_view(*res_ptr, mds);
   auto* owned_view = new decltype(ds_view){ds_view};
   out->addr        = reinterpret_cast<uintptr_t>(owned_view);
@@ -659,8 +708,7 @@ static void make_host_padded_dataset_view(raft::resources*,
     delete out;
     RAFT_FAIL("cuvsDatasetMakePaddedView: dataset must have host-compatible memory");
   }
-  using mdspan_type = raft::host_matrix_view<T const, int64_t, raft::row_major>;
-  auto mds          = cuvs::core::from_dlpack<mdspan_type>(dataset_tensor);
+  auto mds               = make_host_row_strided_view<T>(dataset_tensor);
   auto ds_view      = cuvs::neighbors::make_host_padded_dataset_view(mds);
   auto* owned_view = new decltype(ds_view){ds_view};
   out->addr        = reinterpret_cast<uintptr_t>(owned_view);

@@ -722,6 +722,102 @@ public class CuVSMatrixIT extends CuVSTestCase {
   }
 
   @Test
+  public void testCagraPaddedDeviceBuilderValidatesShapeBeforeAllocation() throws Throwable {
+    assertThrows(
+        NullPointerException.class,
+        () -> CuVSMatrix.cagraPaddedDeviceBuilder(null, 1, 1, CuVSMatrix.DataType.FLOAT));
+
+    try (var resources = CheckedCuVSResources.create()) {
+      assertThrows(
+          NullPointerException.class,
+          () -> CuVSMatrix.cagraPaddedDeviceBuilder(resources, 1, 1, null));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> CuVSMatrix.cagraPaddedDeviceBuilder(resources, -1, 1, CuVSMatrix.DataType.FLOAT));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> CuVSMatrix.cagraPaddedDeviceBuilder(resources, 1, 0, CuVSMatrix.DataType.FLOAT));
+      assertThrows(
+          ArithmeticException.class,
+          () ->
+              CuVSMatrix.cagraPaddedDeviceBuilder(
+                  resources, Long.MAX_VALUE, 1, CuVSMatrix.DataType.FLOAT));
+      assertThrows(
+          ArithmeticException.class,
+          () ->
+              CuVSMatrix.cagraPaddedDeviceBuilder(
+                  resources, 1, Long.MAX_VALUE, CuVSMatrix.DataType.FLOAT));
+    }
+  }
+
+  @Test
+  public void testCagraPaddedDeviceBuilderUsesZeroedAlignedRows() throws Throwable {
+    try (var resources = CheckedCuVSResources.create()) {
+      assertCagraPaddedRows(resources, 95, 96);
+      assertCagraPaddedRows(resources, 96, 96);
+      assertCagraPaddedRows(resources, 97, 100);
+    }
+  }
+
+  private static void assertCagraPaddedRows(
+      CuVSResources resources, int columns, int expectedRowStride)
+      throws ReflectiveOperationException {
+    float[][] expected = {new float[columns], new float[columns], new float[columns]};
+    for (int row = 0; row < expected.length; row++) {
+      for (int column = 0; column < columns; column++) {
+        expected[row][column] = 1.0f + row * columns + column;
+      }
+    }
+
+    try (var builder =
+        CuVSMatrix.cagraPaddedDeviceBuilder(
+            resources, expected.length, columns, CuVSMatrix.DataType.FLOAT)) {
+      for (float[] row : expected) {
+        builder.addVector(row);
+      }
+
+      try (var matrix = builder.build();
+          var arena = Arena.ofConfined()) {
+        Class<?> internalMatrixClass = Class.forName("com.nvidia.cuvs.internal.CuVSMatrixInternal");
+        assertEquals(
+            (long) expectedRowStride, internalMatrixClass.getMethod("rowStride").invoke(matrix));
+        assertEquals(true, CagraIndex.isPaddedDataset(matrix));
+
+        long physicalElements = (long) expected.length * expectedRowStride;
+        var physicalRows = arena.allocate(physicalElements * Float.BYTES);
+        copyDeviceMemory(matrix, physicalRows, internalMatrixClass);
+
+        for (int row = 0; row < expected.length; row++) {
+          long rowOffset = (long) row * expectedRowStride;
+          for (int column = 0; column < columns; column++) {
+            assertEquals(
+                expected[row][column],
+                physicalRows.getAtIndex(ValueLayout.JAVA_FLOAT, rowOffset + column),
+                DELTA);
+          }
+          for (int column = columns; column < expectedRowStride; column++) {
+            assertEquals(
+                0.0f, physicalRows.getAtIndex(ValueLayout.JAVA_FLOAT, rowOffset + column), DELTA);
+          }
+        }
+      }
+    }
+  }
+
+  private static void copyDeviceMemory(
+      CuVSDeviceMatrix matrix, MemorySegment destination, Class<?> internalMatrixClass)
+      throws ReflectiveOperationException {
+    var source = (MemorySegment) internalMatrixClass.getMethod("memorySegment").invoke(matrix);
+    Class<?> copyKindClass = Class.forName("com.nvidia.cuvs.internal.common.Util$CudaMemcpyKind");
+    Object deviceToHost = copyKindClass.getField("DEVICE_TO_HOST").get(null);
+    Class<?> utilClass = Class.forName("com.nvidia.cuvs.internal.common.Util");
+    utilClass
+        .getMethod(
+            "cudaMemcpy", MemorySegment.class, MemorySegment.class, long.class, copyKindClass)
+        .invoke(null, destination, source, destination.byteSize(), deviceToHost);
+  }
+
+  @Test
   public void testHostMatrixFromNativeDataset() {
     int size = randomIntBetween(1, 32 * 1024);
     int columns = randomIntBetween(16, 2048);

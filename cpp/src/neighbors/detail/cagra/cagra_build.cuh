@@ -1782,7 +1782,8 @@ auto build_ace(raft::resources const& res, const index_params& params, DatasetVi
     }
 
     auto index_creation_start = std::chrono::high_resolution_clock::now();
-    cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT> idx(res, params.metric);
+    cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT> idx(
+      res, params.metric, static_cast<uint32_t>(dataset.dim()));
     if (!use_disk_mode) {
       if (params.attach_dataset_on_build) {
         idx = cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT>(
@@ -2850,7 +2851,8 @@ auto build_from_host_matrix(raft::resources const& res,
     return cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT>(
       res, params.metric, dataset, raft::make_const_mdspan(cagra_graph.view()));
   }
-  cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT> out(res, params.metric);
+  cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT> out(
+    res, params.metric, static_cast<uint32_t>(dataset.dim()));
   out.update_graph(res, raft::make_const_mdspan(cagra_graph.view()));
   return out;
 }
@@ -2882,7 +2884,8 @@ auto build_from_device_matrix(raft::resources const& res,
     res, params, dataset_extents, intermediate_degree);
   validate_cagra_knn_graph_build_constraints<T>(params, knn_build_params);
 
-  cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT> idx(res, params.metric);
+  cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT> idx(
+    res, params.metric, static_cast<uint32_t>(device_dataset.dim()));
   if (std::holds_alternative<cagra::graph_build_params::iterative_search_params>(
         knn_build_params)) {
     auto cagra_graph = iterative_build_graph<T, IdxT>(res, params, device_dataset);
@@ -2987,7 +2990,8 @@ auto build_from_bbq_dataset(raft::resources const& res,
     return cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT>(
       res, params.metric, dataset, raft::make_const_mdspan(cagra_graph.view()));
   }
-  cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT> idx(res, params.metric);
+  cuvs::neighbors::cagra::index<T, IdxT, DatasetViewT> idx(
+    res, params.metric, static_cast<uint32_t>(dataset.dim()));
   idx.update_graph(res, raft::make_const_mdspan(cagra_graph.view()));
   return idx;
 }
