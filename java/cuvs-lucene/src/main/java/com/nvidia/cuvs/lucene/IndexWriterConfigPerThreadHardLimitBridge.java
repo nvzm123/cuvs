@@ -46,7 +46,7 @@ public final class IndexWriterConfigPerThreadHardLimitBridge
     return response;
   }
 
-  private static void setAndVerify(LiveIndexWriterConfig config, int requestedLimit) {
+  static void setAndVerify(LiveIndexWriterConfig config, int requestedLimit) {
     Field limitField;
     try {
       limitField = LiveIndexWriterConfig.class.getDeclaredField(PER_THREAD_HARD_LIMIT_MB_FIELD);

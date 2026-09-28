@@ -86,6 +86,9 @@ class Dataset:
             if training_vectors is not None
             else np.empty((0, 0))
         )
+        self._training_vectors_materialized = bool(
+            training_vectors is not None and training_vectors.size
+        )
         self._query_vectors = (
             query_vectors if query_vectors is not None else np.empty((0, 0))
         )
@@ -110,6 +113,7 @@ class Dataset:
             self._training_vectors = load_vectors(
                 self.base_file, self.metadata.get("subset_size")
             )
+            self._training_vectors_materialized = True
         return self._training_vectors
 
     @training_vectors.setter
@@ -118,6 +122,19 @@ class Dataset:
         self._training_vectors = (
             value if value is not None else np.empty((0, 0))
         )
+        self._training_vectors_materialized = bool(
+            value is not None and value.size
+        )
+
+    @property
+    def training_vectors_materialized(self) -> bool:
+        """Whether training vectors have already been supplied or loaded.
+
+        Inspecting this property never triggers lazy loading. Backends that
+        can consume ``base_file`` directly can use it to distinguish an
+        unloaded file-backed dataset from an explicitly supplied array.
+        """
+        return self._training_vectors_materialized
 
     @property
     def query_vectors(self) -> np.ndarray:

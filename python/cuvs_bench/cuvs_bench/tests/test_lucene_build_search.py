@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -36,9 +37,11 @@ from cuvs_bench.backends.lucene import (
     ACCELERATED_HNSW_ALGORITHM,
     CAGRA_ALGORITHM,
     CPU_HNSW_ALGORITHM,
+    JAVA_FBIN_INGEST_ROUTE,
     MAX_CAGRA_DIMENSIONS,
     MAX_CPU_HNSW_DIMENSIONS,
     LuceneBackend,
+    PYTHON_INGEST_ROUTE,
     _file_backed_dataset_identity,
     _runtime_build_timing_metadata,
     _runtime_search_timing_metadata,
@@ -133,6 +136,9 @@ def test_accelerated_build_propagates_and_persists_requested_parameters(
     assert result.success, result.error_message
     assert result.build_params == expected
     assert runtime.build_calls[0][3] == expected
+    assert runtime.fbin_build_calls == []
+    assert result.metadata["ingest_route"] == PYTHON_INGEST_ROUTE
+    assert result.metadata["training_vectors_materialized"] is True
     assert result.metadata["graph_degree"] == 32
     assert result.metadata["intermediate_graph_degree"] == 48
     assert result.metadata["requested_premerge_segment_count"] == 4
@@ -144,7 +150,7 @@ def test_accelerated_build_propagates_and_persists_requested_parameters(
             encoding="utf-8"
         )
     )
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["build_parameters"] == expected
 
 
@@ -246,7 +252,7 @@ def test_accelerated_build_propagates_partitioned_indexing_parameters(
             encoding="utf-8"
         )
     )
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["build_parameters"] == expected
     assert manifest["runtime_build_topology"] == {
         "requested_premerge_segment_count": None,
@@ -284,6 +290,144 @@ def test_accelerated_build_propagates_partitioned_indexing_parameters(
             "[1,1,1,1]"
         )
     assert len(runtime.build_calls) == 1
+
+
+def test_file_backed_partitioned_build_uses_java_fbin_bridge_without_loading(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "num_indexing_threads": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 61440,
+        }
+    )
+    vectors = np.arange(16, dtype=np.float32).reshape(8, 2)
+    source = tmp_path / "base.fbin"
+    _write_fbin(source, vectors)
+    dataset = Dataset(
+        name="file-backed-subset",
+        training_vectors=np.empty((0, 0)),
+        query_vectors=vectors[:2].copy(),
+        distance_metric="euclidean",
+        base_file=str(source),
+        metadata={"subset_size": 4},
+    )
+
+    result = backend.build(dataset, [index])
+
+    assert result.success, result.error_message
+    assert dataset.training_vectors_materialized is False
+    assert dataset._training_vectors.size == 0
+    assert runtime.build_calls == []
+    [request] = runtime.fbin_build_calls
+    staged_path = request["index_path"]
+    assert staged_path.parent == Path(index.file).parent
+    assert staged_path.name.startswith(f".{Path(index.file).name}.build-")
+    assert not staged_path.exists()
+    request_without_path = {
+        name: value for name, value in request.items() if name != "index_path"
+    }
+    assert request_without_path == {
+        "source_path": source.resolve(),
+        "expected_source_size": source.stat().st_size,
+        "expected_file_vector_count": 8,
+        "expected_dimensions": 2,
+        "expected_header_bytes": 8,
+        "vector_count": 4,
+        "codec_name": index.build_param["codec"],
+        "build_parameters": dict(index.build_param),
+    }
+    assert result.metadata["ingest_route"] == JAVA_FBIN_INGEST_ROUTE
+    assert result.metadata["training_vectors_materialized"] is False
+    assert result.metadata["runtime_fbin_read_seconds"] == pytest.approx(
+        0.0001
+    )
+    assert result.metadata["source_file_vector_count"] == 8
+    assert result.metadata["source_header_bytes"] == 8
+    assert result.metadata["indexed_payload_bytes"] == vectors[:4].nbytes
+    expected_digest = hashlib.sha256(vectors[:4].tobytes()).hexdigest()
+    assert result.metadata["vector_payload_sha256"] == expected_digest
+    manifest = json.loads(
+        (Path(index.file) / ".cuvs-bench-lucene.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["ingest_route"] == JAVA_FBIN_INGEST_ROUTE
+    assert manifest["training_vectors_materialized"] is False
+    assert manifest["dataset"]["sha256"] == expected_digest
+    assert manifest["dataset"]["vector_count"] == 4
+    assert manifest["dataset"]["subset_size"] == 4
+
+    reused = backend.build(dataset, [index])
+
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"] is True
+    assert reused.metadata["ingest_route"] == JAVA_FBIN_INGEST_ROUTE
+    assert reused.metadata["training_vectors_materialized"] is False
+    assert dataset.training_vectors_materialized is False
+    assert len(runtime.fbin_build_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "topology",
+    (
+        pytest.param(
+            {
+                "num_indexing_threads": 4,
+                "force_merge_segment_count": 1,
+            },
+            id="force-merge",
+        ),
+        pytest.param(
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": 0,
+            },
+            id="legacy-premerge",
+        ),
+    ),
+)
+def test_file_backed_builds_outside_bridge_contract_use_python_ingest(
+    tmp_path: Path, topology: dict[str, int]
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            **topology,
+            "ram_per_thread_hard_limit_mb": 61440,
+        }
+    )
+    vectors = np.arange(8, dtype=np.float32).reshape(4, 2)
+    source = tmp_path / "base.fbin"
+    _write_fbin(source, vectors)
+    dataset = Dataset(
+        name="file-backed-fallback",
+        training_vectors=np.empty((0, 0)),
+        query_vectors=vectors[:2].copy(),
+        distance_metric="euclidean",
+        base_file=str(source),
+    )
+
+    result = backend.build(dataset, [index])
+
+    assert result.success, result.error_message
+    assert dataset.training_vectors_materialized is True
+    assert len(runtime.build_calls) == 1
+    assert runtime.fbin_build_calls == []
+    assert result.metadata["ingest_route"] == PYTHON_INGEST_ROUTE
+    assert result.metadata["training_vectors_materialized"] is True
 
 
 @pytest.mark.parametrize(

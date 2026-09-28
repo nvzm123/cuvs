@@ -356,6 +356,63 @@ def test_reusing_a_file_backed_index_does_not_materialize_training_vectors(
     assert len(runtime.build_calls) == 1
 
 
+def test_java_fbin_build_rejects_source_mutation_before_atomic_install(
+    tmp_path: Path,
+) -> None:
+    class MutatingRuntime(RecordingRuntime):
+        mutate_source = False
+
+        def build_index_from_fbin(self, index_path, source_path, **kwargs):
+            result = super().build_index_from_fbin(
+                index_path, source_path, **kwargs
+            )
+            if self.mutate_source:
+                source_path.write_bytes(source_path.read_bytes() + b"changed")
+            return result
+
+    runtime = MutatingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "num_indexing_threads": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 61_440,
+        }
+    )
+    vectors = np.arange(8, dtype=np.float32).reshape(4, 2)
+    source = tmp_path / "base.fbin"
+    _write_fbin(source, vectors)
+    dataset = Dataset(
+        name="tiny-l2",
+        training_vectors=np.empty((0, 0)),
+        query_vectors=vectors[:2].copy(),
+        distance_metric="euclidean",
+        base_file=str(source),
+    )
+    first = backend.build(dataset, [index])
+    assert first.success, first.error_message
+    sentinel = Path(index.file) / "keep-existing-index"
+    sentinel.write_text("preserve", encoding="utf-8")
+    runtime.mutate_source = True
+
+    result = backend.build(dataset, [index], force=True)
+
+    assert not result.success
+    assert result.error_message == (
+        "RuntimeError: training vector file changed while the Java FBIN "
+        "bridge was building the index"
+    )
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+    assert dataset.training_vectors_materialized is False
+    assert len(runtime.fbin_build_calls) == 2
+    index_path = Path(index.file)
+    assert list(index_path.parent.glob(f".{index_path.name}.build-*")) == []
+
+
 def test_search_rejects_changed_vectors_with_the_same_dataset_name(
     tmp_path: Path,
 ) -> None:
@@ -639,7 +696,7 @@ def test_search_requests_rebuild_for_the_previous_manifest_schema(
     assert backend.build(dataset, [index]).success
     manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["schema_version"] = 2
+    manifest["schema_version"] = 3
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     result = backend.search(dataset, [index], k=2)[0]
@@ -691,6 +748,36 @@ def test_search_rejects_invalid_manifest_integer_fields(
 
     assert not result.success
     assert message in result.error_message
+    assert runtime.search_calls == []
+
+
+@pytest.mark.parametrize(
+    ("ingest_route", "materialized"),
+    (
+        ("python_pylucene_document_at_a_time", False),
+        ("java_fbin_index_writer_bridge", False),
+        ("unrecognized", True),
+    ),
+)
+def test_search_rejects_impossible_manifest_ingestion_evidence(
+    tmp_path: Path, ingest_route: str, materialized: bool
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["ingest_route"] = ingest_route
+    manifest["training_vectors_materialized"] = materialized
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    [result] = backend.search(dataset, [index], k=2)
+
+    assert not result.success
+    assert "invalid ingestion evidence" in result.error_message
     assert runtime.search_calls == []
 
 
@@ -753,6 +840,8 @@ def test_reusing_the_same_index_reports_a_skipped_build(
         "codec": CPU_HNSW_CODEC,
         "group": "test",
         "index_name": CPU_HNSW_ALGORITHM,
+        "ingest_route": "python_pylucene_document_at_a_time",
+        "training_vectors_materialized": True,
         "persisted_index_kind": "cpu_hnsw",
         "build_route_policy": "cpu_hnsw",
         "segment_count": 1,

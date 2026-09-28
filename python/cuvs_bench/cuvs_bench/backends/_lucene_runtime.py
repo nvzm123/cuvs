@@ -30,6 +30,7 @@ CONFIGURED_ACCELERATED_HNSW_CODEC = (
 RAM_PER_THREAD_HARD_LIMIT_BRIDGE = (
     "com.nvidia.cuvs.lucene.IndexWriterConfigPerThreadHardLimitBridge"
 )
+FBIN_INDEXING_BRIDGE = "com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge"
 _WRITER_CONFIG_REQUEST_KEY = "config"
 _PER_THREAD_HARD_LIMIT_REQUEST_KEY = "per_thread_hard_limit_mb"
 HNSW_MAX_CONN_PROPERTY = "com.nvidia.cuvs.lucene.hnsw.maxConn"
@@ -286,6 +287,7 @@ def _validate_artifacts(
     lucene_required = {
         "com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.class",
         "com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.class",
+        "com/nvidia/cuvs/lucene/CuvsBenchFbinIndexingBridge.class",
         "com/nvidia/cuvs/lucene/IndexSearcherTimingBridge.class",
         "com/nvidia/cuvs/lucene/IndexWriterConfigPerThreadHardLimitBridge.class",
         "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.class",
@@ -962,6 +964,7 @@ class RuntimeBuildTiming:
     post_build_reader_ns: int
     directory_close_ns: int
     runtime_build_wall_ns: int
+    fbin_read_ns: int | None = None
 
 
 @dataclass(frozen=True)
@@ -969,6 +972,23 @@ class RuntimeBuildResult:
     segment_count: int
     timing: RuntimeBuildTiming
     topology: "RuntimeBuildTopology | None" = None
+
+
+@dataclass(frozen=True)
+class RuntimeFbinBuildResult:
+    """Validated facts returned by the Java FBIN indexing bridge."""
+
+    segment_count: int
+    timing: RuntimeBuildTiming
+    topology: "RuntimeBuildTopology"
+    codec_name: str
+    source_file_size: int
+    source_file_vector_count: int
+    dimensions: int
+    header_bytes: int
+    vector_count: int
+    indexed_payload_bytes: int
+    vector_payload_sha256: str
 
 
 @dataclass(frozen=True)
@@ -1262,6 +1282,7 @@ class LuceneRuntime:
         self._artifact_tokens: dict[str, tuple[int, ...]] = {}
         self._java_search_timer: Any | None = None
         self._java_writer_config_hard_limit: Any | None = None
+        self._java_fbin_indexer: Any | None = None
 
     @classmethod
     def create(cls, config: Mapping[str, Any]) -> "LuceneRuntime":
@@ -1300,6 +1321,18 @@ class LuceneRuntime:
             raise RuntimeError(
                 f"Could not load or adapt {RAM_PER_THREAD_HARD_LIMIT_BRIDGE} "
                 "through PyLucene/JCC: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _load_java_fbin_indexer(self) -> Any:
+        """Load the FBIN indexing bridge through JCC's wrapped Function."""
+        try:
+            instance = self.Class.forName(FBIN_INDEXING_BRIDGE).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not load or adapt {FBIN_INDEXING_BRIDGE} through "
+                "PyLucene/JCC: "
                 f"{type(error).__name__}: {error}"
             ) from error
 
@@ -1608,6 +1641,259 @@ class LuceneRuntime:
             _rollback_writer(writer, error)
             raise
         return setup_ns, merge_commit_close_ns
+
+    def build_index_from_fbin(
+        self,
+        index_path: Path,
+        source_path: Path,
+        *,
+        expected_source_size: int,
+        expected_file_vector_count: int,
+        expected_dimensions: int,
+        expected_header_bytes: int,
+        vector_count: int,
+        codec_name: str,
+        build_parameters: Mapping[str, Any],
+    ) -> RuntimeFbinBuildResult:
+        """Build an eligible controlled index with one Python-to-Java call."""
+        self.attach_current_thread()
+        topology = _controlled_build_topology(build_parameters, vector_count)
+        if (
+            codec_name != ACCELERATED_HNSW_CODEC
+            or topology is None
+            or topology.num_indexing_threads is None
+            or topology.force_merge_segment_count != 0
+        ):
+            raise RuntimeError(
+                "The Java FBIN bridge requires accelerated HNSW, "
+                "num_indexing_threads, and force_merge_segment_count=0"
+            )
+        codec = self._resolve_build_codec(codec_name, build_parameters)
+        bridge = self._java_fbin_indexer
+        if bridge is None:
+            bridge = self._load_java_fbin_indexer()
+            self._java_fbin_indexer = bridge
+
+        request = self.HashMap()
+        request.put("source_path", str(source_path))
+        request.put("index_path", str(index_path))
+        request.put("codec", codec)
+        request.put("expected_codec_name", codec_name)
+        request.put(
+            "expected_source_size", self.Long.valueOf(expected_source_size)
+        )
+        request.put(
+            "expected_file_vector_count",
+            self.Long.valueOf(expected_file_vector_count),
+        )
+        request.put(
+            "expected_dimensions", self.Integer.valueOf(expected_dimensions)
+        )
+        request.put(
+            "expected_header_bytes",
+            self.Integer.valueOf(expected_header_bytes),
+        )
+        request.put("vector_count", self.Long.valueOf(vector_count))
+        request.put(
+            "num_indexing_threads",
+            self.Integer.valueOf(topology.num_indexing_threads),
+        )
+        request.put(
+            "force_merge_segment_count",
+            self.Integer.valueOf(topology.force_merge_segment_count),
+        )
+        request.put(
+            "ram_per_thread_hard_limit_mb",
+            self.Integer.valueOf(topology.ram_per_thread_hard_limit_mb),
+        )
+        try:
+            response = self.Map.cast_(bridge.apply(request))
+        except Exception as error:
+            raise RuntimeError(
+                "Java FBIN indexing bridge failed: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+        def required(name: str) -> Any:
+            if not response.containsKey(name):
+                raise RuntimeError(
+                    f"Java FBIN indexing bridge omitted response field {name}"
+                )
+            return response.get(name)
+
+        def integer(name: str) -> int:
+            try:
+                return int(self.Integer.cast_(required(name)).intValue())
+            except RuntimeError:
+                raise
+            except Exception as error:
+                raise RuntimeError(
+                    "Java FBIN indexing bridge returned invalid integer "
+                    f"field {name}: {type(error).__name__}: {error}"
+                ) from error
+
+        def long_integer(name: str) -> int:
+            try:
+                return int(self.Long.cast_(required(name)).longValue())
+            except RuntimeError:
+                raise
+            except Exception as error:
+                raise RuntimeError(
+                    "Java FBIN indexing bridge returned invalid long field "
+                    f"{name}: {type(error).__name__}: {error}"
+                ) from error
+
+        def string(name: str) -> str:
+            value = required(name)
+            if value is None:
+                raise RuntimeError(
+                    "Java FBIN indexing bridge returned null string field "
+                    f"{name}"
+                )
+            return str(value)
+
+        returned_codec = string("codec_name")
+        source_size = long_integer("source_file_size")
+        file_vector_count = long_integer("source_file_vector_count")
+        dimensions = integer("dimensions")
+        header_bytes = integer("header_bytes")
+        returned_vector_count = long_integer("vector_count")
+        indexed_payload_bytes = long_integer("indexed_payload_bytes")
+        digest = string("vector_payload_sha256")
+        returned_partitions = integer("num_indexing_threads")
+        returned_force_merge = integer("force_merge_segment_count")
+        actual_threads = integer("actual_indexing_thread_count")
+        max_concurrent_threads = integer("max_concurrent_indexing_threads")
+        execution_mode = string("indexing_execution_mode")
+        segment_count = integer("segment_count")
+        max_buffered_docs = integer("max_buffered_docs")
+        applied_hard_limit = integer("applied_ram_per_thread_hard_limit_mb")
+        ingest_merge_policy = string("ingest_merge_policy")
+
+        expected_scalars = {
+            "codec_name": (returned_codec, codec_name),
+            "source_file_size": (source_size, expected_source_size),
+            "source_file_vector_count": (
+                file_vector_count,
+                expected_file_vector_count,
+            ),
+            "dimensions": (dimensions, expected_dimensions),
+            "header_bytes": (header_bytes, expected_header_bytes),
+            "vector_count": (returned_vector_count, vector_count),
+            "indexed_payload_bytes": (
+                indexed_payload_bytes,
+                vector_count
+                * expected_dimensions
+                * np.dtype(np.float32).itemsize,
+            ),
+            "num_indexing_threads": (
+                returned_partitions,
+                topology.num_indexing_threads,
+            ),
+            "force_merge_segment_count": (returned_force_merge, 0),
+            "actual_indexing_thread_count": (actual_threads, 1),
+            "max_concurrent_indexing_threads": (max_concurrent_threads, 1),
+            "indexing_execution_mode": (
+                execution_mode,
+                "partitioned_sequential",
+            ),
+            "segment_count": (segment_count, topology.num_indexing_threads),
+            "max_buffered_docs": (
+                max_buffered_docs,
+                topology.max_buffered_docs,
+            ),
+            "applied_ram_per_thread_hard_limit_mb": (
+                applied_hard_limit,
+                topology.ram_per_thread_hard_limit_mb,
+            ),
+            "ingest_merge_policy": (ingest_merge_policy, "NoMergePolicy"),
+        }
+        for name, (actual, expected) in expected_scalars.items():
+            if actual != expected:
+                raise RuntimeError(
+                    "Java FBIN indexing bridge response mismatch for "
+                    f"{name}: expected {expected!r}, got {actual!r}"
+                )
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise RuntimeError(
+                "Java FBIN indexing bridge returned an invalid SHA-256 digest"
+            )
+
+        partition_counts = tuple(
+            long_integer(f"premerge_segment_vector_count_{partition}")
+            for partition in range(topology.num_indexing_threads)
+        )
+        expected_partition_counts = (topology.chunk_size,) * int(
+            topology.num_indexing_threads
+        )
+        if partition_counts != expected_partition_counts:
+            raise RuntimeError(
+                "Java FBIN indexing bridge returned unexpected partition "
+                f"vector counts: expected {expected_partition_counts}, got "
+                f"{partition_counts}"
+            )
+
+        timing_names = (
+            "directory_open_ns",
+            "writer_setup_ns",
+            "document_ingest_ns",
+            "fbin_read_ns",
+            "writer_commit_close_ns",
+            "post_build_reader_ns",
+            "directory_close_ns",
+            "runtime_build_wall_ns",
+        )
+        timings = {name: long_integer(name) for name in timing_names}
+        if any(value < 0 for value in timings.values()):
+            raise RuntimeError(
+                "Java FBIN indexing bridge returned a negative timing"
+            )
+        if timings["fbin_read_ns"] > timings["document_ingest_ns"]:
+            raise RuntimeError(
+                "Java FBIN indexing bridge returned FBIN read time greater "
+                "than document ingestion time"
+            )
+
+        runtime_timing = RuntimeBuildTiming(
+            directory_open_ns=timings["directory_open_ns"],
+            writer_setup_ns=timings["writer_setup_ns"],
+            document_ingest_ns=timings["document_ingest_ns"],
+            writer_commit_close_ns=timings["writer_commit_close_ns"],
+            post_build_reader_ns=timings["post_build_reader_ns"],
+            directory_close_ns=timings["directory_close_ns"],
+            runtime_build_wall_ns=timings["runtime_build_wall_ns"],
+            fbin_read_ns=timings["fbin_read_ns"],
+        )
+        runtime_topology = RuntimeBuildTopology(
+            requested_premerge_segment_count=None,
+            requested_num_indexing_threads=topology.num_indexing_threads,
+            actual_indexing_thread_count=actual_threads,
+            max_concurrent_indexing_threads=max_concurrent_threads,
+            indexing_execution_mode=execution_mode,
+            indexing_worker_document_counts=(vector_count,),
+            observed_premerge_segment_count=segment_count,
+            requested_force_merge_segment_count=returned_force_merge,
+            premerge_segment_vector_counts=partition_counts,
+            max_buffered_docs=max_buffered_docs,
+            applied_ram_per_thread_hard_limit_mb=applied_hard_limit,
+            ingest_merge_policy=ingest_merge_policy,
+            final_merge_policy=None,
+        )
+        return RuntimeFbinBuildResult(
+            segment_count=segment_count,
+            timing=runtime_timing,
+            topology=runtime_topology,
+            codec_name=returned_codec,
+            source_file_size=source_size,
+            source_file_vector_count=file_vector_count,
+            dimensions=dimensions,
+            header_bytes=header_bytes,
+            vector_count=returned_vector_count,
+            indexed_payload_bytes=indexed_payload_bytes,
+            vector_payload_sha256=digest,
+        )
 
     def build_index(
         self,

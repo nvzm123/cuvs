@@ -139,13 +139,59 @@ algorithms support an explicit `num_candidates` value greater than or equal to
 
 ### Large-build memory and ingestion
 
-The initial build path materializes the complete training-vector file as a
-NumPy array. It then indexes one document at a time through PyLucene: every row
-is converted to a Python list and Java `float[]`, a Lucene `Document` is
-created, and `IndexWriter.addDocument` crosses the JCC boundary. This path is
-not a streaming, bulk-FBIN, or out-of-core ingestion path.
+The backend has a prototype Java FBIN ingestion route for controlled
+accelerated-HNSW builds. It is selected only when all of these conditions hold:
 
-Size the Python process and JVM heap for the dataset and codec being tested.
+- the dataset is backed by an unloaded, finite `float32` `.fbin` file;
+- the algorithm is `lucene_accelerated_hnsw` with the controlled
+  `num_indexing_threads` topology; and
+- `force_merge_segment_count` is `0`.
+
+An explicit in-memory training array, another Lucene algorithm, or
+`force_merge_segment_count: 1` retains the existing PyLucene ingestion route.
+Once a file-backed build selects the Java bridge, a failed safety check fails
+the build rather than silently changing ingestion routes.
+
+The bridge reads the FBIN payload inside the JVM and calls ordinary
+`IndexWriter.addDocument` for each row. It therefore avoids materializing the
+complete training matrix in Python and avoids one JCC call per document. It is
+not the bulk or externally mapped FBIN path from another benchmark harness,
+and it is not an out-of-core index-construction guarantee. In particular, the
+selected codec can still retain a partition's vectors and graph-building state
+until Lucene flushes that partition.
+
+A selected bridge build records
+`ingest_route=java_fbin_index_writer_bridge` and
+`training_vectors_materialized=false`. These fields attest the ingestion route
+and Python materialization state only; they are not GPU-route attestations.
+
+The historical `num_indexing_threads` name does not introduce concurrent
+indexing on this route. A value of `1` streams one partition. A value of `4`
+streams four equal contiguous partitions in sequential passes and retains four
+segments because force merge is disabled. In both cases the runtime topology
+must report one actual indexing thread and at most one concurrent indexing
+thread.
+
+Python validates the source identity before and after the Java call. The Java
+bridge independently validates the legacy 8-byte or extended 16-byte FBIN
+header, the exact file size, and the row and dimension values supplied by
+Python. It also requires a positive selected row count divisible by the
+partition count, rejects non-finite vector values, starts from an empty real
+staging directory, applies `NoMergePolicy`, stores document IDs as numeric doc
+values, and checks document and segment counts after every partition. An error
+rolls back the writer and leaves the destination index untouched.
+
+Selecting this ingestion route does not prove that accelerated HNSW used its
+GPU writer. `Lucene101AcceleratedHNSWCodec` still permits its documented CPU
+HNSW fallback. Result metadata describes the route policy, not an observed
+GPU execution decision; validation that requires native CAGRA must separately
+record the absence of the fallback warning together with native-library and
+GPU-activity evidence.
+
+Size the JVM heap and GPU memory for the dataset, partition size, and codec
+being tested. The legacy route also requires enough host memory for the Python
+training array.
+
 Additional JVM arguments can be supplied through the Lucene backend
 configuration, for example:
 
@@ -274,13 +320,22 @@ post-build reader check. They exclude dataset loading, index verification,
 manifest publication, installation, and size measurement; use
 `backend_build_total_seconds` for that complete backend lifecycle.
 
-In particular, `runtime_document_ingest_seconds` includes NumPy-to-Python and
+The meaning of `runtime_document_ingest_seconds` depends on the recorded
+ingestion route. On the legacy route it includes NumPy-to-Python and
 Python-to-Java conversion, Java object creation, JCC dispatch, and Lucene work
-performed by `addDocument`. It is not a measurement of cuvs-lucene or GPU graph
-construction alone. `runtime_writer_commit_close_seconds` includes work that
-the selected codec defers until flush, commit, or close. Absolute build times
-from this document-at-a-time path are therefore not directly comparable with a
-Java-native or bulk-FBIN benchmark harness.
+performed by `addDocument`. On the Java FBIN route it instead includes FBIN
+read and decode, payload digesting, finite-value validation, document creation,
+and ordinary `IndexWriter.addDocument` calls inside the JVM. It excludes
+writer commit and close.
+
+For Java FBIN ingestion, `runtime_fbin_read_seconds` is the nested portion of
+`runtime_document_ingest_seconds` spent in blocking file-channel reads. It does
+not include float decoding, validation, hashing, or Lucene indexing, and it
+must not be added to its parent timing. `runtime_writer_commit_close_seconds`
+includes flush work and any CAGRA or HNSW graph construction that the selected
+codec defers until flush, commit, or close. These boundaries separate file
+ingestion from deferred index construction, but neither timing alone is a
+complete build time.
 
 This initial backend invokes one Lucene query at a time. The common cuVS Bench
 `--batch-size` value is retained for configuration and result-file

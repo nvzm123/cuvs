@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -24,6 +25,7 @@ from cuvs_bench.backends._lucene_runtime import (
     RuntimeBuildResult,
     RuntimeBuildTiming,
     RuntimeBuildTopology,
+    RuntimeFbinBuildResult,
     RuntimeSearchResult,
     RuntimeSearchTiming,
     SearchHit,
@@ -137,6 +139,7 @@ class RecordingRuntime:
         self.build_calls: list[
             tuple[Path, np.ndarray, str, dict[str, Any]]
         ] = []
+        self.fbin_build_calls: list[dict[str, Any]] = []
         self.search_calls: list[dict[str, Any]] = []
         self.build_error: Exception | None = None
         self.search_error: Exception | None = None
@@ -238,6 +241,91 @@ class RecordingRuntime:
                 runtime_build_wall_ns=2_100_000,
             ),
             topology=topology,
+        )
+
+    def build_index_from_fbin(
+        self,
+        index_path: Path,
+        source_path: Path,
+        *,
+        expected_source_size: int,
+        expected_file_vector_count: int,
+        expected_dimensions: int,
+        expected_header_bytes: int,
+        vector_count: int,
+        codec_name: str,
+        build_parameters: Mapping[str, Any],
+    ) -> RuntimeFbinBuildResult:
+        request = {
+            "index_path": index_path,
+            "source_path": source_path,
+            "expected_source_size": expected_source_size,
+            "expected_file_vector_count": expected_file_vector_count,
+            "expected_dimensions": expected_dimensions,
+            "expected_header_bytes": expected_header_bytes,
+            "vector_count": vector_count,
+            "codec_name": codec_name,
+            "build_parameters": dict(build_parameters),
+        }
+        self.fbin_build_calls.append(request)
+        if self.build_error is not None:
+            raise self.build_error
+
+        source_bytes = source_path.read_bytes()
+        if len(source_bytes) != expected_source_size:
+            raise RuntimeError("fake FBIN source size changed")
+        payload_bytes = (
+            vector_count * expected_dimensions * np.dtype(np.float32).itemsize
+        )
+        selected_payload = source_bytes[
+            expected_header_bytes : expected_header_bytes + payload_bytes
+        ]
+        if len(selected_payload) != payload_bytes:
+            raise RuntimeError("fake FBIN source is truncated")
+
+        partitions = int(build_parameters["num_indexing_threads"])
+        chunk_size = vector_count // partitions
+        hard_limit = int(build_parameters["ram_per_thread_hard_limit_mb"])
+        self.document_count = vector_count
+        self.dimensions = expected_dimensions
+        self.segment_count = partitions
+        (index_path / "segments.fake").write_text(codec_name, encoding="utf-8")
+        topology = RuntimeBuildTopology(
+            requested_premerge_segment_count=None,
+            requested_num_indexing_threads=partitions,
+            actual_indexing_thread_count=1,
+            max_concurrent_indexing_threads=1,
+            indexing_execution_mode="partitioned_sequential",
+            indexing_worker_document_counts=(vector_count,),
+            observed_premerge_segment_count=partitions,
+            requested_force_merge_segment_count=0,
+            premerge_segment_vector_counts=(chunk_size,) * partitions,
+            max_buffered_docs=chunk_size + 1,
+            applied_ram_per_thread_hard_limit_mb=hard_limit,
+            ingest_merge_policy="NoMergePolicy",
+            final_merge_policy=None,
+        )
+        return RuntimeFbinBuildResult(
+            segment_count=partitions,
+            timing=RuntimeBuildTiming(
+                directory_open_ns=100_000,
+                writer_setup_ns=200_000,
+                document_ingest_ns=300_000,
+                writer_commit_close_ns=400_000,
+                post_build_reader_ns=500_000,
+                directory_close_ns=600_000,
+                runtime_build_wall_ns=2_100_000,
+                fbin_read_ns=100_000,
+            ),
+            topology=topology,
+            codec_name=codec_name,
+            source_file_size=expected_source_size,
+            source_file_vector_count=expected_file_vector_count,
+            dimensions=expected_dimensions,
+            header_bytes=expected_header_bytes,
+            vector_count=vector_count,
+            indexed_payload_bytes=payload_bytes,
+            vector_payload_sha256=hashlib.sha256(selected_payload).hexdigest(),
         )
 
     def search_index(

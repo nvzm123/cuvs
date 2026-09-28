@@ -226,6 +226,9 @@ def _write_artifacts(
             "com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.class", b""
         )
         archive.writestr(
+            "com/nvidia/cuvs/lucene/CuvsBenchFbinIndexingBridge.class", b""
+        )
+        archive.writestr(
             "com/nvidia/cuvs/lucene/IndexSearcherTimingBridge.class", b""
         )
         archive.writestr(
@@ -330,6 +333,191 @@ def test_java_search_timer_reports_jcc_adaptation_failure() -> None:
 
     assert "TypeError: Function.cast_ rejected bridge" in str(failure.value)
     assert isinstance(failure.value.__cause__, TypeError)
+
+
+def test_java_fbin_indexer_reports_class_loading_failure() -> None:
+    class MissingBridgeClass:
+        @staticmethod
+        def forName(_name: str):
+            raise RuntimeError("unsupported FBIN bridge bytecode")
+
+    runtime = object.__new__(LuceneRuntime)
+    runtime.Class = MissingBridgeClass
+
+    with pytest.raises(RuntimeError) as failure:
+        runtime._load_java_fbin_indexer()
+
+    assert str(failure.value) == (
+        "Could not load or adapt "
+        "com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge through "
+        "PyLucene/JCC: RuntimeError: unsupported FBIN bridge bytecode"
+    )
+    assert isinstance(failure.value.__cause__, RuntimeError)
+
+
+def test_java_fbin_build_uses_scalar_map_contract_and_validates_result(
+    tmp_path: Path,
+) -> None:
+    class Box:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def intValue(self) -> int:
+            return self.value
+
+        def longValue(self) -> int:
+            return self.value
+
+    class NumberBinding:
+        @staticmethod
+        def valueOf(value: int) -> Box:
+            return Box(value)
+
+        @staticmethod
+        def cast_(value: object) -> Box:
+            assert isinstance(value, Box)
+            return value
+
+    class JavaMap(dict):
+        def put(self, key: str, value: object) -> None:
+            self[key] = value
+
+        def containsKey(self, key: str) -> bool:
+            return key in self
+
+        def get(self, key: str) -> object:
+            return self[key]
+
+    class MapBinding:
+        @staticmethod
+        def cast_(value: object) -> JavaMap:
+            assert isinstance(value, JavaMap)
+            return value
+
+    response = JavaMap()
+    strings = {
+        "codec_name": ACCELERATED_HNSW_CODEC,
+        "vector_payload_sha256": "d" * 64,
+        "indexing_execution_mode": "partitioned_sequential",
+        "ingest_merge_policy": "NoMergePolicy",
+    }
+    integers = {
+        "dimensions": 2,
+        "header_bytes": 8,
+        "num_indexing_threads": 4,
+        "force_merge_segment_count": 0,
+        "actual_indexing_thread_count": 1,
+        "max_concurrent_indexing_threads": 1,
+        "segment_count": 4,
+        "max_buffered_docs": 3,
+        "applied_ram_per_thread_hard_limit_mb": 61_440,
+    }
+    longs = {
+        "source_file_size": 72,
+        "source_file_vector_count": 8,
+        "vector_count": 8,
+        "indexed_payload_bytes": 64,
+        "directory_open_ns": 1,
+        "writer_setup_ns": 2,
+        "document_ingest_ns": 30,
+        "fbin_read_ns": 20,
+        "writer_commit_close_ns": 4,
+        "post_build_reader_ns": 5,
+        "directory_close_ns": 6,
+        "runtime_build_wall_ns": 48,
+        **{
+            f"premerge_segment_vector_count_{partition}": 2
+            for partition in range(4)
+        },
+    }
+    response.update(strings)
+    response.update({name: Box(value) for name, value in integers.items()})
+    response.update({name: Box(value) for name, value in longs.items()})
+    requests = []
+
+    class Bridge:
+        @staticmethod
+        def apply(request: JavaMap) -> JavaMap:
+            requests.append(request)
+            return response
+
+    configured_codec = object()
+    runtime = object.__new__(LuceneRuntime)
+    runtime.attach_current_thread = lambda: None
+    runtime._resolve_build_codec = lambda *_args: configured_codec
+    runtime._java_fbin_indexer = Bridge()
+    runtime.HashMap = JavaMap
+    runtime.Map = MapBinding
+    runtime.Integer = NumberBinding
+    runtime.Long = NumberBinding
+    source = tmp_path / "base.fbin"
+    parameters = {
+        "codec": ACCELERATED_HNSW_CODEC,
+        "m": 16,
+        "beam_width": 80,
+        "num_indexing_threads": 4,
+        "force_merge_segment_count": 0,
+        "ram_per_thread_hard_limit_mb": 61_440,
+    }
+
+    result = runtime.build_index_from_fbin(
+        tmp_path / "index",
+        source,
+        expected_source_size=72,
+        expected_file_vector_count=8,
+        expected_dimensions=2,
+        expected_header_bytes=8,
+        vector_count=8,
+        codec_name=ACCELERATED_HNSW_CODEC,
+        build_parameters=parameters,
+    )
+
+    [request] = requests
+    assert set(request) == {
+        "source_path",
+        "index_path",
+        "codec",
+        "expected_codec_name",
+        "expected_source_size",
+        "expected_file_vector_count",
+        "expected_dimensions",
+        "expected_header_bytes",
+        "vector_count",
+        "num_indexing_threads",
+        "force_merge_segment_count",
+        "ram_per_thread_hard_limit_mb",
+    }
+    assert request["source_path"] == str(source)
+    assert request["index_path"] == str(tmp_path / "index")
+    assert request["codec"] is configured_codec
+    assert request["expected_codec_name"] == ACCELERATED_HNSW_CODEC
+    assert request["expected_source_size"].longValue() == 72
+    assert request["expected_file_vector_count"].longValue() == 8
+    assert request["expected_dimensions"].intValue() == 2
+    assert request["expected_header_bytes"].intValue() == 8
+    assert request["vector_count"].longValue() == 8
+    assert request["num_indexing_threads"].intValue() == 4
+    assert request["force_merge_segment_count"].intValue() == 0
+    assert request["ram_per_thread_hard_limit_mb"].intValue() == 61_440
+    assert result.vector_payload_sha256 == "d" * 64
+    assert result.indexed_payload_bytes == 64
+    assert result.timing.fbin_read_ns == 20
+    assert result.topology.premerge_segment_vector_counts == (2, 2, 2, 2)
+    assert result.topology.final_merge_policy is None
+
+    response["codec_name"] = "unexpected-codec"
+    with pytest.raises(RuntimeError, match="response mismatch for codec_name"):
+        runtime.build_index_from_fbin(
+            tmp_path / "index",
+            source,
+            expected_source_size=72,
+            expected_file_vector_count=8,
+            expected_dimensions=2,
+            expected_header_bytes=8,
+            vector_count=8,
+            codec_name=ACCELERATED_HNSW_CODEC,
+            build_parameters=parameters,
+        )
 
 
 class _RecordingJavaSystem:
