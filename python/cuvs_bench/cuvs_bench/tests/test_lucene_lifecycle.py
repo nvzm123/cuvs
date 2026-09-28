@@ -22,6 +22,7 @@ from _lucene_test_support import (
 from cuvs_bench.backends._lucene_runtime import CPU_HNSW_CODEC
 from cuvs_bench.backends.base import Dataset
 from cuvs_bench.backends.lucene import (
+    ACCELERATED_HNSW_ALGORITHM,
     CAGRA_ALGORITHM,
     CPU_HNSW_ALGORITHM,
     LuceneBackend,
@@ -528,7 +529,106 @@ def test_search_rejects_malformed_build_runtime_provenance(
     assert runtime.search_calls == []
 
 
-def test_search_requests_rebuild_for_the_legacy_stored_id_schema(
+def test_manifest_build_parameters_must_match_the_requested_index(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 1,
+            "ram_per_thread_hard_limit_mb": 61440,
+        }
+    )
+    assert backend.build(dataset, [index]).success
+
+    index.build_param["premerge_segment_count"] = 5
+    reuse = backend.build(dataset, [index])
+    [search] = backend.search(dataset, [index], k=2)
+
+    assert not reuse.success
+    assert not search.success
+    assert "does not match this dataset and configuration" in (
+        reuse.error_message
+    )
+    assert "does not match this dataset and configuration" in (
+        search.error_message
+    )
+    assert len(runtime.build_calls) == 1
+    assert runtime.search_calls == []
+
+
+def test_reuse_rejects_runtime_topology_evidence_that_conflicts_with_request(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "num_indexing_threads": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 61440,
+        }
+    )
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_build_topology"]["actual_indexing_thread_count"] = 3
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    reuse = backend.build(dataset, [index])
+    [search] = backend.search(dataset, [index], k=2)
+
+    assert not reuse.success
+    assert not search.success
+    assert "invalid runtime build topology" in reuse.error_message
+    assert "invalid runtime build topology" in search.error_message
+    assert len(runtime.build_calls) == 1
+    assert runtime.search_calls == []
+
+
+def test_search_rejects_noncanonical_manifest_build_parameters(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 1,
+            "ram_per_thread_hard_limit_mb": 61440,
+        }
+    )
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["build_parameters"].pop("ram_per_thread_hard_limit_mb")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    [result] = backend.search(dataset, [index], k=2)
+
+    assert not result.success
+    assert "invalid build parameters" in result.error_message
+    assert runtime.search_calls == []
+
+
+def test_search_requests_rebuild_for_the_previous_manifest_schema(
     tmp_path: Path,
 ) -> None:
     runtime = RecordingRuntime()
@@ -539,7 +639,7 @@ def test_search_requests_rebuild_for_the_legacy_stored_id_schema(
     assert backend.build(dataset, [index]).success
     manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["schema_version"] = 1
+    manifest["schema_version"] = 2
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     result = backend.search(dataset, [index], k=2)[0]

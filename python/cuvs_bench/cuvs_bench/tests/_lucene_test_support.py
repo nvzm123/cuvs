@@ -23,6 +23,7 @@ from cuvs_bench.backends._lucene_runtime import (
     QueryTiming,
     RuntimeBuildResult,
     RuntimeBuildTiming,
+    RuntimeBuildTopology,
     RuntimeSearchResult,
     RuntimeSearchTiming,
     SearchHit,
@@ -133,7 +134,9 @@ class RecordingRuntime:
         self.artifact_provenance: dict[str, str] = {}
         self.index_verifier = RecordingIndexVerifier(self)
         self.cagra_verifier = RecordingCagraVerifier()
-        self.build_calls: list[tuple[Path, np.ndarray, str]] = []
+        self.build_calls: list[
+            tuple[Path, np.ndarray, str, dict[str, Any]]
+        ] = []
         self.search_calls: list[dict[str, Any]] = []
         self.build_error: Exception | None = None
         self.search_error: Exception | None = None
@@ -148,15 +151,83 @@ class RecordingRuntime:
         self.artifact_verification_count += 1
 
     def build_index(
-        self, index_path: Path, vectors: np.ndarray, codec_name: str
+        self,
+        index_path: Path,
+        vectors: np.ndarray,
+        codec_name: str,
+        build_parameters: Mapping[str, Any] | None = None,
     ) -> RuntimeBuildResult:
-        self.build_calls.append((index_path, vectors.copy(), codec_name))
+        self.build_calls.append(
+            (
+                index_path,
+                vectors.copy(),
+                codec_name,
+                dict(build_parameters or {}),
+            )
+        )
         if self.build_error is not None:
             raise self.build_error
         self.document_count, self.dimensions = vectors.shape
+        self.segment_count = 1
         (index_path / "segments.fake").write_text(codec_name, encoding="utf-8")
+        parameters = dict(build_parameters or {})
+        topology = None
+        if "premerge_segment_count" in parameters:
+            premerge = int(parameters["premerge_segment_count"])
+            force_merge = int(parameters["force_merge_segment_count"])
+            chunk_size = int(vectors.shape[0]) // premerge
+            topology = RuntimeBuildTopology(
+                requested_premerge_segment_count=premerge,
+                requested_num_indexing_threads=None,
+                actual_indexing_thread_count=1,
+                max_concurrent_indexing_threads=1,
+                indexing_execution_mode="legacy_premerge_sequential",
+                indexing_worker_document_counts=(int(vectors.shape[0]),),
+                observed_premerge_segment_count=premerge,
+                requested_force_merge_segment_count=force_merge,
+                premerge_segment_vector_counts=(chunk_size,) * premerge,
+                max_buffered_docs=chunk_size + 1,
+                applied_ram_per_thread_hard_limit_mb=int(
+                    parameters["ram_per_thread_hard_limit_mb"]
+                ),
+                ingest_merge_policy="NoMergePolicy",
+                final_merge_policy=(
+                    "TieredMergePolicy"
+                    if force_merge == 1 and premerge > 1
+                    else None
+                ),
+            )
+            self.segment_count = 1 if force_merge == 1 else premerge
+        elif "num_indexing_threads" in parameters:
+            indexing_threads = int(parameters["num_indexing_threads"])
+            force_merge = int(parameters["force_merge_segment_count"])
+            rows = int(vectors.shape[0])
+            chunk_size = rows // indexing_threads
+            topology = RuntimeBuildTopology(
+                requested_premerge_segment_count=None,
+                requested_num_indexing_threads=indexing_threads,
+                actual_indexing_thread_count=1,
+                max_concurrent_indexing_threads=1,
+                indexing_execution_mode="partitioned_sequential",
+                indexing_worker_document_counts=(rows,),
+                observed_premerge_segment_count=indexing_threads,
+                requested_force_merge_segment_count=force_merge,
+                premerge_segment_vector_counts=(chunk_size,)
+                * indexing_threads,
+                max_buffered_docs=chunk_size + 1,
+                applied_ram_per_thread_hard_limit_mb=int(
+                    parameters["ram_per_thread_hard_limit_mb"]
+                ),
+                ingest_merge_policy="NoMergePolicy",
+                final_merge_policy=(
+                    "TieredMergePolicy"
+                    if force_merge == 1 and indexing_threads > 1
+                    else None
+                ),
+            )
+            self.segment_count = 1 if force_merge == 1 else indexing_threads
         return RuntimeBuildResult(
-            segment_count=1,
+            segment_count=self.segment_count,
             timing=RuntimeBuildTiming(
                 directory_open_ns=100_000,
                 writer_setup_ns=200_000,
@@ -166,6 +237,7 @@ class RecordingRuntime:
                 directory_close_ns=600_000,
                 runtime_build_wall_ns=2_100_000,
             ),
+            topology=topology,
         )
 
     def search_index(

@@ -64,6 +64,33 @@ _MAX_DIMENSIONS_BY_ALGORITHM = {
     CAGRA_ALGORITHM: MAX_CAGRA_DIMENSIONS,
 }
 _CUVS_ALGORITHMS = frozenset((ACCELERATED_HNSW_ALGORITHM, CAGRA_ALGORITHM))
+_ACCELERATED_HNSW_LEGACY_TOPOLOGY_KEYS = (
+    "premerge_segment_count",
+    "force_merge_segment_count",
+    "ram_per_thread_hard_limit_mb",
+)
+_ACCELERATED_HNSW_PARTITIONED_TOPOLOGY_KEYS = (
+    "num_indexing_threads",
+    "force_merge_segment_count",
+    "ram_per_thread_hard_limit_mb",
+)
+_ACCELERATED_HNSW_TOPOLOGY_KEYS = frozenset(
+    (
+        *_ACCELERATED_HNSW_LEGACY_TOPOLOGY_KEYS,
+        *_ACCELERATED_HNSW_PARTITIONED_TOPOLOGY_KEYS,
+    )
+)
+_ACCELERATED_HNSW_BUILD_KEYS = frozenset(
+    (
+        "m",
+        "beam_width",
+        *_ACCELERATED_HNSW_TOPOLOGY_KEYS,
+    )
+)
+_MIN_HNSW_BUILD_PARAMETER = 1
+_MAX_HNSW_BUILD_PARAMETER = 512
+_DEFAULT_HNSW_M = 32
+_DEFAULT_HNSW_BEAM_WIDTH = 32
 _BUILD_ROUTE_POLICY_BY_ALGORITHM = {
     CPU_HNSW_ALGORITHM: "cpu_hnsw",
     ACCELERATED_HNSW_ALGORITHM: "gpu_cagra_or_cpu_hnsw_fallback",
@@ -75,7 +102,24 @@ _SEARCH_ROUTE_BY_ALGORITHM = {
     CAGRA_ALGORITHM: "gpu_cagra",
 }
 _MANIFEST_FILE = ".cuvs-bench-lucene.json"
-_MANIFEST_SCHEMA = 2
+_MANIFEST_SCHEMA = 3
+_RUNTIME_BUILD_TOPOLOGY_FIELDS = frozenset(
+    (
+        "requested_premerge_segment_count",
+        "requested_num_indexing_threads",
+        "actual_indexing_thread_count",
+        "max_concurrent_indexing_threads",
+        "indexing_execution_mode",
+        "indexing_worker_document_counts",
+        "observed_premerge_segment_count",
+        "requested_force_merge_segment_count",
+        "premerge_segment_vector_counts",
+        "max_buffered_docs",
+        "applied_ram_per_thread_hard_limit_mb",
+        "ingest_merge_policy",
+        "final_merge_policy",
+    )
+)
 _SAFE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _RUNTIME_KEYS = (
     "cuvs_java_jar",
@@ -404,14 +448,50 @@ def _safe_label(value: str, kind: str) -> str:
     return value
 
 
-def _codec_for(algorithm: str, build_params: Mapping[str, Any]) -> str:
+def _bounded_hnsw_build_parameter(value: Any, name: str) -> int:
+    if type(value) is not int or not (
+        _MIN_HNSW_BUILD_PARAMETER <= value <= _MAX_HNSW_BUILD_PARAMETER
+    ):
+        raise ValueError(
+            f"Lucene {name} must be an integer in "
+            f"[{_MIN_HNSW_BUILD_PARAMETER}, {_MAX_HNSW_BUILD_PARAMETER}], "
+            f"got {value!r}"
+        )
+    return value
+
+
+def _positive_hnsw_build_parameter(value: Any, name: str) -> int:
+    if type(value) is not int or value < 1:
+        raise ValueError(
+            f"Lucene {name} must be a positive integer, got {value!r}"
+        )
+    return value
+
+
+def _force_merge_segment_count(value: Any) -> int:
+    if type(value) is not int or value not in (0, 1):
+        raise ValueError(
+            "Lucene force_merge_segment_count must be 0 (disabled) or 1, "
+            f"got {value!r}"
+        )
+    return value
+
+
+def _build_parameters_for(
+    algorithm: str, build_params: Mapping[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(build_params, Mapping):
+        raise TypeError("Lucene build parameters must be a mapping")
     try:
         expected = _CODEC_BY_ALGORITHM[algorithm]
     except KeyError as error:
         raise ValueError(
             f"Unsupported Lucene algorithm: {algorithm!r}"
         ) from error
-    unsupported = set(build_params) - {"codec"}
+    allowed = {"codec"}
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        allowed.update(_ACCELERATED_HNSW_BUILD_KEYS)
+    unsupported = set(build_params) - allowed
     if unsupported:
         raise ValueError(
             "Unsupported Lucene build parameters: "
@@ -422,7 +502,142 @@ def _codec_for(algorithm: str, build_params: Mapping[str, Any]) -> str:
         raise ValueError(
             f"{algorithm} requires codec {expected!r}, got {actual!r}"
         )
-    return expected
+    normalized: dict[str, Any] = {"codec": expected}
+    configured_hnsw = set(build_params) & {"m", "beam_width"}
+    if configured_hnsw and configured_hnsw != {"m", "beam_width"}:
+        missing = ", ".join(sorted({"m", "beam_width"} - configured_hnsw))
+        raise ValueError(
+            "Configured accelerated-HNSW builds require both m and "
+            f"beam_width; missing: {missing}"
+        )
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        m = build_params.get("m", _DEFAULT_HNSW_M)
+        beam_width = build_params.get("beam_width", _DEFAULT_HNSW_BEAM_WIDTH)
+        normalized.update(
+            {
+                "m": _bounded_hnsw_build_parameter(m, "m"),
+                "beam_width": _bounded_hnsw_build_parameter(
+                    beam_width, "beam_width"
+                ),
+            }
+        )
+        configured_topology = (
+            set(build_params) & _ACCELERATED_HNSW_TOPOLOGY_KEYS
+        )
+        if configured_topology:
+            legacy_topology = "premerge_segment_count" in build_params
+            partitioned_topology = "num_indexing_threads" in build_params
+            if legacy_topology and partitioned_topology:
+                raise ValueError(
+                    "Configured accelerated-HNSW segment topology cannot "
+                    "combine premerge_segment_count with "
+                    "num_indexing_threads"
+                )
+            if not legacy_topology and not partitioned_topology:
+                raise ValueError(
+                    "Configured accelerated-HNSW segment topology requires "
+                    "exactly one of premerge_segment_count or "
+                    "num_indexing_threads; missing: topology discriminator"
+                )
+            topology_keys = (
+                _ACCELERATED_HNSW_LEGACY_TOPOLOGY_KEYS
+                if legacy_topology
+                else _ACCELERATED_HNSW_PARTITIONED_TOPOLOGY_KEYS
+            )
+            missing_topology = [
+                name
+                for name in topology_keys
+                if name not in configured_topology
+            ]
+            if missing_topology:
+                raise ValueError(
+                    "Configured accelerated-HNSW segment topology requires "
+                    + ", ".join(topology_keys)
+                    + "; missing: "
+                    + ", ".join(missing_topology)
+                )
+            force_merge_segment_count = _force_merge_segment_count(
+                build_params["force_merge_segment_count"]
+            )
+            ram_per_thread_hard_limit_mb = _positive_hnsw_build_parameter(
+                build_params["ram_per_thread_hard_limit_mb"],
+                "ram_per_thread_hard_limit_mb",
+            )
+            if legacy_topology:
+                premerge_segment_count = _positive_hnsw_build_parameter(
+                    build_params["premerge_segment_count"],
+                    "premerge_segment_count",
+                )
+                if premerge_segment_count < force_merge_segment_count:
+                    raise ValueError(
+                        "Lucene premerge_segment_count must be greater than or "
+                        "equal to force_merge_segment_count"
+                    )
+                normalized["premerge_segment_count"] = premerge_segment_count
+            else:
+                normalized["num_indexing_threads"] = (
+                    _positive_hnsw_build_parameter(
+                        build_params["num_indexing_threads"],
+                        "num_indexing_threads",
+                    )
+                )
+            normalized.update(
+                {
+                    "force_merge_segment_count": force_merge_segment_count,
+                    "ram_per_thread_hard_limit_mb": (
+                        ram_per_thread_hard_limit_mb
+                    ),
+                }
+            )
+    return normalized
+
+
+def _codec_for(algorithm: str, build_params: Mapping[str, Any]) -> str:
+    return str(_build_parameters_for(algorithm, build_params)["codec"])
+
+
+def _build_parameter_metadata(
+    algorithm: str, build_params: Mapping[str, Any]
+) -> dict[str, Any]:
+    parameters = _build_parameters_for(algorithm, build_params)
+    if "m" not in parameters:
+        return {}
+    m = int(parameters["m"])
+    metadata = {
+        "hnsw_m": m,
+        "hnsw_beam_width": int(parameters["beam_width"]),
+        "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
+        "graph_degree": 2 * m,
+        "intermediate_graph_degree": 3 * m,
+    }
+    topology_key = next(
+        (
+            name
+            for name in ("premerge_segment_count", "num_indexing_threads")
+            if name in parameters
+        ),
+        None,
+    )
+    if topology_key is not None:
+        if topology_key == "premerge_segment_count":
+            metadata["requested_premerge_segment_count"] = parameters[
+                topology_key
+            ]
+        else:
+            metadata["requested_num_indexing_threads"] = parameters[
+                topology_key
+            ]
+        metadata.update(
+            {
+                "requested_force_merge_segment_count": parameters[
+                    "force_merge_segment_count"
+                ],
+                "ram_per_thread_hard_limit_mb": parameters[
+                    "ram_per_thread_hard_limit_mb"
+                ],
+            }
+        )
+    return metadata
 
 
 def _search_parameters(
@@ -561,6 +776,8 @@ def _manifest_payload(
     vectors: np.ndarray,
     algorithm: str,
     codec: str,
+    build_parameters: Mapping[str, Any],
+    runtime_build_topology: Mapping[str, Any] | None,
     segment_count: int,
     build_runtime_artifacts: Mapping[str, str],
 ) -> dict[str, Any]:
@@ -568,10 +785,39 @@ def _manifest_payload(
         "schema_version": _MANIFEST_SCHEMA,
         "algorithm": algorithm,
         "codec": codec,
+        "build_parameters": dict(build_parameters),
+        "runtime_build_topology": (
+            dict(runtime_build_topology)
+            if runtime_build_topology is not None
+            else None
+        ),
         "dataset": _dataset_identity(dataset, vectors),
         "segment_count": segment_count,
         "build_runtime_artifacts": dict(build_runtime_artifacts),
     }
+
+
+def _runtime_topology_result_metadata(
+    topology: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Flatten persisted topology evidence into result-friendly values."""
+    if topology is None:
+        return {}
+    metadata = dict(topology)
+    for name in (
+        "indexing_worker_document_counts",
+        "premerge_segment_vector_counts",
+    ):
+        metadata[name] = (
+            "[" + ",".join(str(value) for value in topology[name]) + "]"
+        )
+    for name in (
+        "requested_premerge_segment_count",
+        "requested_num_indexing_threads",
+    ):
+        if metadata[name] is None:
+            metadata.pop(name)
+    return metadata
 
 
 def _artifact_metadata(
@@ -592,6 +838,154 @@ def _write_manifest(index_path: Path, payload: Mapping[str, Any]) -> None:
 
 def _is_manifest_integer(value: Any, *, minimum: int = 0) -> bool:
     return type(value) is int and value >= minimum
+
+
+def _validate_manifest_runtime_topology(
+    payload: Mapping[str, Any], path: Path
+) -> None:
+    """Reject missing, malformed, or self-contradictory build evidence."""
+
+    def invalid(detail: str) -> None:
+        raise RuntimeError(
+            "Lucene index manifest has invalid runtime build topology "
+            f"({detail}): {path}"
+        )
+
+    build_parameters = payload["build_parameters"]
+    topology = payload["runtime_build_topology"]
+    topology_parameter = next(
+        (
+            name
+            for name in ("premerge_segment_count", "num_indexing_threads")
+            if name in build_parameters
+        ),
+        None,
+    )
+    if topology_parameter is None:
+        if topology is not None:
+            invalid("unexpected evidence for an uncontrolled build")
+        return
+    if not isinstance(topology, dict):
+        invalid("missing evidence for a controlled build")
+    if set(topology) != _RUNTIME_BUILD_TOPOLOGY_FIELDS:
+        invalid("unexpected fields")
+
+    positive_integer_fields = (
+        "actual_indexing_thread_count",
+        "max_concurrent_indexing_threads",
+        "observed_premerge_segment_count",
+        "max_buffered_docs",
+        "applied_ram_per_thread_hard_limit_mb",
+    )
+    for name in positive_integer_fields:
+        if not _is_manifest_integer(topology[name], minimum=1):
+            invalid(f"{name} must be a positive integer")
+    if not _is_manifest_integer(
+        topology["requested_force_merge_segment_count"]
+    ) or topology["requested_force_merge_segment_count"] not in (0, 1):
+        invalid("requested_force_merge_segment_count must be 0 or 1")
+    for name in (
+        "requested_premerge_segment_count",
+        "requested_num_indexing_threads",
+    ):
+        value = topology[name]
+        if value is not None and not _is_manifest_integer(value, minimum=1):
+            invalid(f"{name} must be null or a positive integer")
+    for name in (
+        "indexing_worker_document_counts",
+        "premerge_segment_vector_counts",
+    ):
+        values = topology[name]
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(
+                not _is_manifest_integer(value, minimum=1) for value in values
+            )
+        ):
+            invalid(f"{name} must be a non-empty list of positive integers")
+    if not isinstance(topology["indexing_execution_mode"], str):
+        invalid("indexing_execution_mode must be a string")
+    if not isinstance(topology["ingest_merge_policy"], str):
+        invalid("ingest_merge_policy must be a string")
+    if topology["final_merge_policy"] is not None and not isinstance(
+        topology["final_merge_policy"], str
+    ):
+        invalid("final_merge_policy must be null or a string")
+
+    vector_count = int(payload["dataset"]["vector_count"])
+    force_merge = int(build_parameters["force_merge_segment_count"])
+    requested_count = int(build_parameters[topology_parameter])
+    if vector_count % requested_count:
+        invalid("vector count is not divisible by the requested count")
+    if topology["requested_force_merge_segment_count"] != force_merge:
+        invalid("force-merge request does not match build parameters")
+    if (
+        topology["applied_ram_per_thread_hard_limit_mb"]
+        != build_parameters["ram_per_thread_hard_limit_mb"]
+    ):
+        invalid("applied RAM hard limit does not match the request")
+    if topology["ingest_merge_policy"] != "NoMergePolicy":
+        invalid("unexpected ingest merge policy")
+
+    if topology_parameter == "num_indexing_threads":
+        chunk_size = vector_count // requested_count
+        if (
+            topology["requested_premerge_segment_count"] is not None
+            or topology["requested_num_indexing_threads"] != requested_count
+            or topology["indexing_execution_mode"] != "partitioned_sequential"
+            or topology["actual_indexing_thread_count"] != 1
+            or topology["max_concurrent_indexing_threads"] != 1
+            or topology["indexing_worker_document_counts"] != [vector_count]
+            or topology["premerge_segment_vector_counts"]
+            != [chunk_size] * requested_count
+            or topology["observed_premerge_segment_count"] != requested_count
+            or topology["max_buffered_docs"] != chunk_size + 1
+        ):
+            invalid(
+                "partitioned sequential evidence does not match the request"
+            )
+        expected_final_merge_policy = (
+            "TieredMergePolicy"
+            if force_merge == 1 and requested_count > 1
+            else None
+        )
+    else:
+        chunk_size = vector_count // requested_count
+        if (
+            topology["requested_premerge_segment_count"] != requested_count
+            or topology["requested_num_indexing_threads"] is not None
+            or topology["indexing_execution_mode"]
+            != "legacy_premerge_sequential"
+            or topology["actual_indexing_thread_count"] != 1
+            or topology["max_concurrent_indexing_threads"] != 1
+            or topology["indexing_worker_document_counts"] != [vector_count]
+            or topology["premerge_segment_vector_counts"]
+            != [chunk_size] * requested_count
+            or topology["observed_premerge_segment_count"] != requested_count
+            or topology["max_buffered_docs"] != chunk_size + 1
+        ):
+            invalid("legacy sequential evidence does not match the request")
+        expected_final_merge_policy = (
+            "TieredMergePolicy"
+            if force_merge == 1 and requested_count > 1
+            else None
+        )
+
+    worker_counts = topology["indexing_worker_document_counts"]
+    premerge_counts = topology["premerge_segment_vector_counts"]
+    if sum(worker_counts) != vector_count:
+        invalid("worker document counts do not cover the dataset")
+    if (
+        len(premerge_counts) != requested_count
+        or sum(premerge_counts) != vector_count
+    ):
+        invalid("observed pre-merge segments do not match the request")
+    if topology["final_merge_policy"] != expected_final_merge_policy:
+        invalid("final merge policy does not match the request")
+    expected_final_segments = 1 if force_merge == 1 else requested_count
+    if payload["segment_count"] != expected_final_segments:
+        invalid("final segment count does not match the request")
 
 
 def _validate_manifest_dataset(dataset: Any, path: Path) -> None:
@@ -683,6 +1077,8 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
         "schema_version",
         "algorithm",
         "codec",
+        "build_parameters",
+        "runtime_build_topology",
         "dataset",
         "segment_count",
         "build_runtime_artifacts",
@@ -695,6 +1091,18 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
         raise RuntimeError(
             f"Lucene index manifest has invalid identifiers: {path}"
         )
+    try:
+        build_parameters = _build_parameters_for(
+            payload["algorithm"], payload["build_parameters"]
+        )
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(
+            f"Lucene index manifest has invalid build parameters: {path}"
+        ) from error
+    if build_parameters != payload["build_parameters"]:
+        raise RuntimeError(
+            f"Lucene index manifest has noncanonical build parameters: {path}"
+        )
     _validate_manifest_dataset(payload["dataset"], path)
     segment_count = payload.get("segment_count")
     if not _is_manifest_integer(segment_count, minimum=1):
@@ -706,6 +1114,7 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
             "Lucene index manifest has invalid build-runtime artifact "
             f"provenance: {path}"
         )
+    _validate_manifest_runtime_topology(payload, path)
     return payload
 
 
@@ -825,12 +1234,23 @@ class LuceneConfigLoader(ConfigLoader):
             _safe_label(algorithm, "algorithm")
             _safe_label(group, "group")
             for build_params in build_combos:
-                codec = _codec_for(algorithm, build_params)
-                name = algorithm if group == "base" else f"{algorithm}_{group}"
+                normalized_build_params = _build_parameters_for(
+                    algorithm, build_params
+                )
+                codec = str(normalized_build_params["codec"])
+                prefix = (
+                    algorithm if group == "base" else f"{algorithm}_{group}"
+                )
+                parameter_labels = [
+                    f"{name}{value}"
+                    for name, value in normalized_build_params.items()
+                    if name != "codec"
+                ]
+                name = ".".join([prefix, *parameter_labels])
                 index = IndexConfig(
                     name=name,
                     algo=algorithm,
-                    build_param={"codec": codec},
+                    build_param=normalized_build_params,
                     search_params=[dict(item) for item in search_combos],
                     file=str(root / name),
                 )
@@ -899,8 +1319,16 @@ class LuceneBackend(BenchmarkBackend):
             raise ValueError(
                 f"Index algorithm {index.algo!r} does not match {self.algorithm!r}"
             )
-        _codec_for(index.algo, index.build_param)
-        return index
+        build_parameters = _build_parameters_for(index.algo, index.build_param)
+        if dict(index.build_param) == build_parameters:
+            return index
+        return IndexConfig(
+            name=index.name,
+            algo=index.algo,
+            build_param=build_parameters,
+            search_params=index.search_params,
+            file=index.file,
+        )
 
     def _index_path(self, index: IndexConfig) -> Path:
         path = Path(os.path.abspath(Path(index.file).expanduser()))
@@ -930,7 +1358,10 @@ class LuceneBackend(BenchmarkBackend):
         )
 
     def _validate_manifest_identity(
-        self, payload: Mapping[str, Any], dataset_identity: Mapping[str, Any]
+        self,
+        payload: Mapping[str, Any],
+        dataset_identity: Mapping[str, Any],
+        build_parameters: Mapping[str, Any],
     ) -> None:
         build_runtime_artifacts = payload.get("build_runtime_artifacts")
         if not isinstance(build_runtime_artifacts, Mapping):
@@ -996,11 +1427,15 @@ class LuceneBackend(BenchmarkBackend):
             "schema_version": _MANIFEST_SCHEMA,
             "algorithm": self.algorithm,
             "codec": self.codec,
+            "build_parameters": _build_parameters_for(
+                self.algorithm, build_parameters
+            ),
             "dataset": dict(dataset_identity),
             "build_runtime_artifacts": dict(build_runtime_artifacts),
         }
         actual_without_segment_count = dict(payload)
         actual_without_segment_count.pop("segment_count", None)
+        actual_without_segment_count.pop("runtime_build_topology", None)
         if actual_without_segment_count != expected_without_segment_count:
             raise RuntimeError(
                 "Existing Lucene index does not match this dataset and configuration; "
@@ -1123,6 +1558,9 @@ class LuceneBackend(BenchmarkBackend):
         dry_run: bool = False,
     ) -> BuildResult:
         index = self._index(indexes)
+        parameter_metadata = _build_parameter_metadata(
+            self.algorithm, index.build_param
+        )
         try:
             _validate_metric(dataset)
             path = self._index_path(index)
@@ -1138,6 +1576,7 @@ class LuceneBackend(BenchmarkBackend):
                         "codec": self.codec,
                         "group": self.group,
                         "index_name": index.name,
+                        **parameter_metadata,
                     },
                 )
             if path.exists() and not force:
@@ -1145,7 +1584,9 @@ class LuceneBackend(BenchmarkBackend):
                 dataset_identity, vector_count, dimensions = (
                     self._search_dataset_identity(dataset, payload)
                 )
-                self._validate_manifest_identity(payload, dataset_identity)
+                self._validate_manifest_identity(
+                    payload, dataset_identity, index.build_param
+                )
                 runtime = self._get_runtime()
                 runtime.verify_artifacts()
                 metadata = self._verification_metadata(
@@ -1155,6 +1596,9 @@ class LuceneBackend(BenchmarkBackend):
                     dimensions,
                 )
                 self._validate_manifest_segment_count(payload, metadata)
+                runtime_topology_metadata = _runtime_topology_result_metadata(
+                    payload["runtime_build_topology"]
+                )
                 return BuildResult(
                     index_path=str(path),
                     build_time_seconds=0.0,
@@ -1166,10 +1610,12 @@ class LuceneBackend(BenchmarkBackend):
                         "codec": self.codec,
                         "group": self.group,
                         "index_name": index.name,
+                        **parameter_metadata,
                         **_artifact_metadata(
                             "build_runtime",
                             payload["build_runtime_artifacts"],
                         ),
+                        **runtime_topology_metadata,
                         **metadata,
                     },
                 )
@@ -1205,7 +1651,7 @@ class LuceneBackend(BenchmarkBackend):
             try:
                 build_started = time.perf_counter_ns()
                 runtime_build = runtime.build_index(
-                    staged, vectors, self.codec
+                    staged, vectors, self.codec, index.build_param
                 )
                 build_elapsed_ns = time.perf_counter_ns() - build_started
 
@@ -1223,13 +1669,35 @@ class LuceneBackend(BenchmarkBackend):
                         f"the committed index: {runtime_build.segment_count} != "
                         f"{observed_segments}"
                     )
+                requested_topology = (
+                    "premerge_segment_count" in index.build_param
+                    or "num_indexing_threads" in index.build_param
+                )
+                if requested_topology != (runtime_build.topology is not None):
+                    raise RuntimeError(
+                        "Lucene runtime topology evidence does not match the "
+                        "canonical build parameters"
+                    )
+                runtime_topology_payload = (
+                    runtime_build.topology.manifest()
+                    if runtime_build.topology is not None
+                    else None
+                )
+                runtime_topology_metadata = _runtime_topology_result_metadata(
+                    runtime_topology_payload
+                )
                 payload = _manifest_payload(
                     dataset,
                     vectors,
                     self.algorithm,
                     self.codec,
+                    index.build_param,
+                    runtime_topology_payload,
                     observed_segments,
                     runtime.artifact_provenance,
+                )
+                _validate_manifest_runtime_topology(
+                    payload, staged / _MANIFEST_FILE
                 )
                 _write_manifest(staged, payload)
                 validation_elapsed_ns = (
@@ -1291,10 +1759,12 @@ class LuceneBackend(BenchmarkBackend):
                     "codec": self.codec,
                     "group": self.group,
                     "index_name": index.name,
+                    **parameter_metadata,
                     "pylucene_version": runtime.pylucene_version,
                     **_artifact_metadata(
                         "build_runtime", runtime.artifact_provenance
                     ),
+                    **runtime_topology_metadata,
                     **lifecycle_metadata,
                     **metadata,
                 },
@@ -1422,6 +1892,9 @@ class LuceneBackend(BenchmarkBackend):
         dry_run: bool = False,
     ) -> list[SearchResult]:
         index = self._index(indexes)
+        parameter_metadata = _build_parameter_metadata(
+            self.algorithm, index.build_param
+        )
         try:
             _validate_metric(dataset)
             if type(k) is not int or k < 1:
@@ -1462,6 +1935,7 @@ class LuceneBackend(BenchmarkBackend):
                             "codec": self.codec,
                             "group": self.group,
                             "index_name": index.name,
+                            **parameter_metadata,
                         },
                     )
                 ]
@@ -1482,7 +1956,9 @@ class LuceneBackend(BenchmarkBackend):
             dataset_identity, vector_count, dimensions = (
                 self._search_dataset_identity(dataset, payload)
             )
-            self._validate_manifest_identity(payload, dataset_identity)
+            self._validate_manifest_identity(
+                payload, dataset_identity, index.build_param
+            )
             if int(queries.shape[1]) != dimensions:
                 raise ValueError(
                     "query vector dimensions do not match the indexed dataset: "
@@ -1504,6 +1980,9 @@ class LuceneBackend(BenchmarkBackend):
                 runtime, path, vector_count, dimensions
             )
             self._validate_manifest_segment_count(payload, metadata)
+            runtime_topology_metadata = _runtime_topology_result_metadata(
+                payload["runtime_build_topology"]
+            )
             index_verification_ns = (
                 time.perf_counter_ns() - index_verification_started
             )
@@ -1529,10 +2008,12 @@ class LuceneBackend(BenchmarkBackend):
                         "mode": mode,
                         "group": self.group,
                         "index_name": index.name,
+                        **parameter_metadata,
                         **_artifact_metadata(
                             "build_runtime",
                             payload["build_runtime_artifacts"],
                         ),
+                        **runtime_topology_metadata,
                         "expected_search_route": (
                             _SEARCH_ROUTE_BY_ALGORITHM[self.algorithm]
                         ),

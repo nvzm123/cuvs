@@ -15,7 +15,12 @@ import pytest
 
 from cuvs_bench.backends import _lucene_runtime
 from cuvs_bench.backends._lucene_runtime import (
+    ACCELERATED_HNSW_CODEC,
+    CONFIGURED_ACCELERATED_HNSW_CODEC,
+    HNSW_BEAM_WIDTH_PROPERTY,
+    HNSW_MAX_CONN_PROPERTY,
     _CleanupStack,
+    _controlled_build_topology,
     _load_pylucene,
     _rollback_writer,
     _validate_artifacts,
@@ -27,6 +32,164 @@ from cuvs_bench.backends._lucene_runtime_config import maven_artifact_version
 
 
 _ARTIFACT_VERSION = maven_artifact_version()
+
+
+@pytest.mark.parametrize(
+    (
+        "vector_count",
+        "premerge_segments",
+        "force_merge_segments",
+        "chunk_size",
+    ),
+    (
+        (10_000_000, 1, 0, 10_000_000),
+        (10_000_000, 1, 1, 10_000_000),
+        (100_000_000, 4, 0, 25_000_000),
+        (100_000_000, 4, 1, 25_000_000),
+    ),
+)
+def test_controlled_topology_derives_exact_equal_segments(
+    vector_count: int,
+    premerge_segments: int,
+    force_merge_segments: int,
+    chunk_size: int,
+) -> None:
+    topology = _controlled_build_topology(
+        {
+            "premerge_segment_count": premerge_segments,
+            "force_merge_segment_count": force_merge_segments,
+            "ram_per_thread_hard_limit_mb": 61_440,
+        },
+        vector_count,
+    )
+
+    assert topology is not None
+    assert topology.premerge_segment_count == premerge_segments
+    assert topology.force_merge_segment_count == force_merge_segments
+    assert topology.ram_per_thread_hard_limit_mb == 61_440
+    assert topology.chunk_size == chunk_size
+    assert topology.max_buffered_docs == chunk_size + 1
+
+
+@pytest.mark.parametrize("force_merge_segments", (0, 1))
+def test_num_indexing_threads_uses_partition_flush_boundary(
+    force_merge_segments: int,
+) -> None:
+    topology = _controlled_build_topology(
+        {
+            "num_indexing_threads": 4,
+            "force_merge_segment_count": force_merge_segments,
+            "ram_per_thread_hard_limit_mb": 61_440,
+        },
+        100_000_000,
+    )
+
+    assert topology is not None
+    assert topology.requested_premerge_segment_count is None
+    assert topology.num_indexing_threads == 4
+    assert topology.premerge_segment_count == 4
+    assert topology.force_merge_segment_count == force_merge_segments
+    assert topology.chunk_size == 25_000_000
+    assert topology.max_buffered_docs == 25_000_001
+
+
+@pytest.mark.parametrize(
+    ("parameters", "vector_count", "message"),
+    (
+        (
+            {"premerge_segment_count": 4},
+            100,
+            "require all topology parameters",
+        ),
+        (
+            {
+                "premerge_segment_count": 4,
+                "num_indexing_threads": 4,
+                "force_merge_segment_count": 0,
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            100,
+            "cannot combine",
+        ),
+        (
+            {
+                "premerge_segment_count": True,
+                "force_merge_segment_count": 1,
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            100,
+            "must be a positive integer",
+        ),
+        (
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": 2,
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            100,
+            r"must be 0 \(disabled\) or 1",
+        ),
+        (
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": True,
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            100,
+            r"must be 0 \(disabled\) or 1",
+        ),
+        (
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": None,
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            100,
+            r"must be 0 \(disabled\) or 1",
+        ),
+        (
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": "0",
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            100,
+            r"must be 0 \(disabled\) or 1",
+        ),
+        (
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": 0.0,
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            100,
+            r"must be 0 \(disabled\) or 1",
+        ),
+        (
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": -1,
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            100,
+            r"must be 0 \(disabled\) or 1",
+        ),
+        (
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": 1,
+                "ram_per_thread_hard_limit_mb": 61_440,
+            },
+            101,
+            "is not divisible",
+        ),
+    ),
+)
+def test_controlled_topology_rejects_ambiguous_shapes(
+    parameters: dict[str, int], vector_count: int, message: str
+) -> None:
+    with pytest.raises(RuntimeError, match=message):
+        _controlled_build_topology(parameters, vector_count)
 
 
 def _properties(group: str, artifact: str, version: str) -> bytes:
@@ -66,7 +229,15 @@ def _write_artifacts(
             "com/nvidia/cuvs/lucene/IndexSearcherTimingBridge.class", b""
         )
         archive.writestr(
+            "com/nvidia/cuvs/lucene/"
+            "IndexWriterConfigPerThreadHardLimitBridge.class",
+            b"",
+        )
+        archive.writestr(
             "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.class", b""
+        )
+        archive.writestr(
+            "com/nvidia/cuvs/lucene/Lucene101ConfiguredHNSWCodec.class", b""
         )
         archive.writestr(
             "META-INF/services/org.apache.lucene.codecs.Codec",
@@ -159,6 +330,137 @@ def test_java_search_timer_reports_jcc_adaptation_failure() -> None:
 
     assert "TypeError: Function.cast_ rejected bridge" in str(failure.value)
     assert isinstance(failure.value.__cause__, TypeError)
+
+
+class _RecordingJavaSystem:
+    def __init__(self, properties: dict[str, str] | None = None) -> None:
+        self.properties = dict(properties or {})
+
+    def getProperty(self, name: str):
+        return self.properties.get(name)
+
+    def setProperty(self, name: str, value: str):
+        previous = self.properties.get(name)
+        self.properties[name] = value
+        return previous
+
+    def clearProperty(self, name: str):
+        return self.properties.pop(name, None)
+
+
+class _ConfiguredCodec:
+    def __init__(self, max_conn: int, beam_width: int) -> None:
+        self.max_conn = max_conn
+        self.beam_width = beam_width
+
+    @staticmethod
+    def getName() -> str:
+        return ACCELERATED_HNSW_CODEC
+
+    @staticmethod
+    def knnVectorsFormat() -> object:
+        return object()
+
+    def __str__(self) -> str:
+        return (
+            "Lucene101ConfiguredHNSWCodec["
+            f"maxConn={self.max_conn}, beamWidth={self.beam_width}]"
+        )
+
+
+def _configured_codec_runtime(
+    system: _RecordingJavaSystem,
+    *,
+    constructor_error: Exception | None = None,
+) -> tuple[LuceneRuntime, list[dict[str, str]], list[str]]:
+    snapshots: list[dict[str, str]] = []
+    class_names: list[str] = []
+
+    class ReflectedCodec:
+        @staticmethod
+        def newInstance():
+            snapshots.append(dict(system.properties))
+            if constructor_error is not None:
+                raise constructor_error
+            return _ConfiguredCodec(
+                int(system.properties[HNSW_MAX_CONN_PROPERTY]),
+                int(system.properties[HNSW_BEAM_WIDTH_PROPERTY]),
+            )
+
+    class JavaClass:
+        @staticmethod
+        def forName(name: str):
+            class_names.append(name)
+            return ReflectedCodec()
+
+    class CodecBinding:
+        @staticmethod
+        def cast_(codec: object):
+            return codec
+
+        @staticmethod
+        def availableCodecs():
+            raise AssertionError("configured codec must not use Lucene SPI")
+
+        @staticmethod
+        def forName(_name: str):
+            raise AssertionError("configured codec must not use Lucene SPI")
+
+    runtime = object.__new__(LuceneRuntime)
+    runtime.System = system
+    runtime.Class = JavaClass
+    runtime.Codec = CodecBinding
+    runtime.attach_current_thread = lambda: None
+    return runtime, snapshots, class_names
+
+
+def test_configured_hnsw_codec_snapshots_and_restores_java_properties() -> (
+    None
+):
+    system = _RecordingJavaSystem({HNSW_MAX_CONN_PROPERTY: "previous"})
+    runtime, snapshots, class_names = _configured_codec_runtime(system)
+
+    codec = runtime.resolve_configured_hnsw_codec(16, 80)
+
+    assert str(codec) == (
+        "Lucene101ConfiguredHNSWCodec[maxConn=16, beamWidth=80]"
+    )
+    assert snapshots == [
+        {
+            HNSW_MAX_CONN_PROPERTY: "16",
+            HNSW_BEAM_WIDTH_PROPERTY: "80",
+        }
+    ]
+    assert class_names == [CONFIGURED_ACCELERATED_HNSW_CODEC]
+    assert system.properties == {HNSW_MAX_CONN_PROPERTY: "previous"}
+
+
+def test_configured_hnsw_codec_restores_properties_after_constructor_failure() -> (
+    None
+):
+    system = _RecordingJavaSystem(
+        {
+            HNSW_MAX_CONN_PROPERTY: "previous-m",
+            HNSW_BEAM_WIDTH_PROPERTY: "previous-beam",
+        }
+    )
+    runtime, snapshots, _class_names = _configured_codec_runtime(
+        system, constructor_error=RuntimeError("constructor failed")
+    )
+
+    with pytest.raises(RuntimeError, match="constructor failed"):
+        runtime.resolve_configured_hnsw_codec(16, 80)
+
+    assert snapshots == [
+        {
+            HNSW_MAX_CONN_PROPERTY: "16",
+            HNSW_BEAM_WIDTH_PROPERTY: "80",
+        }
+    ]
+    assert system.properties == {
+        HNSW_MAX_CONN_PROPERTY: "previous-m",
+        HNSW_BEAM_WIDTH_PROPERTY: "previous-beam",
+    }
 
 
 def test_float32_vectors_are_converted_to_a_jcc_compatible_sequence() -> None:

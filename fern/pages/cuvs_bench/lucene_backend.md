@@ -26,6 +26,75 @@ Selecting this backend is explicit. Commands that do not select it with
 explicit `--algorithms` value. Select `lucene_cpu_hnsw` explicitly when a CPU
 control is needed.
 
+The accelerated-HNSW build accepts Lucene's `m` and `beam_width` parameters.
+Both must be integers in the range 1 through 512 when either is specified;
+omitting both preserves the codec defaults of 32 and 32. cuVS derives the
+CAGRA build parameters with the `SAME_GRAPH_FOOTPRINT` heuristic, so `m: 16`
+produces `graph_degree=32` and `intermediate_graph_degree=48`. For example, an
+algorithm configuration for `m=16` and `beam_width=80` is:
+
+```yaml
+name: lucene_accelerated_hnsw
+groups:
+  m16_bw80:
+    build:
+      codec: ["Lucene101AcceleratedHNSWCodec"]
+      m: [16]
+      beam_width: [80]
+    search: {}
+```
+
+Pass that file with `--configuration`, select
+`--algorithms lucene_accelerated_hnsw --groups m16_bw80`, and use `--build`.
+The normalized HNSW parameters are recorded in the index manifest. Result
+metadata records those requested parameters together with graph degrees derived
+from the selected heuristic; the graph-degree fields are not direct native
+observations.
+
+Large accelerated-HNSW validations can also control Lucene ingestion
+partitioning and the final segment topology.
+`num_indexing_threads`, `force_merge_segment_count`, and
+`ram_per_thread_hard_limit_mb` must be specified together. The historical
+`num_indexing_threads` spelling is retained for compatibility with the
+vectorsearch-benchmarks CAGRA route: its value is the number of equal,
+contiguous partitions built in sequential passes, not the number of simultaneous
+Python producers. The partition count and RAM limit must be positive integers;
+`force_merge_segment_count` must be either `0` (retain the partition segments)
+or `1` (produce one final segment). Automatic flushes and merges are disabled
+during each partition. When a final count of one is requested, a serial
+`forceMerge(1)` exercises the codec's vector-merge path; this control does not
+by itself make that merge out-of-core. For example, a four-partition build that
+retains all four segments uses:
+
+```yaml
+name: lucene_accelerated_hnsw
+groups:
+  m16_bw80_four_partitions:
+    build:
+      codec: ["Lucene101AcceleratedHNSWCodec"]
+      m: [16]
+      beam_width: [80]
+      num_indexing_threads: [4]
+      force_merge_segment_count: [0]
+      ram_per_thread_hard_limit_mb: [61440]
+    search: {}
+```
+
+This produces and retains four equal segments. Set
+`force_merge_segment_count: [1]` to merge them serially into one segment after
+ingestion. Results truthfully record the compatibility request, one Python/JCC
+ingestion producer, sequential execution, exact partition vector counts,
+derived `max_buffered_docs`, applied hard limit, merge policies, and final
+segment count. The hard-limit bridge is verified at runtime and fails closed
+when Lucene does not retain the requested value. The manifest stores both the
+canonical request and runtime topology evidence. Reuse validates the evidence
+against the request, dataset row count, and final physical segment count, and
+reused build/search results surface that same evidence.
+
+`premerge_segment_count` remains available as a legacy, explicitly sequential
+topology control. It cannot be combined with `num_indexing_threads`; use the
+latter when reproducing the historical vectorsearch-benchmarks configuration.
+
 ```bash
 python -m cuvs_bench.run \
     --backend lucene \
@@ -61,11 +130,37 @@ classpath inconsistent.
 The initial backend accepts nonempty, finite, `float32` Euclidean/L2 vectors
 and supports latency-mode sweeps. The CPU HNSW algorithm accepts at most 1024
 dimensions; both cuVS-backed algorithms accept at most 4096. CAGRA uses the
-codec's fixed defaults and supports `k <= 1024`. The backend validates the
+codec's fixed defaults and supports `k <= 1024`. Accelerated HNSW accepts the
+build parameters described above. The backend validates the
 physical segment codec and every persisted vector field before searching, and
 fails if CAGRA construction silently produced a brute-force index. Both HNSW
 algorithms support an explicit `num_candidates` value greater than or equal to
 `k`; their CPU search path is not subject to CAGRA's `k <= 1024` limit.
+
+### Large-build memory and ingestion
+
+The initial build path materializes the complete training-vector file as a
+NumPy array. It then indexes one document at a time through PyLucene: every row
+is converted to a Python list and Java `float[]`, a Lucene `Document` is
+created, and `IndexWriter.addDocument` crosses the JCC boundary. This path is
+not a streaming, bulk-FBIN, or out-of-core ingestion path.
+
+Size the Python process and JVM heap for the dataset and codec being tested.
+Additional JVM arguments can be supplied through the Lucene backend
+configuration, for example:
+
+```yaml
+backend: lucene
+jvm_args:
+  - -Xms16g
+  - -Xmx64g
+  - -XX:+ExitOnOutOfMemoryError
+```
+
+Pass the file with `--backend-config`. These values are illustrative, not
+defaults: choose them from the available memory and expected workload. JVM
+arguments are immutable after PyLucene initializes the process-global JVM, so
+use a new Python process when changing them.
 
 ### Build PyLucene 10.2.0 from source
 
@@ -172,6 +267,20 @@ before starting Python. PyLucene's JVM is process-global, so its classpath and
 JVM arguments cannot be changed after `lucene.initVM(...)`.
 
 ## Timing contract
+
+`build_time_seconds` and `index_build_call_seconds` cover the in-process Lucene
+build call: writer setup, document ingestion, writer commit/close, and the
+post-build reader check. They exclude dataset loading, index verification,
+manifest publication, installation, and size measurement; use
+`backend_build_total_seconds` for that complete backend lifecycle.
+
+In particular, `runtime_document_ingest_seconds` includes NumPy-to-Python and
+Python-to-Java conversion, Java object creation, JCC dispatch, and Lucene work
+performed by `addDocument`. It is not a measurement of cuvs-lucene or GPU graph
+construction alone. `runtime_writer_commit_close_seconds` includes work that
+the selected codec defers until flush, commit, or close. Absolute build times
+from this document-at-a-time path are therefore not directly comparable with a
+Java-native or bulk-FBIN benchmark harness.
 
 This initial backend invokes one Lucene query at a time. The common cuVS Bench
 `--batch-size` value is retained for configuration and result-file
