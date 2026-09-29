@@ -24,17 +24,51 @@ from ._lucene_runtime_config import maven_artifact_version
 CPU_HNSW_CODEC = "Lucene101"
 ACCELERATED_HNSW_CODEC = "Lucene101AcceleratedHNSWCodec"
 CAGRA_CODEC = "CuVS2510GPUSearchCodec"
-CONFIGURED_ACCELERATED_HNSW_CODEC = (
-    "com.nvidia.cuvs.lucene.Lucene101ConfiguredHNSWCodec"
-)
-RAM_PER_THREAD_HARD_LIMIT_BRIDGE = (
-    "com.nvidia.cuvs.lucene.IndexWriterConfigPerThreadHardLimitBridge"
+CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY = (
+    "com.nvidia.cuvs.lucene.Lucene101AcceleratedHNSWCodecFactory"
 )
 FBIN_INDEXING_BRIDGE = "com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge"
-_WRITER_CONFIG_REQUEST_KEY = "config"
-_PER_THREAD_HARD_LIMIT_REQUEST_KEY = "per_thread_hard_limit_mb"
-HNSW_MAX_CONN_PROPERTY = "com.nvidia.cuvs.lucene.hnsw.maxConn"
-HNSW_BEAM_WIDTH_PROPERTY = "com.nvidia.cuvs.lucene.hnsw.beamWidth"
+_CONFIGURED_CODEC_RESPONSE_KEY = "codec"
+_HNSW_MAX_CONN_REQUEST_KEY = "max_conn"
+_HNSW_BEAM_WIDTH_REQUEST_KEY = "beam_width"
+_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2047
+_FBIN_SOURCE_PATH_KEY = "source_path"
+_FBIN_INDEX_PATH_KEY = "index_path"
+_FBIN_CODEC_KEY = "codec"
+_FBIN_EXPECTED_CODEC_NAME_KEY = "expected_codec_name"
+_FBIN_EXPECTED_SOURCE_SIZE_KEY = "expected_source_size"
+_FBIN_EXPECTED_FILE_VECTOR_COUNT_KEY = "expected_file_vector_count"
+_FBIN_EXPECTED_DIMENSIONS_KEY = "expected_dimensions"
+_FBIN_EXPECTED_HEADER_BYTES_KEY = "expected_header_bytes"
+_FBIN_VECTOR_COUNT_KEY = "vector_count"
+_FBIN_PREMERGE_SEGMENT_COUNT_KEY = "premerge_segment_count"
+_FBIN_FORCE_MERGE_SEGMENT_COUNT_KEY = "force_merge_segment_count"
+_FBIN_RAM_PER_THREAD_HARD_LIMIT_MB_KEY = "ram_per_thread_hard_limit_mb"
+_FBIN_CODEC_NAME_KEY = "codec_name"
+_FBIN_SOURCE_FILE_SIZE_KEY = "source_file_size"
+_FBIN_SOURCE_FILE_VECTOR_COUNT_KEY = "source_file_vector_count"
+_FBIN_DIMENSIONS_KEY = "dimensions"
+_FBIN_HEADER_BYTES_KEY = "header_bytes"
+_FBIN_INDEXED_PAYLOAD_BYTES_KEY = "indexed_payload_bytes"
+_FBIN_VECTOR_PAYLOAD_SHA256_KEY = "vector_payload_sha256"
+_FBIN_SEGMENT_COUNT_KEY = "segment_count"
+_FBIN_PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX = "premerge_segment_vector_count_"
+_FBIN_MAX_BUFFERED_DOCS_KEY = "max_buffered_docs"
+_FBIN_APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY = (
+    "applied_ram_per_thread_hard_limit_mb"
+)
+_FBIN_INGEST_MERGE_POLICY_KEY = "ingest_merge_policy"
+_FBIN_TIMING_FIELDS = (
+    "directory_open_ns",
+    "writer_setup_ns",
+    "document_ingest_ns",
+    "fbin_read_ns",
+    "force_merge_ns",
+    "writer_commit_close_ns",
+    "post_build_reader_ns",
+    "directory_close_ns",
+    "runtime_build_wall_ns",
+)
 MAX_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = "10.2.0"
 _PYLUCENE_SETUP_GUIDANCE = (
@@ -68,7 +102,6 @@ DIRECT_PYLUCENE_DISPATCH = "direct_pylucene"
 TIMED_BRIDGE_PYLUCENE_DISPATCH = "thin_jar_timing_bridge"
 
 _JVM_LOCK = threading.Lock()
-_CONFIGURED_CODEC_LOCK = threading.Lock()
 _INITIALIZED_CLASSPATH: str | None = None
 _INITIALIZED_VMARGS: tuple[str, ...] | None = None
 _INITIALIZED_ARTIFACT_PROVENANCE: dict[str, str] | None = None
@@ -289,9 +322,8 @@ def _validate_artifacts(
         "com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.class",
         "com/nvidia/cuvs/lucene/CuvsBenchFbinIndexingBridge.class",
         "com/nvidia/cuvs/lucene/IndexSearcherTimingBridge.class",
-        "com/nvidia/cuvs/lucene/IndexWriterConfigPerThreadHardLimitBridge.class",
+        "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodecFactory.class",
         "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.class",
-        "com/nvidia/cuvs/lucene/Lucene101ConfiguredHNSWCodec.class",
         "META-INF/services/org.apache.lucene.codecs.Codec",
     }
     missing = sorted(lucene_required - lucene_entries)
@@ -960,6 +992,7 @@ class RuntimeBuildTiming:
     directory_open_ns: int
     writer_setup_ns: int
     document_ingest_ns: int
+    force_merge_ns: int
     writer_commit_close_ns: int
     post_build_reader_ns: int
     directory_close_ns: int
@@ -995,12 +1028,7 @@ class RuntimeFbinBuildResult:
 class RuntimeBuildTopology:
     """Requested and observed topology for a controlled Lucene build."""
 
-    requested_premerge_segment_count: int | None
-    requested_num_indexing_threads: int | None
-    actual_indexing_thread_count: int
-    max_concurrent_indexing_threads: int
-    indexing_execution_mode: str
-    indexing_worker_document_counts: tuple[int, ...]
+    requested_premerge_segment_count: int
     observed_premerge_segment_count: int
     requested_force_merge_segment_count: int
     premerge_segment_vector_counts: tuple[int, ...]
@@ -1012,20 +1040,7 @@ class RuntimeBuildTopology:
     def manifest(self) -> dict[str, Any]:
         """Return structured, JSON-safe evidence for index reuse."""
         return {
-            "requested_premerge_segment_count": (
-                self.requested_premerge_segment_count
-            ),
-            "requested_num_indexing_threads": (
-                self.requested_num_indexing_threads
-            ),
-            "actual_indexing_thread_count": self.actual_indexing_thread_count,
-            "max_concurrent_indexing_threads": (
-                self.max_concurrent_indexing_threads
-            ),
-            "indexing_execution_mode": self.indexing_execution_mode,
-            "indexing_worker_document_counts": list(
-                self.indexing_worker_document_counts
-            ),
+            "requested_premerge_segment_count": self.requested_premerge_segment_count,
             "observed_premerge_segment_count": (
                 self.observed_premerge_segment_count
             ),
@@ -1043,58 +1058,23 @@ class RuntimeBuildTopology:
             "final_merge_policy": self.final_merge_policy,
         }
 
-    def metadata(self) -> dict[str, Any]:
-        metadata: dict[str, Any] = {
-            "requested_num_indexing_threads": (
-                self.requested_num_indexing_threads
-            ),
-            "actual_indexing_thread_count": (
-                self.actual_indexing_thread_count
-            ),
-            "max_concurrent_indexing_threads": (
-                self.max_concurrent_indexing_threads
-            ),
-            "indexing_execution_mode": self.indexing_execution_mode,
-            "indexing_worker_document_counts": (
-                "["
-                + ",".join(
-                    str(value)
-                    for value in self.indexing_worker_document_counts
-                )
-                + "]"
-            ),
-            "observed_premerge_segment_count": (
-                self.observed_premerge_segment_count
-            ),
-            "requested_force_merge_segment_count": (
-                self.requested_force_merge_segment_count
-            ),
-            "premerge_segment_vector_counts": (
-                "["
-                + ",".join(
-                    str(value) for value in self.premerge_segment_vector_counts
-                )
-                + "]"
-            ),
-            "max_buffered_docs": self.max_buffered_docs,
-            "applied_ram_per_thread_hard_limit_mb": (
-                self.applied_ram_per_thread_hard_limit_mb
-            ),
-            "ingest_merge_policy": self.ingest_merge_policy,
-            "final_merge_policy": self.final_merge_policy,
-        }
-        if self.requested_premerge_segment_count is not None:
-            metadata["requested_premerge_segment_count"] = (
-                self.requested_premerge_segment_count
-            )
-        return metadata
+
+@dataclass(frozen=True)
+class _IndexBuildPhase:
+    """Measured result of one Lucene index-construction strategy."""
+
+    writer_setup_ns: int
+    document_ingest_ns: int
+    force_merge_ns: int
+    writer_commit_close_ns: int
+    post_build_reader_ns: int
+    segment_count: int
+    topology: RuntimeBuildTopology | None = None
 
 
 @dataclass(frozen=True)
 class _ControlledBuildTopology:
     premerge_segment_count: int
-    requested_premerge_segment_count: int | None
-    num_indexing_threads: int | None
     force_merge_segment_count: int
     ram_per_thread_hard_limit_mb: int
     chunk_size: int
@@ -1105,24 +1085,15 @@ def _controlled_build_topology(
     build_parameters: Mapping[str, Any] | None, vector_count: int
 ) -> _ControlledBuildTopology | None:
     """Validate the fail-closed topology contract at the JVM boundary."""
-    common_keys = {
+    required = {
+        "premerge_segment_count",
         "force_merge_segment_count",
         "ram_per_thread_hard_limit_mb",
     }
-    legacy_key = "premerge_segment_count"
-    threaded_key = "num_indexing_threads"
-    topology_keys = common_keys | {legacy_key, threaded_key}
     parameters = build_parameters or {}
-    present = topology_keys & set(parameters)
+    present = required & set(parameters)
     if not present:
         return None
-    if legacy_key in present and threaded_key in present:
-        raise RuntimeError(
-            "Controlled Lucene builds cannot combine legacy "
-            "premerge_segment_count with num_indexing_threads"
-        )
-    mode_key = threaded_key if threaded_key in present else legacy_key
-    required = common_keys | {mode_key}
     if present != required:
         missing = ", ".join(sorted(required - present))
         raise RuntimeError(
@@ -1130,19 +1101,21 @@ def _controlled_build_topology(
             f"missing: {missing}"
         )
     values = {name: parameters[name] for name in required}
-    for name in (mode_key, "ram_per_thread_hard_limit_mb"):
+    for name in ("premerge_segment_count", "ram_per_thread_hard_limit_mb"):
         value = values[name]
         if type(value) is not int or value < 1:
             raise RuntimeError(
                 f"Controlled Lucene build parameter {name} must be a "
                 f"positive integer, got {value!r}"
             )
-    premerge = int(values[mode_key])
-    num_indexing_threads = premerge if mode_key == threaded_key else None
-    requested_premerge_segment_count = (
-        premerge if mode_key == legacy_key else None
-    )
+    premerge = int(values["premerge_segment_count"])
     hard_limit = int(values["ram_per_thread_hard_limit_mb"])
+    if hard_limit > _MAX_RAM_PER_THREAD_HARD_LIMIT_MB:
+        raise RuntimeError(
+            "Controlled Lucene build parameter "
+            "ram_per_thread_hard_limit_mb must be in range [1, "
+            f"{_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {hard_limit}"
+        )
     force_merge_value = values["force_merge_segment_count"]
     if type(force_merge_value) is not int or force_merge_value not in (0, 1):
         raise RuntimeError(
@@ -1152,13 +1125,14 @@ def _controlled_build_topology(
     force_merge = force_merge_value
     if premerge > vector_count:
         raise RuntimeError(
-            f"{mode_key} cannot exceed the vector count: "
+            "premerge_segment_count cannot exceed the vector count: "
             f"{premerge} > {vector_count}"
         )
     if vector_count % premerge:
         raise RuntimeError(
             "Controlled Lucene builds require equal partitions: vector count "
-            f"{vector_count} is not divisible by {mode_key} {premerge}"
+            f"{vector_count} is not divisible by premerge_segment_count "
+            f"{premerge}"
         )
     chunk_size = vector_count // premerge
     max_buffered_docs = chunk_size + 1
@@ -1169,8 +1143,6 @@ def _controlled_build_topology(
         )
     return _ControlledBuildTopology(
         premerge_segment_count=premerge,
-        requested_premerge_segment_count=requested_premerge_segment_count,
-        num_indexing_threads=num_indexing_threads,
         force_merge_segment_count=force_merge,
         ram_per_thread_hard_limit_mb=hard_limit,
         chunk_size=chunk_size,
@@ -1215,7 +1187,7 @@ class LuceneRuntime:
     """Own the generated bindings and the narrow Lucene operations Bench uses."""
 
     def __init__(self, lucene: Any):
-        from java.lang import Class, Integer, Long, System
+        from java.lang import Class, Integer, Long, String
         from java.nio.file import Paths
         from java.util import HashMap, Map
         from java.util.function import Function
@@ -1249,7 +1221,7 @@ class LuceneRuntime:
         self.Class = Class
         self.Integer = Integer
         self.Long = Long
-        self.System = System
+        self.String = String
         self.HashMap = HashMap
         self.Map = Map
         self.Function = Function
@@ -1281,8 +1253,8 @@ class LuceneRuntime:
         self.artifact_provenance: dict[str, str] = {}
         self._artifact_tokens: dict[str, tuple[int, ...]] = {}
         self._java_search_timer: Any | None = None
-        self._java_writer_config_hard_limit: Any | None = None
         self._java_fbin_indexer: Any | None = None
+        self._java_configured_codec_factory: Any | None = None
 
     @classmethod
     def create(cls, config: Mapping[str, Any]) -> "LuceneRuntime":
@@ -1310,16 +1282,17 @@ class LuceneRuntime:
                 f"{type(error).__name__}: {error}"
             ) from error
 
-    def _load_java_writer_config_hard_limit(self) -> Any:
-        """Load the fail-closed IndexWriterConfig hard-limit bridge."""
+    def _load_java_configured_codec_factory(self) -> Any:
+        """Load the codec factory through JCC's wrapped Function interface."""
         try:
             instance = self.Class.forName(
-                RAM_PER_THREAD_HARD_LIMIT_BRIDGE
+                CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY
             ).newInstance()
             return self.Function.cast_(instance)
         except Exception as error:
             raise RuntimeError(
-                f"Could not load or adapt {RAM_PER_THREAD_HARD_LIMIT_BRIDGE} "
+                "Could not load or adapt "
+                f"{CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY} "
                 "through PyLucene/JCC: "
                 f"{type(error).__name__}: {error}"
             ) from error
@@ -1339,36 +1312,27 @@ class LuceneRuntime:
     def _set_ram_per_thread_hard_limit_mb(
         self, config: Any, requested_mb: int
     ) -> None:
-        bridge = self._java_writer_config_hard_limit
-        if bridge is None:
-            bridge = self._load_java_writer_config_hard_limit()
-            self._java_writer_config_hard_limit = bridge
-        request = self.HashMap()
-        request.put(_WRITER_CONFIG_REQUEST_KEY, config)
-        request.put(
-            _PER_THREAD_HARD_LIMIT_REQUEST_KEY,
-            self.Integer.valueOf(requested_mb),
-        )
-        try:
-            raw_response = bridge.apply(request)
-            response = self.Map.cast_(raw_response)
-            applied = int(
-                self.Integer.cast_(
-                    response.get(_PER_THREAD_HARD_LIMIT_REQUEST_KEY)
-                ).intValue()
+        if type(requested_mb) is not int or not (
+            1 <= requested_mb <= _MAX_RAM_PER_THREAD_HARD_LIMIT_MB
+        ):
+            raise RuntimeError(
+                "Lucene per-thread RAM hard limit must be in range [1, "
+                f"{_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {requested_mb}"
             )
+        try:
+            config.setRAMPerThreadHardLimitMB(requested_mb)
         except Exception as error:
             raise RuntimeError(
-                "Could not apply Lucene's per-thread RAM hard limit through "
-                f"{RAM_PER_THREAD_HARD_LIMIT_BRIDGE}: "
+                "Could not apply Lucene's supported per-thread RAM hard "
+                "limit: "
                 f"{type(error).__name__}: {error}"
             ) from error
         observed = int(config.getRAMPerThreadHardLimitMB())
-        if applied != requested_mb or observed != requested_mb:
+        if observed != requested_mb:
             raise RuntimeError(
-                "Lucene per-thread RAM hard-limit bridge did not retain the "
-                f"requested value: requested {requested_mb}, response "
-                f"{applied}, config {observed}"
+                "Lucene per-thread RAM hard limit did not retain the "
+                f"requested value: requested {requested_mb}, config "
+                f"reported {observed}"
             )
 
     @property
@@ -1411,43 +1375,47 @@ class LuceneRuntime:
     def resolve_configured_hnsw_codec(
         self, max_conn: int, beam_width: int
     ) -> Any:
-        """Construct an accelerated-HNSW codec from a property snapshot."""
+        """Construct an accelerated-HNSW codec from one atomic request."""
         self.attach_current_thread()
-        configured_values = {
-            HNSW_MAX_CONN_PROPERTY: str(max_conn),
-            HNSW_BEAM_WIDTH_PROPERTY: str(beam_width),
-        }
-        with _CONFIGURED_CODEC_LOCK:
-            with _CleanupStack() as cleanups:
-                for name, value in configured_values.items():
-                    previous = self.System.getProperty(name)
-
-                    def restore(
-                        name: str = name, previous: Any = previous
-                    ) -> None:
-                        if previous is None:
-                            self.System.clearProperty(name)
-                        else:
-                            self.System.setProperty(name, str(previous))
-
-                    cleanups.add(
-                        f"restore Java system property {name}", restore
-                    )
-                    self.System.setProperty(name, value)
-                reflected = self.Class.forName(
-                    CONFIGURED_ACCELERATED_HNSW_CODEC
-                ).newInstance()
-                codec = self.Codec.cast_(reflected)
+        factory = self._java_configured_codec_factory
+        if factory is None:
+            factory = self._load_java_configured_codec_factory()
+            self._java_configured_codec_factory = factory
+        request = self.HashMap()
+        request.put(_HNSW_MAX_CONN_REQUEST_KEY, self.Integer.valueOf(max_conn))
+        request.put(
+            _HNSW_BEAM_WIDTH_REQUEST_KEY, self.Integer.valueOf(beam_width)
+        )
+        try:
+            raw_response = factory.apply(request)
+            response = self.Map.cast_(raw_response)
+            codec = self.Codec.cast_(
+                response.get(_CONFIGURED_CODEC_RESPONSE_KEY)
+            )
+            applied_max_conn = int(
+                self.Integer.cast_(
+                    response.get(_HNSW_MAX_CONN_REQUEST_KEY)
+                ).intValue()
+            )
+            applied_beam_width = int(
+                self.Integer.cast_(
+                    response.get(_HNSW_BEAM_WIDTH_REQUEST_KEY)
+                ).intValue()
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured accelerated-HNSW codec "
+                f"through {CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
 
         self._validate_codec(codec, ACCELERATED_HNSW_CODEC)
-        expected = (
-            "Lucene101ConfiguredHNSWCodec["
-            f"maxConn={max_conn}, beamWidth={beam_width}]"
-        )
-        if str(codec) != expected:
+        if (applied_max_conn, applied_beam_width) != (max_conn, beam_width):
             raise RuntimeError(
                 "Configured accelerated-HNSW codec did not retain the "
-                f"requested parameters: expected {expected!r}, got {str(codec)!r}"
+                "requested parameters: requested "
+                f"({max_conn}, {beam_width}), applied "
+                f"({applied_max_conn}, {applied_beam_width})"
             )
         return codec
 
@@ -1527,9 +1495,6 @@ class LuceneRuntime:
     def _tiered_merge_policy(self) -> Any:
         merge_policy = self.TieredMergePolicy()
         merge_policy.setNoCFSRatio(0.0)
-        merge_policy.setMaxMergedSegmentMB(153600.0)
-        merge_policy.setSegmentsPerTier(2.0)
-        merge_policy.setMaxMergeAtOnce(500)
         return merge_policy
 
     def _controlled_merge_config(
@@ -1626,7 +1591,7 @@ class LuceneRuntime:
         directory: Any,
         codec: Any,
         topology: _ControlledBuildTopology,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         setup_started = time.perf_counter_ns()
         config = self._controlled_merge_config(codec, topology)
         writer = self.IndexWriter(directory, config)
@@ -1634,13 +1599,157 @@ class LuceneRuntime:
         try:
             merge_started = time.perf_counter_ns()
             writer.forceMerge(topology.force_merge_segment_count, True)
+            force_merge_ns = time.perf_counter_ns() - merge_started
+            commit_started = time.perf_counter_ns()
             writer.commit()
             writer.close()
-            merge_commit_close_ns = time.perf_counter_ns() - merge_started
+            commit_close_ns = time.perf_counter_ns() - commit_started
         except BaseException as error:
             _rollback_writer(writer, error)
             raise
-        return setup_ns, merge_commit_close_ns
+        return setup_ns, force_merge_ns, commit_close_ns
+
+    def _build_ordinary_index(
+        self,
+        directory: Any,
+        vectors: np.ndarray,
+        codec: Any,
+    ) -> _IndexBuildPhase:
+        setup_started = time.perf_counter_ns()
+        config = self.IndexWriterConfig()
+        config.setOpenMode(self.IndexWriterConfig.OpenMode.CREATE)
+        config.setCodec(codec)
+        writer = self.IndexWriter(directory, config)
+        writer_setup_ns = time.perf_counter_ns() - setup_started
+        try:
+            ingest_started = time.perf_counter_ns()
+            for document_id, vector in enumerate(vectors):
+                writer.addDocument(self._document(document_id, vector))
+            document_ingest_ns = time.perf_counter_ns() - ingest_started
+            commit_started = time.perf_counter_ns()
+            writer.commit()
+            writer.close()
+            writer_commit_close_ns = time.perf_counter_ns() - commit_started
+        except BaseException as error:
+            _rollback_writer(writer, error)
+            raise
+
+        post_build_started = time.perf_counter_ns()
+        reader = self.DirectoryReader.open(directory)
+        with _CleanupStack() as reader_cleanups:
+            reader_cleanups.add("close Lucene reader", reader.close)
+            segment_count = int(reader.leaves().size())
+        return _IndexBuildPhase(
+            writer_setup_ns=writer_setup_ns,
+            document_ingest_ns=document_ingest_ns,
+            force_merge_ns=0,
+            writer_commit_close_ns=writer_commit_close_ns,
+            post_build_reader_ns=(time.perf_counter_ns() - post_build_started),
+            segment_count=segment_count,
+        )
+
+    def _build_controlled_index(
+        self,
+        directory: Any,
+        vectors: np.ndarray,
+        codec: Any,
+        controlled: _ControlledBuildTopology,
+    ) -> _IndexBuildPhase:
+        writer_setup_ns = 0
+        document_ingest_ns = 0
+        force_merge_ns = 0
+        writer_commit_close_ns = 0
+        post_build_reader_ns = 0
+
+        # Separate writer lifecycles make the requested serial partitions
+        # explicit and keep their physical topology independently verifiable.
+        for chunk_number in range(controlled.premerge_segment_count):
+            start = chunk_number * controlled.chunk_size
+            stop = start + controlled.chunk_size
+            setup_ns, ingest_ns, commit_close_ns = (
+                self._write_controlled_chunk(
+                    directory,
+                    vectors,
+                    codec,
+                    controlled,
+                    start=start,
+                    stop=stop,
+                    create=chunk_number == 0,
+                )
+            )
+            writer_setup_ns += setup_ns
+            document_ingest_ns += ingest_ns
+            writer_commit_close_ns += commit_close_ns
+
+        post_build_started = time.perf_counter_ns()
+        observed_premerge_counts = self._committed_segment_vector_counts(
+            directory
+        )
+        post_build_reader_ns += time.perf_counter_ns() - post_build_started
+        expected_premerge_counts = (
+            controlled.chunk_size,
+        ) * controlled.premerge_segment_count
+        if observed_premerge_counts != expected_premerge_counts:
+            raise RuntimeError(
+                "Controlled Lucene ingest topology mismatch: expected "
+                "pre-merge segment vector counts "
+                f"{expected_premerge_counts}, observed "
+                f"{observed_premerge_counts}"
+            )
+
+        final_merge_policy = None
+        final_counts = observed_premerge_counts
+        if (
+            controlled.force_merge_segment_count == 1
+            and controlled.premerge_segment_count > 1
+        ):
+            setup_ns, merge_ns, commit_close_ns = (
+                self._force_merge_controlled_index(
+                    directory, codec, controlled
+                )
+            )
+            writer_setup_ns += setup_ns
+            force_merge_ns += merge_ns
+            writer_commit_close_ns += commit_close_ns
+            post_build_started = time.perf_counter_ns()
+            final_counts = self._committed_segment_vector_counts(directory)
+            post_build_reader_ns += time.perf_counter_ns() - post_build_started
+            final_merge_policy = "TieredMergePolicy"
+        expected_final_counts = (
+            (int(vectors.shape[0]),)
+            if controlled.force_merge_segment_count == 1
+            else observed_premerge_counts
+        )
+        if final_counts != expected_final_counts:
+            raise RuntimeError(
+                "Controlled Lucene final topology mismatch: expected "
+                f"segment vector counts {expected_final_counts}, "
+                f"observed {final_counts}"
+            )
+        return _IndexBuildPhase(
+            writer_setup_ns=writer_setup_ns,
+            document_ingest_ns=document_ingest_ns,
+            force_merge_ns=force_merge_ns,
+            writer_commit_close_ns=writer_commit_close_ns,
+            post_build_reader_ns=post_build_reader_ns,
+            segment_count=len(final_counts),
+            topology=RuntimeBuildTopology(
+                requested_premerge_segment_count=(
+                    controlled.premerge_segment_count
+                ),
+                observed_premerge_segment_count=len(observed_premerge_counts),
+                requested_force_merge_segment_count=(
+                    controlled.force_merge_segment_count
+                ),
+                premerge_segment_vector_counts=observed_premerge_counts,
+                max_buffered_docs=controlled.max_buffered_docs,
+                applied_ram_per_thread_hard_limit_mb=(
+                    controlled.ram_per_thread_hard_limit_mb
+                ),
+                ingest_merge_policy="NoMergePolicy",
+                final_merge_policy=final_merge_policy,
+            ),
+        )
 
     def build_index_from_fbin(
         self,
@@ -1661,12 +1770,11 @@ class LuceneRuntime:
         if (
             codec_name != ACCELERATED_HNSW_CODEC
             or topology is None
-            or topology.num_indexing_threads is None
             or topology.force_merge_segment_count != 0
         ):
             raise RuntimeError(
                 "The Java FBIN bridge requires accelerated HNSW, "
-                "num_indexing_threads, and force_merge_segment_count=0"
+                "premerge_segment_count, and force_merge_segment_count=0"
             )
         codec = self._resolve_build_codec(codec_name, build_parameters)
         bridge = self._java_fbin_indexer
@@ -1674,37 +1782,17 @@ class LuceneRuntime:
             bridge = self._load_java_fbin_indexer()
             self._java_fbin_indexer = bridge
 
-        request = self.HashMap()
-        request.put("source_path", str(source_path))
-        request.put("index_path", str(index_path))
-        request.put("codec", codec)
-        request.put("expected_codec_name", codec_name)
-        request.put(
-            "expected_source_size", self.Long.valueOf(expected_source_size)
-        )
-        request.put(
-            "expected_file_vector_count",
-            self.Long.valueOf(expected_file_vector_count),
-        )
-        request.put(
-            "expected_dimensions", self.Integer.valueOf(expected_dimensions)
-        )
-        request.put(
-            "expected_header_bytes",
-            self.Integer.valueOf(expected_header_bytes),
-        )
-        request.put("vector_count", self.Long.valueOf(vector_count))
-        request.put(
-            "num_indexing_threads",
-            self.Integer.valueOf(topology.num_indexing_threads),
-        )
-        request.put(
-            "force_merge_segment_count",
-            self.Integer.valueOf(topology.force_merge_segment_count),
-        )
-        request.put(
-            "ram_per_thread_hard_limit_mb",
-            self.Integer.valueOf(topology.ram_per_thread_hard_limit_mb),
+        request = self._encode_fbin_build_request(
+            index_path,
+            source_path,
+            codec=codec,
+            codec_name=codec_name,
+            expected_source_size=expected_source_size,
+            expected_file_vector_count=expected_file_vector_count,
+            expected_dimensions=expected_dimensions,
+            expected_header_bytes=expected_header_bytes,
+            vector_count=vector_count,
+            topology=topology,
         )
         try:
             response = self.Map.cast_(bridge.apply(request))
@@ -1714,99 +1802,267 @@ class LuceneRuntime:
                 f"{type(error).__name__}: {error}"
             ) from error
 
-        def required(name: str) -> Any:
-            if not response.containsKey(name):
-                raise RuntimeError(
-                    f"Java FBIN indexing bridge omitted response field {name}"
-                )
-            return response.get(name)
+        result = self._decode_fbin_build_response(response, topology)
+        self._validate_fbin_build_response(
+            result,
+            codec_name=codec_name,
+            expected_source_size=expected_source_size,
+            expected_file_vector_count=expected_file_vector_count,
+            expected_dimensions=expected_dimensions,
+            expected_header_bytes=expected_header_bytes,
+            vector_count=vector_count,
+            topology=topology,
+        )
+        return result
+
+    def _encode_fbin_build_request(
+        self,
+        index_path: Path,
+        source_path: Path,
+        *,
+        codec: Any,
+        codec_name: str,
+        expected_source_size: int,
+        expected_file_vector_count: int,
+        expected_dimensions: int,
+        expected_header_bytes: int,
+        vector_count: int,
+        topology: _ControlledBuildTopology,
+    ) -> Any:
+        """Encode the exact scalar contract accepted by the FBIN bridge."""
+        request = self.HashMap()
+        request.put(_FBIN_SOURCE_PATH_KEY, str(source_path))
+        request.put(_FBIN_INDEX_PATH_KEY, str(index_path))
+        request.put(_FBIN_CODEC_KEY, codec)
+        request.put(_FBIN_EXPECTED_CODEC_NAME_KEY, codec_name)
+        request.put(
+            _FBIN_EXPECTED_SOURCE_SIZE_KEY,
+            self.Long.valueOf(expected_source_size),
+        )
+        request.put(
+            _FBIN_EXPECTED_FILE_VECTOR_COUNT_KEY,
+            self.Long.valueOf(expected_file_vector_count),
+        )
+        request.put(
+            _FBIN_EXPECTED_DIMENSIONS_KEY,
+            self.Integer.valueOf(expected_dimensions),
+        )
+        request.put(
+            _FBIN_EXPECTED_HEADER_BYTES_KEY,
+            self.Integer.valueOf(expected_header_bytes),
+        )
+        request.put(_FBIN_VECTOR_COUNT_KEY, self.Long.valueOf(vector_count))
+        request.put(
+            _FBIN_PREMERGE_SEGMENT_COUNT_KEY,
+            self.Integer.valueOf(topology.premerge_segment_count),
+        )
+        request.put(
+            _FBIN_FORCE_MERGE_SEGMENT_COUNT_KEY,
+            self.Integer.valueOf(topology.force_merge_segment_count),
+        )
+        request.put(
+            _FBIN_RAM_PER_THREAD_HARD_LIMIT_MB_KEY,
+            self.Integer.valueOf(topology.ram_per_thread_hard_limit_mb),
+        )
+        return request
+
+    @staticmethod
+    def _required_fbin_response_value(response: Any, name: str) -> Any:
+        if not response.containsKey(name):
+            raise RuntimeError(
+                f"Java FBIN indexing bridge omitted response field {name}"
+            )
+        return response.get(name)
+
+    def _fbin_response_integer(self, response: Any, name: str) -> int:
+        try:
+            value = self._required_fbin_response_value(response, name)
+            return int(self.Integer.cast_(value).intValue())
+        except RuntimeError:
+            raise
+        except Exception as error:
+            raise RuntimeError(
+                "Java FBIN indexing bridge returned invalid integer "
+                f"field {name}: {type(error).__name__}: {error}"
+            ) from error
+
+    def _fbin_response_long(self, response: Any, name: str) -> int:
+        try:
+            value = self._required_fbin_response_value(response, name)
+            return int(self.Long.cast_(value).longValue())
+        except RuntimeError:
+            raise
+        except Exception as error:
+            raise RuntimeError(
+                "Java FBIN indexing bridge returned invalid long field "
+                f"{name}: {type(error).__name__}: {error}"
+            ) from error
+
+    def _fbin_response_string(self, response: Any, name: str) -> str:
+        value = self._required_fbin_response_value(response, name)
+        if value is None:
+            raise RuntimeError(
+                f"Java FBIN indexing bridge returned null string field {name}"
+            )
+        try:
+            return str(self.String.cast_(value))
+        except Exception as error:
+            raise RuntimeError(
+                "Java FBIN indexing bridge returned invalid string field "
+                f"{name}: {type(error).__name__}: {error}"
+            ) from error
+
+    def _decode_fbin_build_response(
+        self, response: Any, topology: _ControlledBuildTopology
+    ) -> RuntimeFbinBuildResult:
+        """Decode typed bridge fields without accepting Java box drift."""
 
         def integer(name: str) -> int:
-            try:
-                return int(self.Integer.cast_(required(name)).intValue())
-            except RuntimeError:
-                raise
-            except Exception as error:
-                raise RuntimeError(
-                    "Java FBIN indexing bridge returned invalid integer "
-                    f"field {name}: {type(error).__name__}: {error}"
-                ) from error
+            return self._fbin_response_integer(response, name)
 
         def long_integer(name: str) -> int:
-            try:
-                return int(self.Long.cast_(required(name)).longValue())
-            except RuntimeError:
-                raise
-            except Exception as error:
-                raise RuntimeError(
-                    "Java FBIN indexing bridge returned invalid long field "
-                    f"{name}: {type(error).__name__}: {error}"
-                ) from error
+            return self._fbin_response_long(response, name)
 
         def string(name: str) -> str:
-            value = required(name)
-            if value is None:
-                raise RuntimeError(
-                    "Java FBIN indexing bridge returned null string field "
-                    f"{name}"
-                )
-            return str(value)
+            return self._fbin_response_string(response, name)
 
-        returned_codec = string("codec_name")
-        source_size = long_integer("source_file_size")
-        file_vector_count = long_integer("source_file_vector_count")
-        dimensions = integer("dimensions")
-        header_bytes = integer("header_bytes")
-        returned_vector_count = long_integer("vector_count")
-        indexed_payload_bytes = long_integer("indexed_payload_bytes")
-        digest = string("vector_payload_sha256")
-        returned_partitions = integer("num_indexing_threads")
-        returned_force_merge = integer("force_merge_segment_count")
-        actual_threads = integer("actual_indexing_thread_count")
-        max_concurrent_threads = integer("max_concurrent_indexing_threads")
-        execution_mode = string("indexing_execution_mode")
-        segment_count = integer("segment_count")
-        max_buffered_docs = integer("max_buffered_docs")
-        applied_hard_limit = integer("applied_ram_per_thread_hard_limit_mb")
-        ingest_merge_policy = string("ingest_merge_policy")
+        partition_counts = tuple(
+            long_integer(
+                f"{_FBIN_PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX}{partition}"
+            )
+            for partition in range(topology.premerge_segment_count)
+        )
+        timings = {name: long_integer(name) for name in _FBIN_TIMING_FIELDS}
+        segment_count = integer(_FBIN_SEGMENT_COUNT_KEY)
+        returned_force_merge = integer(_FBIN_FORCE_MERGE_SEGMENT_COUNT_KEY)
+        max_buffered_docs = integer(_FBIN_MAX_BUFFERED_DOCS_KEY)
+        applied_hard_limit = integer(
+            _FBIN_APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY
+        )
+        ingest_merge_policy = string(_FBIN_INGEST_MERGE_POLICY_KEY)
+        return RuntimeFbinBuildResult(
+            segment_count=segment_count,
+            timing=RuntimeBuildTiming(
+                directory_open_ns=timings["directory_open_ns"],
+                writer_setup_ns=timings["writer_setup_ns"],
+                document_ingest_ns=timings["document_ingest_ns"],
+                force_merge_ns=timings["force_merge_ns"],
+                writer_commit_close_ns=timings["writer_commit_close_ns"],
+                post_build_reader_ns=timings["post_build_reader_ns"],
+                directory_close_ns=timings["directory_close_ns"],
+                runtime_build_wall_ns=timings["runtime_build_wall_ns"],
+                fbin_read_ns=timings["fbin_read_ns"],
+            ),
+            topology=RuntimeBuildTopology(
+                requested_premerge_segment_count=integer(
+                    _FBIN_PREMERGE_SEGMENT_COUNT_KEY
+                ),
+                observed_premerge_segment_count=segment_count,
+                requested_force_merge_segment_count=returned_force_merge,
+                premerge_segment_vector_counts=partition_counts,
+                max_buffered_docs=max_buffered_docs,
+                applied_ram_per_thread_hard_limit_mb=applied_hard_limit,
+                ingest_merge_policy=ingest_merge_policy,
+                final_merge_policy=None,
+            ),
+            codec_name=string(_FBIN_CODEC_NAME_KEY),
+            source_file_size=long_integer(_FBIN_SOURCE_FILE_SIZE_KEY),
+            source_file_vector_count=long_integer(
+                _FBIN_SOURCE_FILE_VECTOR_COUNT_KEY
+            ),
+            dimensions=integer(_FBIN_DIMENSIONS_KEY),
+            header_bytes=integer(_FBIN_HEADER_BYTES_KEY),
+            vector_count=long_integer(_FBIN_VECTOR_COUNT_KEY),
+            indexed_payload_bytes=long_integer(
+                _FBIN_INDEXED_PAYLOAD_BYTES_KEY
+            ),
+            vector_payload_sha256=string(_FBIN_VECTOR_PAYLOAD_SHA256_KEY),
+        )
 
+    def _validate_fbin_build_response(
+        self,
+        result: RuntimeFbinBuildResult,
+        *,
+        codec_name: str,
+        expected_source_size: int,
+        expected_file_vector_count: int,
+        expected_dimensions: int,
+        expected_header_bytes: int,
+        vector_count: int,
+        topology: _ControlledBuildTopology,
+    ) -> None:
+        """Reject bridge responses that do not prove the requested build."""
+        self._validate_fbin_response_scalars(
+            result,
+            codec_name=codec_name,
+            expected_source_size=expected_source_size,
+            expected_file_vector_count=expected_file_vector_count,
+            expected_dimensions=expected_dimensions,
+            expected_header_bytes=expected_header_bytes,
+            vector_count=vector_count,
+            topology=topology,
+        )
+        self._validate_fbin_response_partitions(result, topology)
+        self._validate_fbin_response_timings(result.timing)
+
+    @staticmethod
+    def _validate_fbin_response_scalars(
+        result: RuntimeFbinBuildResult,
+        *,
+        codec_name: str,
+        expected_source_size: int,
+        expected_file_vector_count: int,
+        expected_dimensions: int,
+        expected_header_bytes: int,
+        vector_count: int,
+        topology: _ControlledBuildTopology,
+    ) -> None:
         expected_scalars = {
-            "codec_name": (returned_codec, codec_name),
-            "source_file_size": (source_size, expected_source_size),
-            "source_file_vector_count": (
-                file_vector_count,
+            _FBIN_CODEC_NAME_KEY: (result.codec_name, codec_name),
+            _FBIN_SOURCE_FILE_SIZE_KEY: (
+                result.source_file_size,
+                expected_source_size,
+            ),
+            _FBIN_SOURCE_FILE_VECTOR_COUNT_KEY: (
+                result.source_file_vector_count,
                 expected_file_vector_count,
             ),
-            "dimensions": (dimensions, expected_dimensions),
-            "header_bytes": (header_bytes, expected_header_bytes),
-            "vector_count": (returned_vector_count, vector_count),
-            "indexed_payload_bytes": (
-                indexed_payload_bytes,
+            _FBIN_DIMENSIONS_KEY: (result.dimensions, expected_dimensions),
+            _FBIN_HEADER_BYTES_KEY: (
+                result.header_bytes,
+                expected_header_bytes,
+            ),
+            _FBIN_VECTOR_COUNT_KEY: (result.vector_count, vector_count),
+            _FBIN_INDEXED_PAYLOAD_BYTES_KEY: (
+                result.indexed_payload_bytes,
                 vector_count
                 * expected_dimensions
                 * np.dtype(np.float32).itemsize,
             ),
-            "num_indexing_threads": (
-                returned_partitions,
-                topology.num_indexing_threads,
+            _FBIN_PREMERGE_SEGMENT_COUNT_KEY: (
+                result.topology.requested_premerge_segment_count,
+                topology.premerge_segment_count,
             ),
-            "force_merge_segment_count": (returned_force_merge, 0),
-            "actual_indexing_thread_count": (actual_threads, 1),
-            "max_concurrent_indexing_threads": (max_concurrent_threads, 1),
-            "indexing_execution_mode": (
-                execution_mode,
-                "partitioned_sequential",
+            _FBIN_FORCE_MERGE_SEGMENT_COUNT_KEY: (
+                result.topology.requested_force_merge_segment_count,
+                0,
             ),
-            "segment_count": (segment_count, topology.num_indexing_threads),
-            "max_buffered_docs": (
-                max_buffered_docs,
+            _FBIN_SEGMENT_COUNT_KEY: (
+                result.segment_count,
+                topology.premerge_segment_count,
+            ),
+            _FBIN_MAX_BUFFERED_DOCS_KEY: (
+                result.topology.max_buffered_docs,
                 topology.max_buffered_docs,
             ),
-            "applied_ram_per_thread_hard_limit_mb": (
-                applied_hard_limit,
+            _FBIN_APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY: (
+                result.topology.applied_ram_per_thread_hard_limit_mb,
                 topology.ram_per_thread_hard_limit_mb,
             ),
-            "ingest_merge_policy": (ingest_merge_policy, "NoMergePolicy"),
+            _FBIN_INGEST_MERGE_POLICY_KEY: (
+                result.topology.ingest_merge_policy,
+                "NoMergePolicy",
+            ),
         }
         for name, (actual, expected) in expected_scalars.items():
             if actual != expected:
@@ -1814,6 +2070,7 @@ class LuceneRuntime:
                     "Java FBIN indexing bridge response mismatch for "
                     f"{name}: expected {expected!r}, got {actual!r}"
                 )
+        digest = result.vector_payload_sha256
         if len(digest) != 64 or any(
             character not in "0123456789abcdef" for character in digest
         ):
@@ -1821,13 +2078,15 @@ class LuceneRuntime:
                 "Java FBIN indexing bridge returned an invalid SHA-256 digest"
             )
 
-        partition_counts = tuple(
-            long_integer(f"premerge_segment_vector_count_{partition}")
-            for partition in range(topology.num_indexing_threads)
-        )
+    @staticmethod
+    def _validate_fbin_response_partitions(
+        result: RuntimeFbinBuildResult,
+        topology: _ControlledBuildTopology,
+    ) -> None:
         expected_partition_counts = (topology.chunk_size,) * int(
-            topology.num_indexing_threads
+            topology.premerge_segment_count
         )
+        partition_counts = result.topology.premerge_segment_vector_counts
         if partition_counts != expected_partition_counts:
             raise RuntimeError(
                 "Java FBIN indexing bridge returned unexpected partition "
@@ -1835,65 +2094,38 @@ class LuceneRuntime:
                 f"{partition_counts}"
             )
 
-        timing_names = (
-            "directory_open_ns",
-            "writer_setup_ns",
-            "document_ingest_ns",
-            "fbin_read_ns",
-            "writer_commit_close_ns",
-            "post_build_reader_ns",
-            "directory_close_ns",
-            "runtime_build_wall_ns",
-        )
-        timings = {name: long_integer(name) for name in timing_names}
-        if any(value < 0 for value in timings.values()):
+    @staticmethod
+    def _validate_fbin_response_timings(timing: RuntimeBuildTiming) -> None:
+        fbin_read_ns = timing.fbin_read_ns
+        if fbin_read_ns is None:
             raise RuntimeError(
                 "Java FBIN indexing bridge returned a negative timing"
             )
-        if timings["fbin_read_ns"] > timings["document_ingest_ns"]:
+        timing_values = (
+            timing.directory_open_ns,
+            timing.writer_setup_ns,
+            timing.document_ingest_ns,
+            fbin_read_ns,
+            timing.force_merge_ns,
+            timing.writer_commit_close_ns,
+            timing.post_build_reader_ns,
+            timing.directory_close_ns,
+            timing.runtime_build_wall_ns,
+        )
+        if any(value < 0 for value in timing_values):
+            raise RuntimeError(
+                "Java FBIN indexing bridge returned a negative timing"
+            )
+        if fbin_read_ns > timing.document_ingest_ns:
             raise RuntimeError(
                 "Java FBIN indexing bridge returned FBIN read time greater "
                 "than document ingestion time"
             )
-
-        runtime_timing = RuntimeBuildTiming(
-            directory_open_ns=timings["directory_open_ns"],
-            writer_setup_ns=timings["writer_setup_ns"],
-            document_ingest_ns=timings["document_ingest_ns"],
-            writer_commit_close_ns=timings["writer_commit_close_ns"],
-            post_build_reader_ns=timings["post_build_reader_ns"],
-            directory_close_ns=timings["directory_close_ns"],
-            runtime_build_wall_ns=timings["runtime_build_wall_ns"],
-            fbin_read_ns=timings["fbin_read_ns"],
-        )
-        runtime_topology = RuntimeBuildTopology(
-            requested_premerge_segment_count=None,
-            requested_num_indexing_threads=topology.num_indexing_threads,
-            actual_indexing_thread_count=actual_threads,
-            max_concurrent_indexing_threads=max_concurrent_threads,
-            indexing_execution_mode=execution_mode,
-            indexing_worker_document_counts=(vector_count,),
-            observed_premerge_segment_count=segment_count,
-            requested_force_merge_segment_count=returned_force_merge,
-            premerge_segment_vector_counts=partition_counts,
-            max_buffered_docs=max_buffered_docs,
-            applied_ram_per_thread_hard_limit_mb=applied_hard_limit,
-            ingest_merge_policy=ingest_merge_policy,
-            final_merge_policy=None,
-        )
-        return RuntimeFbinBuildResult(
-            segment_count=segment_count,
-            timing=runtime_timing,
-            topology=runtime_topology,
-            codec_name=returned_codec,
-            source_file_size=source_size,
-            source_file_vector_count=file_vector_count,
-            dimensions=dimensions,
-            header_bytes=header_bytes,
-            vector_count=returned_vector_count,
-            indexed_payload_bytes=indexed_payload_bytes,
-            vector_payload_sha256=digest,
-        )
+        if timing.force_merge_ns != 0:
+            raise RuntimeError(
+                "Java FBIN indexing bridge unexpectedly reported force-merge "
+                f"work: {timing.force_merge_ns} ns"
+            )
 
     def build_index(
         self,
@@ -1916,12 +2148,6 @@ class LuceneRuntime:
         directory = self.FSDirectory.open(self.Paths.get(str(index_path)))
         directory_open_ns = time.perf_counter_ns() - directory_open_started
         directory_close_ns = 0
-        writer_setup_ns = 0
-        document_ingest_ns = 0
-        writer_commit_close_ns = 0
-        post_build_reader_ns = 0
-        segment_count = 0
-        runtime_topology = None
 
         def close_directory() -> None:
             nonlocal directory_close_ns
@@ -1935,160 +2161,29 @@ class LuceneRuntime:
             cleanups.add("close Lucene directory", close_directory)
             writer_setup_started = time.perf_counter_ns()
             codec = self._resolve_build_codec(codec_name, build_parameters)
-            writer_setup_ns += time.perf_counter_ns() - writer_setup_started
+            codec_setup_ns = time.perf_counter_ns() - writer_setup_started
             if controlled is None:
-                setup_started = time.perf_counter_ns()
-                config = self.IndexWriterConfig()
-                config.setOpenMode(self.IndexWriterConfig.OpenMode.CREATE)
-                config.setCodec(codec)
-                writer = self.IndexWriter(directory, config)
-                writer_setup_ns += time.perf_counter_ns() - setup_started
-                try:
-                    ingest_started = time.perf_counter_ns()
-                    for document_id, vector in enumerate(vectors):
-                        writer.addDocument(self._document(document_id, vector))
-                    document_ingest_ns = (
-                        time.perf_counter_ns() - ingest_started
-                    )
-                    commit_started = time.perf_counter_ns()
-                    writer.commit()
-                    writer.close()
-                    writer_commit_close_ns = (
-                        time.perf_counter_ns() - commit_started
-                    )
-                except BaseException as error:
-                    _rollback_writer(writer, error)
-                    raise
-                post_build_started = time.perf_counter_ns()
-                reader = self.DirectoryReader.open(directory)
-                with _CleanupStack() as reader_cleanups:
-                    reader_cleanups.add("close Lucene reader", reader.close)
-                    segment_count = int(reader.leaves().size())
-                post_build_reader_ns = (
-                    time.perf_counter_ns() - post_build_started
-                )
+                phase = self._build_ordinary_index(directory, vectors, codec)
             else:
-                # The historical vectorsearch-benchmarks CAGRA route names
-                # this control numIndexThreads, but builds K contiguous
-                # partitions in sequential passes.  Preserve that behavior:
-                # the removed Python shared-writer route was substantially
-                # slower in validation, did not guarantee equal DWPT segments,
-                # and was not the PR-2476 path this backend should reproduce.
-                observed_premerge_counts: tuple[int, ...] = ()
-                for chunk_number in range(controlled.premerge_segment_count):
-                    start = chunk_number * controlled.chunk_size
-                    stop = start + controlled.chunk_size
-                    setup_ns, ingest_ns, commit_close_ns = (
-                        self._write_controlled_chunk(
-                            directory,
-                            vectors,
-                            codec,
-                            controlled,
-                            start=start,
-                            stop=stop,
-                            create=chunk_number == 0,
-                        )
-                    )
-                    writer_setup_ns += setup_ns
-                    document_ingest_ns += ingest_ns
-                    writer_commit_close_ns += commit_close_ns
-                    post_build_started = time.perf_counter_ns()
-                    observed_counts = self._committed_segment_vector_counts(
-                        directory
-                    )
-                    post_build_reader_ns += (
-                        time.perf_counter_ns() - post_build_started
-                    )
-                    expected_count = chunk_number + 1
-                    expected_vectors = (
-                        controlled.chunk_size,
-                    ) * expected_count
-                    if observed_counts != expected_vectors:
-                        raise RuntimeError(
-                            "Controlled Lucene ingest topology mismatch after "
-                            f"partition {expected_count}: expected segment "
-                            f"vector counts {expected_vectors}, observed "
-                            f"{observed_counts}"
-                        )
-                    observed_premerge_counts = observed_counts
-
-                final_merge_policy = None
-                final_counts = observed_premerge_counts
-                if (
-                    controlled.force_merge_segment_count == 1
-                    and controlled.premerge_segment_count > 1
-                ):
-                    setup_ns, commit_close_ns = (
-                        self._force_merge_controlled_index(
-                            directory, codec, controlled
-                        )
-                    )
-                    writer_setup_ns += setup_ns
-                    writer_commit_close_ns += commit_close_ns
-                    post_build_started = time.perf_counter_ns()
-                    final_counts = self._committed_segment_vector_counts(
-                        directory
-                    )
-                    post_build_reader_ns += (
-                        time.perf_counter_ns() - post_build_started
-                    )
-                    final_merge_policy = "TieredMergePolicy"
-                expected_final_counts = (
-                    (int(vectors.shape[0]),)
-                    if controlled.force_merge_segment_count == 1
-                    else observed_premerge_counts
-                )
-                if final_counts != expected_final_counts:
-                    raise RuntimeError(
-                        "Controlled Lucene final topology mismatch: expected "
-                        f"segment vector counts {expected_final_counts}, "
-                        f"observed {final_counts}"
-                    )
-                segment_count = len(final_counts)
-                requested_num_indexing_threads = (
-                    controlled.num_indexing_threads
-                )
-                runtime_topology = RuntimeBuildTopology(
-                    requested_premerge_segment_count=(
-                        controlled.requested_premerge_segment_count
-                    ),
-                    requested_num_indexing_threads=(
-                        requested_num_indexing_threads
-                    ),
-                    actual_indexing_thread_count=1,
-                    max_concurrent_indexing_threads=1,
-                    indexing_execution_mode=(
-                        "partitioned_sequential"
-                        if requested_num_indexing_threads is not None
-                        else "legacy_premerge_sequential"
-                    ),
-                    indexing_worker_document_counts=((int(vectors.shape[0]),)),
-                    observed_premerge_segment_count=len(
-                        observed_premerge_counts
-                    ),
-                    requested_force_merge_segment_count=(
-                        controlled.force_merge_segment_count
-                    ),
-                    premerge_segment_vector_counts=observed_premerge_counts,
-                    max_buffered_docs=controlled.max_buffered_docs,
-                    applied_ram_per_thread_hard_limit_mb=(
-                        controlled.ram_per_thread_hard_limit_mb
-                    ),
-                    ingest_merge_policy="NoMergePolicy",
-                    final_merge_policy=final_merge_policy,
+                phase = self._build_controlled_index(
+                    directory,
+                    vectors,
+                    codec,
+                    controlled,
                 )
         return RuntimeBuildResult(
-            segment_count=segment_count,
+            segment_count=phase.segment_count,
             timing=RuntimeBuildTiming(
                 directory_open_ns=directory_open_ns,
-                writer_setup_ns=writer_setup_ns,
-                document_ingest_ns=document_ingest_ns,
-                writer_commit_close_ns=writer_commit_close_ns,
-                post_build_reader_ns=post_build_reader_ns,
+                writer_setup_ns=codec_setup_ns + phase.writer_setup_ns,
+                document_ingest_ns=phase.document_ingest_ns,
+                force_merge_ns=phase.force_merge_ns,
+                writer_commit_close_ns=phase.writer_commit_close_ns,
+                post_build_reader_ns=phase.post_build_reader_ns,
                 directory_close_ns=directory_close_ns,
                 runtime_build_wall_ns=time.perf_counter_ns() - runtime_started,
             ),
-            topology=runtime_topology,
+            topology=phase.topology,
         )
 
     @staticmethod

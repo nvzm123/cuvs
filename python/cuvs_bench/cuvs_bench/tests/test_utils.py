@@ -527,11 +527,7 @@ class TestDatasetLazyLoading:
         data = np.random.rand(4, 2).astype(np.float32)
         path = str(tmp_path / "base.fbin")
         _write_test_bin(path, data)
-        dataset = Dataset(
-            name="test",
-            training_vectors=np.empty((0, 0)),
-            base_file=path,
-        )
+        dataset = Dataset(name="test", base_file=path)
 
         assert dataset.training_vectors_materialized is False
         assert dataset._training_vectors.size == 0

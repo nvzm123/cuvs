@@ -4,7 +4,6 @@
  */
 package com.nvidia.cuvs.lucene;
 
-import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.ACTUAL_INDEXING_THREAD_COUNT_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.CODEC_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.CODEC_NAME_KEY;
@@ -18,16 +17,15 @@ import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.EXPECTED_FILE_V
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.EXPECTED_HEADER_BYTES_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.EXPECTED_SOURCE_SIZE_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.FBIN_READ_NS_KEY;
+import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.FORCE_MERGE_NS_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.FORCE_MERGE_SEGMENT_COUNT_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.HEADER_BYTES_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.INDEXED_PAYLOAD_BYTES_KEY;
-import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.INDEXING_EXECUTION_MODE_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.INDEX_PATH_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.INGEST_MERGE_POLICY_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.MAX_BUFFERED_DOCS_KEY;
-import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.MAX_CONCURRENT_INDEXING_THREADS_KEY;
-import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.NUM_INDEXING_THREADS_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.POST_BUILD_READER_NS_KEY;
+import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.PREMERGE_SEGMENT_COUNT_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.RAM_PER_THREAD_HARD_LIMIT_MB_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.RUNTIME_BUILD_WALL_NS_KEY;
@@ -42,6 +40,7 @@ import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.WRITER_SETUP_NS
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -52,6 +51,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
@@ -72,7 +72,7 @@ import org.junit.rules.TemporaryFolder;
 public class TestCuvsBenchFbinIndexingBridge {
   private static final int LEGACY_HEADER_BYTES = 8;
   private static final int EXTENDED_HEADER_BYTES = 16;
-  private static final int HARD_LIMIT_MB = 61_440;
+  private static final int HARD_LIMIT_MB = 1024;
 
   @Rule public final TemporaryFolder temporary = new TemporaryFolder();
 
@@ -97,11 +97,8 @@ public class TestCuvsBenchFbinIndexingBridge {
     assertEquals(8L, response.get(VECTOR_COUNT_KEY));
     assertEquals(8L * 3L * Float.BYTES, response.get(INDEXED_PAYLOAD_BYTES_KEY));
     assertEquals(payloadSha256(vectors, 8), response.get(VECTOR_PAYLOAD_SHA256_KEY));
-    assertEquals(4, response.get(NUM_INDEXING_THREADS_KEY));
+    assertEquals(4, response.get(PREMERGE_SEGMENT_COUNT_KEY));
     assertEquals(0, response.get(FORCE_MERGE_SEGMENT_COUNT_KEY));
-    assertEquals(1, response.get(ACTUAL_INDEXING_THREAD_COUNT_KEY));
-    assertEquals(1, response.get(MAX_CONCURRENT_INDEXING_THREADS_KEY));
-    assertEquals("partitioned_sequential", response.get(INDEXING_EXECUTION_MODE_KEY));
     assertEquals(4, response.get(SEGMENT_COUNT_KEY));
     for (int segment = 0; segment < 4; segment++) {
       assertEquals(2L, response.get(PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX + segment));
@@ -113,6 +110,7 @@ public class TestCuvsBenchFbinIndexingBridge {
     assertNonNegativeTiming(response, WRITER_SETUP_NS_KEY);
     assertNonNegativeTiming(response, DOCUMENT_INGEST_NS_KEY);
     assertNonNegativeTiming(response, FBIN_READ_NS_KEY);
+    assertEquals(0L, response.get(FORCE_MERGE_NS_KEY));
     assertNonNegativeTiming(response, WRITER_COMMIT_CLOSE_NS_KEY);
     assertNonNegativeTiming(response, POST_BUILD_READER_NS_KEY);
     assertNonNegativeTiming(response, DIRECTORY_CLOSE_NS_KEY);
@@ -150,6 +148,30 @@ public class TestCuvsBenchFbinIndexingBridge {
     assertEquals(1, response.get(SEGMENT_COUNT_KEY));
     assertEquals(4L, response.get(PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX + 0));
     assertIndex(index, vectors, 4, 1);
+  }
+
+  @Test
+  public void testStreamsAcrossAFullBufferAndFinalPartialBuffer() throws Exception {
+    Path root = temporary.newFolder("multiple-read-buffers").toPath();
+    int rows = 2049;
+    int dimensions = 1024;
+    // 2048 rows fill the 8 MiB production buffer; row 2049 requires a second read.
+    float[][] vectors = distinctVectors(rows, dimensions);
+    Path source = writeFbin(root.resolve("base.fbin"), vectors, false);
+    Path index = Files.createDirectory(root.resolve("index"));
+    Codec codec = new Lucene101Codec();
+
+    Map<String, Object> response =
+        new CuvsBenchFbinIndexingBridge()
+            .apply(request(source, index, codec, rows, dimensions, rows, 1, 0));
+
+    long payloadBytes = (long) rows * dimensions * Float.BYTES;
+    assertEquals((long) rows, response.get(VECTOR_COUNT_KEY));
+    assertEquals(payloadBytes, response.get(INDEXED_PAYLOAD_BYTES_KEY));
+    assertEquals(1, response.get(SEGMENT_COUNT_KEY));
+    assertEquals((long) rows, response.get(PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX + 0));
+    assertEquals(payloadSha256(vectors, rows), response.get(VECTOR_PAYLOAD_SHA256_KEY));
+    assertIndex(index, vectors, rows, 1);
   }
 
   @Test
@@ -255,7 +277,7 @@ public class TestCuvsBenchFbinIndexingBridge {
                 new CuvsBenchFbinIndexingBridge()
                     .apply(request(source, unequalIndex, codec, 6, 2, 6, 4, 0)));
     assertEquals(
-        "vector_count must be divisible by num_indexing_threads for equal partitions",
+        "vector_count must be divisible by premerge_segment_count for equal partitions",
         unequal.getMessage());
     assertDirectoryEmpty(unequalIndex);
 
@@ -332,6 +354,75 @@ public class TestCuvsBenchFbinIndexingBridge {
         assertThrows(IllegalArgumentException.class, () -> bridge.apply(unknown)).getMessage());
   }
 
+  @Test
+  public void testAcceptsLuceneHardLimitBoundariesAndRejects2048() throws Exception {
+    Path root = temporary.newFolder("hard-limit-boundaries").toPath();
+    float[][] vectors = distinctVectors(2, 2);
+    Path source = writeFbin(root.resolve("base.fbin"), vectors, false);
+    Codec codec = new Lucene101Codec();
+
+    for (int supportedLimit : new int[] {1, 2047}) {
+      Path index = Files.createDirectory(root.resolve("index-" + supportedLimit));
+      Map<String, Object> supported = request(source, index, codec, 2, 2, 2, 1, 0);
+      supported.put(RAM_PER_THREAD_HARD_LIMIT_MB_KEY, supportedLimit);
+
+      Map<String, Object> response = new CuvsBenchFbinIndexingBridge().apply(supported);
+
+      assertEquals(supportedLimit, response.get(APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY));
+      assertIndex(index, vectors, 2, 1);
+    }
+
+    Path rejectedIndex = Files.createDirectory(root.resolve("index-2048"));
+    Map<String, Object> rejected = request(source, rejectedIndex, codec, 2, 2, 2, 1, 0);
+    rejected.put(RAM_PER_THREAD_HARD_LIMIT_MB_KEY, 2048);
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new CuvsBenchFbinIndexingBridge().apply(rejected));
+    assertEquals("ram_per_thread_hard_limit_mb must be in range [1, 2047]", error.getMessage());
+    assertDirectoryEmpty(rejectedIndex);
+  }
+
+  @Test
+  public void testTimedClosePreservesPrimaryFailureAndSuppressesCloseFailure() {
+    IOException buildFailure = new IOException("build failed");
+    IOException closeFailure = new IOException("close failed");
+    long[] closeElapsedNanos = {-1L};
+
+    IOException observed =
+        assertThrows(
+            IOException.class,
+            () -> {
+              try (var ignored =
+                  new CuvsBenchFbinIndexingBridge.TimedClose(
+                      () -> {
+                        throw closeFailure;
+                      },
+                      elapsed -> closeElapsedNanos[0] = elapsed)) {
+                throw buildFailure;
+              }
+            });
+
+    assertSame(buildFailure, observed);
+    assertArrayEquals(new Throwable[] {closeFailure}, observed.getSuppressed());
+    assertTrue(closeElapsedNanos[0] >= 0L);
+
+    IOException onlyCloseFailure = new IOException("close failed without a build failure");
+    IOException observedCloseFailure =
+        assertThrows(
+            IOException.class,
+            () -> {
+              try (var ignored =
+                  new CuvsBenchFbinIndexingBridge.TimedClose(
+                      () -> {
+                        throw onlyCloseFailure;
+                      },
+                      elapsed -> {})) {}
+            });
+    assertSame(onlyCloseFailure, observedCloseFailure);
+  }
+
   private static Map<String, Object> request(
       Path source,
       Path index,
@@ -355,7 +446,7 @@ public class TestCuvsBenchFbinIndexingBridge {
     request.put(EXPECTED_DIMENSIONS_KEY, dimensions);
     request.put(EXPECTED_HEADER_BYTES_KEY, headerBytes);
     request.put(VECTOR_COUNT_KEY, selectedVectorCount);
-    request.put(NUM_INDEXING_THREADS_KEY, partitions);
+    request.put(PREMERGE_SEGMENT_COUNT_KEY, partitions);
     request.put(FORCE_MERGE_SEGMENT_COUNT_KEY, forceMerge);
     request.put(RAM_PER_THREAD_HARD_LIMIT_MB_KEY, HARD_LIMIT_MB);
     return request;
@@ -417,6 +508,7 @@ public class TestCuvsBenchFbinIndexingBridge {
       assertEquals(selectedRows, reader.numDocs());
       assertEquals(expectedSegments, reader.leaves().size());
       int observed = 0;
+      BitSet observedIds = new BitSet(selectedRows);
       for (var context : reader.leaves()) {
         LeafReader leaf = context.reader();
         NumericDocValues ids = leaf.getNumericDocValues("id");
@@ -427,11 +519,16 @@ public class TestCuvsBenchFbinIndexingBridge {
             document = iterator.nextDoc()) {
           assertTrue(ids.advanceExact(document));
           int id = Math.toIntExact(ids.longValue());
+          assertTrue("dataset ID is out of range: " + id, id >= 0 && id < selectedRows);
+          assertFalse("duplicate dataset ID: " + id, observedIds.get(id));
+          observedIds.set(id);
           assertArrayEquals(expectedVectors[id], vectors.vectorValue(iterator.index()), 0.0f);
           observed++;
         }
       }
       assertEquals(selectedRows, observed);
+      assertEquals(selectedRows, observedIds.cardinality());
+      assertEquals(selectedRows, observedIds.nextClearBit(0));
     }
   }
 
@@ -446,7 +543,7 @@ public class TestCuvsBenchFbinIndexingBridge {
     request.put(EXPECTED_DIMENSIONS_KEY, 1);
     request.put(EXPECTED_HEADER_BYTES_KEY, LEGACY_HEADER_BYTES);
     request.put(VECTOR_COUNT_KEY, 1L);
-    request.put(NUM_INDEXING_THREADS_KEY, 1);
+    request.put(PREMERGE_SEGMENT_COUNT_KEY, 1);
     request.put(FORCE_MERGE_SEGMENT_COUNT_KEY, 0);
     request.put(RAM_PER_THREAD_HARD_LIMIT_MB_KEY, HARD_LIMIT_MB);
 

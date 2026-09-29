@@ -49,22 +49,30 @@ Pass that file with `--configuration`, select
 The normalized HNSW parameters are recorded in the index manifest. Result
 metadata records those requested parameters together with graph degrees derived
 from the selected heuristic; the graph-degree fields are not direct native
-observations.
+observations. The machine-readable
+`graph_degree_source=requested_hnsw_same_graph_footprint_derivation` field makes
+that provenance explicit, including when the writer uses its CPU fallback.
 
-Large accelerated-HNSW validations can also control Lucene ingestion
-partitioning and the final segment topology.
-`num_indexing_threads`, `force_merge_segment_count`, and
-`ram_per_thread_hard_limit_mb` must be specified together. The historical
-`num_indexing_threads` spelling is retained for compatibility with the
-vectorsearch-benchmarks CAGRA route: its value is the number of equal,
-contiguous partitions built in sequential passes, not the number of simultaneous
-Python producers. The partition count and RAM limit must be positive integers;
+Large accelerated-HNSW validations can also control sequential ingestion
+partitions and the final segment topology. `premerge_segment_count`,
+`force_merge_segment_count`, and `ram_per_thread_hard_limit_mb` must be
+specified together. The partition count must be a positive integer, the RAM
+limit must be an integer from 1 through 2047 MiB, and
 `force_merge_segment_count` must be either `0` (retain the partition segments)
-or `1` (produce one final segment). Automatic flushes and merges are disabled
-during each partition. When a final count of one is requested, a serial
-`forceMerge(1)` exercises the codec's vector-merge path; this control does not
-by itself make that merge out-of-core. For example, a four-partition build that
-retains all four segments uses:
+or `1` (produce one final segment).
+
+Each equal, contiguous partition uses a separate writer lifecycle. Automatic
+merges are disabled during ingestion, and the document-count flush boundary is
+derived from the partition size. Lucene's supported per-thread RAM safety limit
+remains active. If it causes an earlier flush, the backend rejects the physical
+topology mismatch instead of silently reporting the requested segment shape.
+Use smaller partitions when a partition cannot fit under that safety limit.
+When a final count of one is requested from more than one pre-merge segment, a
+serial `forceMerge(1)` exercises the codec's vector-merge path; an index already
+containing one segment does not invoke a merge and records
+`runtime_force_merge_seconds=0` and `final_merge_policy=null`. This control does
+not by itself make that merge out-of-core. For example, a four-partition build
+that retains all four segments uses:
 
 ```yaml
 name: lucene_accelerated_hnsw
@@ -74,26 +82,22 @@ groups:
       codec: ["Lucene101AcceleratedHNSWCodec"]
       m: [16]
       beam_width: [80]
-      num_indexing_threads: [4]
+      premerge_segment_count: [4]
       force_merge_segment_count: [0]
-      ram_per_thread_hard_limit_mb: [61440]
+      ram_per_thread_hard_limit_mb: [1945]
     search: {}
 ```
 
 This produces and retains four equal segments. Set
 `force_merge_segment_count: [1]` to merge them serially into one segment after
-ingestion. Results truthfully record the compatibility request, one Python/JCC
-ingestion producer, sequential execution, exact partition vector counts,
-derived `max_buffered_docs`, applied hard limit, merge policies, and final
-segment count. The hard-limit bridge is verified at runtime and fails closed
-when Lucene does not retain the requested value. The manifest stores both the
-canonical request and runtime topology evidence. Reuse validates the evidence
-against the request, dataset row count, and final physical segment count, and
-reused build/search results surface that same evidence.
-
-`premerge_segment_count` remains available as a legacy, explicitly sequential
-topology control. It cannot be combined with `num_indexing_threads`; use the
-latter when reproducing the historical vectorsearch-benchmarks configuration.
+ingestion. Results record the requested and observed pre-merge segment counts,
+exact segment vector counts, derived `max_buffered_docs`, applied hard limit,
+merge policies, and final segment count. The public Lucene RAM-limit setter is
+verified at runtime and fails closed when Lucene does not retain the requested
+value. The manifest stores both the canonical request and runtime topology
+evidence. Reuse validates the evidence against the request, dataset row count,
+and final physical segment count, and reused build/search results surface that
+same evidence.
 
 ```bash
 python -m cuvs_bench.run \
@@ -142,15 +146,17 @@ algorithms support an explicit `num_candidates` value greater than or equal to
 The backend has a prototype Java FBIN ingestion route for controlled
 accelerated-HNSW builds. It is selected only when all of these conditions hold:
 
-- the dataset is backed by an unloaded, finite `float32` `.fbin` file;
+- the dataset is backed by an unloaded `float32` `.fbin` file;
 - the algorithm is `lucene_accelerated_hnsw` with the controlled
-  `num_indexing_threads` topology; and
+  `premerge_segment_count` topology; and
 - `force_merge_segment_count` is `0`.
 
 An explicit in-memory training array, another Lucene algorithm, or
 `force_merge_segment_count: 1` retains the existing PyLucene ingestion route.
 Once a file-backed build selects the Java bridge, a failed safety check fails
-the build rather than silently changing ingestion routes.
+the build rather than silently changing ingestion routes. Finite values are
+validated while Java reads the selected payload; non-finite input therefore
+fails after route selection and does not fall back to Python ingestion.
 
 The bridge reads the FBIN payload inside the JVM and calls ordinary
 `IndexWriter.addDocument` for each row. It therefore avoids materializing the
@@ -165,12 +171,12 @@ A selected bridge build records
 `training_vectors_materialized=false`. These fields attest the ingestion route
 and Python materialization state only; they are not GPU-route attestations.
 
-The historical `num_indexing_threads` name does not introduce concurrent
-indexing on this route. A value of `1` streams one partition. A value of `4`
-streams four equal contiguous partitions in sequential passes and retains four
-segments because force merge is disabled. In both cases the runtime topology
-must report one actual indexing thread and at most one concurrent indexing
-thread.
+`premerge_segment_count: 1` streams one partition. A value of `4` streams four
+equal contiguous partitions in sequential writer lifecycles and retains four
+segments because force merge is disabled. The setting describes physical
+topology, not concurrent indexing. If Lucene's supported per-thread memory
+limit flushes a partition early, the exact post-ingest topology check fails;
+increase the partition count rather than bypassing that safety limit.
 
 Python validates the source identity before and after the Java call. The Java
 bridge independently validates the legacy 8-byte or extended 16-byte FBIN
@@ -178,8 +184,11 @@ header, the exact file size, and the row and dimension values supplied by
 Python. It also requires a positive selected row count divisible by the
 partition count, rejects non-finite vector values, starts from an empty real
 staging directory, applies `NoMergePolicy`, stores document IDs as numeric doc
-values, and checks document and segment counts after every partition. An error
-rolls back the writer and leaves the destination index untouched.
+values, and performs one exact document, ID, vector-shape, and segment check
+after all partitions commit. An error rolls back the active writer and leaves
+the destination index untouched. If a later partition fails, earlier commits
+can remain in the unpublished staging directory; the backend discards that
+entire directory rather than installing a partial index.
 
 Selecting this ingestion route does not prove that accelerated HNSW used its
 GPU writer. `Lucene101AcceleratedHNSWCodec` still permits its documented CPU
@@ -315,27 +324,45 @@ JVM arguments cannot be changed after `lucene.initVM(...)`.
 ## Timing contract
 
 `build_time_seconds` and `index_build_call_seconds` cover the in-process Lucene
-build call: writer setup, document ingestion, writer commit/close, and the
-post-build reader check. They exclude dataset loading, index verification,
-manifest publication, installation, and size measurement; use
+build call: directory open/close, writer setup, document ingestion, an optional
+synchronous force merge, writer commit/close, and the post-build reader check.
+They exclude dataset loading, index verification, manifest publication,
+installation, and size measurement; use
 `backend_build_total_seconds` for that complete backend lifecycle.
+
+The outer build-call timers include configured-codec resolution on both
+ingestion routes. The narrower runtime timers have route-specific ownership:
+the Python ingestion route includes codec resolution in
+`runtime_build_wall_seconds` and `runtime_writer_setup_seconds`, while the Java
+FBIN bridge's runtime wall and writer-setup timers begin after Python has
+resolved the codec. Compare those narrower phases only within the same
+ingestion route; neither route reports an isolated codec-construction timer.
 
 The meaning of `runtime_document_ingest_seconds` depends on the recorded
 ingestion route. On the legacy route it includes NumPy-to-Python and
 Python-to-Java conversion, Java object creation, JCC dispatch, and Lucene work
-performed by `addDocument`. On the Java FBIN route it instead includes FBIN
-read and decode, payload digesting, finite-value validation, document creation,
-and ordinary `IndexWriter.addDocument` calls inside the JVM. It excludes
-writer commit and close.
+performed by `addDocument`. It is not a measurement of cuvs-lucene or GPU graph
+construction alone. On the Java FBIN route, Python source preparation remains
+outside the build call, while Java source/header validation and payload reads
+are inside it. The ingest phase includes FBIN read and decode, payload
+digesting, finite-value validation, reusable field mutation, and ordinary
+`IndexWriter.addDocument` calls inside the JVM. The reusable `Document` and
+fields are constructed before this timer. The ingest phase excludes writer
+flush, commit, and close.
 
 For Java FBIN ingestion, `runtime_fbin_read_seconds` is the nested portion of
 `runtime_document_ingest_seconds` spent in blocking file-channel reads. It does
 not include float decoding, validation, hashing, or Lucene indexing, and it
-must not be added to its parent timing. `runtime_writer_commit_close_seconds`
-includes flush work and any CAGRA or HNSW graph construction that the selected
-codec defers until flush, commit, or close. These boundaries separate file
-ingestion from deferred index construction, but neither timing alone is a
-complete build time.
+must not be added to its parent timing. This route rejects force merge and
+reports `runtime_force_merge_seconds=0`. On other controlled builds, that field
+measures an explicitly requested synchronous `forceMerge` as a nested sub-timer
+already included in the enclosing build call.
+`runtime_writer_commit_close_seconds` measures the full wall time around
+`flush()`, `commit()`, and `close()`. It includes ordinary Lucene bookkeeping
+and storage I/O as well as any graph or codec work deferred to those calls; it
+does not isolate codec or GPU construction. Absolute build times from this
+document-at-a-time path are therefore not directly comparable with a
+Java-native or bulk-FBIN benchmark harness.
 
 This initial backend invokes one Lucene query at a time. The common cuVS Bench
 `--batch-size` value is retained for configuration and result-file

@@ -16,9 +16,7 @@ import pytest
 from cuvs_bench.backends import _lucene_runtime
 from cuvs_bench.backends._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
-    CONFIGURED_ACCELERATED_HNSW_CODEC,
-    HNSW_BEAM_WIDTH_PROPERTY,
-    HNSW_MAX_CONN_PROPERTY,
+    CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY,
     _CleanupStack,
     _controlled_build_topology,
     _load_pylucene,
@@ -48,7 +46,7 @@ _ARTIFACT_VERSION = maven_artifact_version()
         (100_000_000, 4, 1, 25_000_000),
     ),
 )
-def test_controlled_topology_derives_exact_equal_segments(
+def test_controlled_topology_derives_equal_partition_plan(
     vector_count: int,
     premerge_segments: int,
     force_merge_segments: int,
@@ -58,7 +56,7 @@ def test_controlled_topology_derives_exact_equal_segments(
         {
             "premerge_segment_count": premerge_segments,
             "force_merge_segment_count": force_merge_segments,
-            "ram_per_thread_hard_limit_mb": 61_440,
+            "ram_per_thread_hard_limit_mb": 1_945,
         },
         vector_count,
     )
@@ -66,31 +64,9 @@ def test_controlled_topology_derives_exact_equal_segments(
     assert topology is not None
     assert topology.premerge_segment_count == premerge_segments
     assert topology.force_merge_segment_count == force_merge_segments
-    assert topology.ram_per_thread_hard_limit_mb == 61_440
+    assert topology.ram_per_thread_hard_limit_mb == 1_945
     assert topology.chunk_size == chunk_size
     assert topology.max_buffered_docs == chunk_size + 1
-
-
-@pytest.mark.parametrize("force_merge_segments", (0, 1))
-def test_num_indexing_threads_uses_partition_flush_boundary(
-    force_merge_segments: int,
-) -> None:
-    topology = _controlled_build_topology(
-        {
-            "num_indexing_threads": 4,
-            "force_merge_segment_count": force_merge_segments,
-            "ram_per_thread_hard_limit_mb": 61_440,
-        },
-        100_000_000,
-    )
-
-    assert topology is not None
-    assert topology.requested_premerge_segment_count is None
-    assert topology.num_indexing_threads == 4
-    assert topology.premerge_segment_count == 4
-    assert topology.force_merge_segment_count == force_merge_segments
-    assert topology.chunk_size == 25_000_000
-    assert topology.max_buffered_docs == 25_000_001
 
 
 @pytest.mark.parametrize(
@@ -103,19 +79,9 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
         ),
         (
             {
-                "premerge_segment_count": 4,
-                "num_indexing_threads": 4,
-                "force_merge_segment_count": 0,
-                "ram_per_thread_hard_limit_mb": 61_440,
-            },
-            100,
-            "cannot combine",
-        ),
-        (
-            {
                 "premerge_segment_count": True,
                 "force_merge_segment_count": 1,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             "must be a positive integer",
@@ -124,7 +90,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": 2,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -133,7 +99,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": True,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -142,7 +108,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": None,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -151,7 +117,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": "0",
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -160,7 +126,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": 0.0,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -169,7 +135,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": -1,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -178,7 +144,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": 1,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             101,
             "is not divisible",
@@ -190,6 +156,38 @@ def test_controlled_topology_rejects_ambiguous_shapes(
 ) -> None:
     with pytest.raises(RuntimeError, match=message):
         _controlled_build_topology(parameters, vector_count)
+
+
+@pytest.mark.parametrize("hard_limit", (1, 2047))
+def test_controlled_topology_accepts_supported_ram_limits(
+    hard_limit: int,
+) -> None:
+    topology = _controlled_build_topology(
+        {
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": hard_limit,
+        },
+        100,
+    )
+
+    assert topology is not None
+    assert topology.ram_per_thread_hard_limit_mb == hard_limit
+
+
+@pytest.mark.parametrize("hard_limit", (0, 2048, True))
+def test_controlled_topology_rejects_unsupported_ram_limits(
+    hard_limit: object,
+) -> None:
+    with pytest.raises(RuntimeError, match="ram_per_thread_hard_limit_mb"):
+        _controlled_build_topology(
+            {
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 0,
+                "ram_per_thread_hard_limit_mb": hard_limit,
+            },
+            100,
+        )
 
 
 def _properties(group: str, artifact: str, version: str) -> bytes:
@@ -233,14 +231,11 @@ def _write_artifacts(
         )
         archive.writestr(
             "com/nvidia/cuvs/lucene/"
-            "IndexWriterConfigPerThreadHardLimitBridge.class",
+            "Lucene101AcceleratedHNSWCodecFactory.class",
             b"",
         )
         archive.writestr(
             "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.class", b""
-        )
-        archive.writestr(
-            "com/nvidia/cuvs/lucene/Lucene101ConfiguredHNSWCodec.class", b""
         )
         archive.writestr(
             "META-INF/services/org.apache.lucene.codecs.Codec",
@@ -355,124 +350,193 @@ def test_java_fbin_indexer_reports_class_loading_failure() -> None:
     assert isinstance(failure.value.__cause__, RuntimeError)
 
 
-def test_java_fbin_build_uses_scalar_map_contract_and_validates_result(
-    tmp_path: Path,
-) -> None:
-    class Box:
-        def __init__(self, value: int) -> None:
-            self.value = value
+class _FbinJavaInteger:
+    def __init__(self, value: int) -> None:
+        self.value = value
 
-        def intValue(self) -> int:
-            return self.value
+    def intValue(self) -> int:
+        return self.value
 
-        def longValue(self) -> int:
-            return self.value
 
-    class NumberBinding:
-        @staticmethod
-        def valueOf(value: int) -> Box:
-            return Box(value)
+class _FbinJavaLong:
+    def __init__(self, value: int) -> None:
+        self.value = value
 
-        @staticmethod
-        def cast_(value: object) -> Box:
-            assert isinstance(value, Box)
-            return value
+    def longValue(self) -> int:
+        return self.value
 
-    class JavaMap(dict):
-        def put(self, key: str, value: object) -> None:
-            self[key] = value
 
-        def containsKey(self, key: str) -> bool:
-            return key in self
+class _FbinJavaString:
+    def __init__(self, value: str) -> None:
+        self.value = value
 
-        def get(self, key: str) -> object:
-            return self[key]
+    def __str__(self) -> str:
+        return self.value
 
-    class MapBinding:
-        @staticmethod
-        def cast_(value: object) -> JavaMap:
-            assert isinstance(value, JavaMap)
-            return value
 
-    response = JavaMap()
-    strings = {
-        "codec_name": ACCELERATED_HNSW_CODEC,
-        "vector_payload_sha256": "d" * 64,
-        "indexing_execution_mode": "partitioned_sequential",
-        "ingest_merge_policy": "NoMergePolicy",
-    }
-    integers = {
-        "dimensions": 2,
-        "header_bytes": 8,
-        "num_indexing_threads": 4,
-        "force_merge_segment_count": 0,
-        "actual_indexing_thread_count": 1,
-        "max_concurrent_indexing_threads": 1,
-        "segment_count": 4,
-        "max_buffered_docs": 3,
-        "applied_ram_per_thread_hard_limit_mb": 61_440,
-    }
-    longs = {
-        "source_file_size": 72,
-        "source_file_vector_count": 8,
-        "vector_count": 8,
-        "indexed_payload_bytes": 64,
-        "directory_open_ns": 1,
-        "writer_setup_ns": 2,
-        "document_ingest_ns": 30,
-        "fbin_read_ns": 20,
-        "writer_commit_close_ns": 4,
-        "post_build_reader_ns": 5,
-        "directory_close_ns": 6,
-        "runtime_build_wall_ns": 48,
-        **{
-            f"premerge_segment_vector_count_{partition}": 2
-            for partition in range(4)
-        },
-    }
-    response.update(strings)
-    response.update({name: Box(value) for name, value in integers.items()})
-    response.update({name: Box(value) for name, value in longs.items()})
-    requests = []
+class _FbinIntegerBinding:
+    @staticmethod
+    def valueOf(value: int) -> _FbinJavaInteger:
+        return _FbinJavaInteger(value)
 
-    class Bridge:
-        @staticmethod
-        def apply(request: JavaMap) -> JavaMap:
-            requests.append(request)
-            return response
+    @staticmethod
+    def cast_(value: object) -> _FbinJavaInteger:
+        if not isinstance(value, _FbinJavaInteger):
+            raise TypeError(
+                f"expected Java Integer, got {type(value).__name__}"
+            )
+        return value
 
+
+class _FbinLongBinding:
+    @staticmethod
+    def valueOf(value: int) -> _FbinJavaLong:
+        return _FbinJavaLong(value)
+
+    @staticmethod
+    def cast_(value: object) -> _FbinJavaLong:
+        if not isinstance(value, _FbinJavaLong):
+            raise TypeError(f"expected Java Long, got {type(value).__name__}")
+        return value
+
+
+class _FbinStringBinding:
+    @staticmethod
+    def cast_(value: object) -> _FbinJavaString:
+        if not isinstance(value, _FbinJavaString):
+            raise TypeError(
+                f"expected Java String, got {type(value).__name__}"
+            )
+        return value
+
+
+class _FbinJavaMap(dict):
+    def put(self, key: str, value: object) -> None:
+        self[key] = value
+
+    def containsKey(self, key: str) -> bool:
+        return key in self
+
+
+class _FbinMapBinding:
+    @staticmethod
+    def cast_(value: object) -> _FbinJavaMap:
+        if not isinstance(value, _FbinJavaMap):
+            raise TypeError(f"expected Java Map, got {type(value).__name__}")
+        return value
+
+
+class _FbinBridge:
+    def __init__(self, response: _FbinJavaMap) -> None:
+        self.response = response
+        self.requests: list[_FbinJavaMap] = []
+
+    def apply(self, request: _FbinJavaMap) -> _FbinJavaMap:
+        self.requests.append(request)
+        return self.response
+
+
+def _valid_fbin_bridge_response() -> _FbinJavaMap:
+    response = _FbinJavaMap(
+        {
+            "codec_name": _FbinJavaString(ACCELERATED_HNSW_CODEC),
+            "vector_payload_sha256": _FbinJavaString("d" * 64),
+            "ingest_merge_policy": _FbinJavaString("NoMergePolicy"),
+        }
+    )
+    response.update(
+        {
+            name: _FbinJavaInteger(value)
+            for name, value in {
+                "dimensions": 2,
+                "header_bytes": 8,
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": 0,
+                "segment_count": 4,
+                "max_buffered_docs": 3,
+                "applied_ram_per_thread_hard_limit_mb": 1024,
+            }.items()
+        }
+    )
+    response.update(
+        {
+            name: _FbinJavaLong(value)
+            for name, value in {
+                "source_file_size": 72,
+                "source_file_vector_count": 8,
+                "vector_count": 8,
+                "indexed_payload_bytes": 64,
+                "directory_open_ns": 1,
+                "writer_setup_ns": 2,
+                "document_ingest_ns": 30,
+                "fbin_read_ns": 20,
+                "force_merge_ns": 0,
+                "writer_commit_close_ns": 4,
+                "post_build_reader_ns": 5,
+                "directory_close_ns": 6,
+                "runtime_build_wall_ns": 48,
+                "premerge_segment_vector_count_0": 2,
+                "premerge_segment_vector_count_1": 2,
+                "premerge_segment_vector_count_2": 2,
+                "premerge_segment_vector_count_3": 2,
+            }.items()
+        }
+    )
+    return response
+
+
+@pytest.fixture
+def fbin_bridge_case(tmp_path: Path) -> SimpleNamespace:
+    response = _valid_fbin_bridge_response()
+    bridge = _FbinBridge(response)
     configured_codec = object()
     runtime = object.__new__(LuceneRuntime)
     runtime.attach_current_thread = lambda: None
     runtime._resolve_build_codec = lambda *_args: configured_codec
-    runtime._java_fbin_indexer = Bridge()
-    runtime.HashMap = JavaMap
-    runtime.Map = MapBinding
-    runtime.Integer = NumberBinding
-    runtime.Long = NumberBinding
-    source = tmp_path / "base.fbin"
-    parameters = {
-        "codec": ACCELERATED_HNSW_CODEC,
-        "m": 16,
-        "beam_width": 80,
-        "num_indexing_threads": 4,
-        "force_merge_segment_count": 0,
-        "ram_per_thread_hard_limit_mb": 61_440,
-    }
+    runtime._java_fbin_indexer = bridge
+    runtime.HashMap = _FbinJavaMap
+    runtime.Map = _FbinMapBinding
+    runtime.Integer = _FbinIntegerBinding
+    runtime.Long = _FbinLongBinding
+    runtime.String = _FbinStringBinding
+    return SimpleNamespace(
+        runtime=runtime,
+        response=response,
+        bridge=bridge,
+        configured_codec=configured_codec,
+        source_path=tmp_path / "base.fbin",
+        index_path=tmp_path / "index",
+        build_parameters={
+            "codec": ACCELERATED_HNSW_CODEC,
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1024,
+        },
+    )
 
-    result = runtime.build_index_from_fbin(
-        tmp_path / "index",
-        source,
+
+def _run_fbin_build(case: SimpleNamespace):
+    return case.runtime.build_index_from_fbin(
+        case.index_path,
+        case.source_path,
         expected_source_size=72,
         expected_file_vector_count=8,
         expected_dimensions=2,
         expected_header_bytes=8,
         vector_count=8,
         codec_name=ACCELERATED_HNSW_CODEC,
-        build_parameters=parameters,
+        build_parameters=case.build_parameters,
     )
 
-    [request] = requests
+
+def test_java_fbin_build_encodes_exact_bridge_request(
+    fbin_bridge_case: SimpleNamespace,
+) -> None:
+    _run_fbin_build(fbin_bridge_case)
+
+    [request] = fbin_bridge_case.bridge.requests
     assert set(request) == {
         "source_path",
         "index_path",
@@ -483,64 +547,170 @@ def test_java_fbin_build_uses_scalar_map_contract_and_validates_result(
         "expected_dimensions",
         "expected_header_bytes",
         "vector_count",
-        "num_indexing_threads",
+        "premerge_segment_count",
         "force_merge_segment_count",
         "ram_per_thread_hard_limit_mb",
     }
-    assert request["source_path"] == str(source)
-    assert request["index_path"] == str(tmp_path / "index")
-    assert request["codec"] is configured_codec
+    assert request["source_path"] == str(fbin_bridge_case.source_path)
+    assert request["index_path"] == str(fbin_bridge_case.index_path)
+    assert request["codec"] is fbin_bridge_case.configured_codec
     assert request["expected_codec_name"] == ACCELERATED_HNSW_CODEC
     assert request["expected_source_size"].longValue() == 72
     assert request["expected_file_vector_count"].longValue() == 8
     assert request["expected_dimensions"].intValue() == 2
     assert request["expected_header_bytes"].intValue() == 8
     assert request["vector_count"].longValue() == 8
-    assert request["num_indexing_threads"].intValue() == 4
+    assert request["premerge_segment_count"].intValue() == 4
     assert request["force_merge_segment_count"].intValue() == 0
-    assert request["ram_per_thread_hard_limit_mb"].intValue() == 61_440
-    assert result.vector_payload_sha256 == "d" * 64
+    assert request["ram_per_thread_hard_limit_mb"].intValue() == 1024
+
+
+def test_java_fbin_build_decodes_valid_bridge_response(
+    fbin_bridge_case: SimpleNamespace,
+) -> None:
+    result = _run_fbin_build(fbin_bridge_case)
+
+    assert result.codec_name == ACCELERATED_HNSW_CODEC
+    assert result.source_file_size == 72
+    assert result.source_file_vector_count == 8
+    assert result.dimensions == 2
+    assert result.header_bytes == 8
+    assert result.vector_count == 8
     assert result.indexed_payload_bytes == 64
+    assert result.vector_payload_sha256 == "d" * 64
+    assert result.segment_count == 4
     assert result.timing.fbin_read_ns == 20
+    assert result.timing.force_merge_ns == 0
+    assert result.timing.runtime_build_wall_ns == 48
+    assert result.topology.requested_premerge_segment_count == 4
+    assert result.topology.observed_premerge_segment_count == 4
+    assert result.topology.requested_force_merge_segment_count == 0
     assert result.topology.premerge_segment_vector_counts == (2, 2, 2, 2)
+    assert result.topology.max_buffered_docs == 3
+    assert result.topology.applied_ram_per_thread_hard_limit_mb == 1024
+    assert result.topology.ingest_merge_policy == "NoMergePolicy"
     assert result.topology.final_merge_policy is None
 
-    response["codec_name"] = "unexpected-codec"
-    with pytest.raises(RuntimeError, match="response mismatch for codec_name"):
-        runtime.build_index_from_fbin(
-            tmp_path / "index",
-            source,
-            expected_source_size=72,
-            expected_file_vector_count=8,
-            expected_dimensions=2,
-            expected_header_bytes=8,
-            vector_count=8,
-            codec_name=ACCELERATED_HNSW_CODEC,
-            build_parameters=parameters,
-        )
+
+_OMIT_FBIN_RESPONSE_FIELD = object()
 
 
-class _RecordingJavaSystem:
-    def __init__(self, properties: dict[str, str] | None = None) -> None:
-        self.properties = dict(properties or {})
+class _StringLookalike:
+    def __str__(self) -> str:
+        return ACCELERATED_HNSW_CODEC
 
-    def getProperty(self, name: str):
-        return self.properties.get(name)
 
-    def setProperty(self, name: str, value: str):
-        previous = self.properties.get(name)
-        self.properties[name] = value
+@pytest.mark.parametrize(
+    ("field", "replacement", "message"),
+    (
+        pytest.param(
+            "codec_name",
+            _OMIT_FBIN_RESPONSE_FIELD,
+            "omitted response field codec_name",
+            id="omitted-field",
+        ),
+        pytest.param(
+            "dimensions",
+            _FbinJavaLong(2),
+            "invalid integer field dimensions",
+            id="integer-field-boxed-as-long",
+        ),
+        pytest.param(
+            "source_file_size",
+            _FbinJavaInteger(72),
+            "invalid long field source_file_size",
+            id="long-field-boxed-as-integer",
+        ),
+        pytest.param(
+            "codec_name",
+            None,
+            "null string field codec_name",
+            id="null-string",
+        ),
+        pytest.param(
+            "codec_name",
+            _StringLookalike(),
+            "invalid string field codec_name",
+            id="string-lookalike",
+        ),
+        pytest.param(
+            "dimensions",
+            _FbinJavaInteger(3),
+            "response mismatch for dimensions",
+            id="scalar-mismatch",
+        ),
+        pytest.param(
+            "vector_payload_sha256",
+            _FbinJavaString("not-a-sha256-digest"),
+            "invalid SHA-256 digest",
+            id="malformed-digest",
+        ),
+        pytest.param(
+            "premerge_segment_vector_count_2",
+            _FbinJavaLong(3),
+            "unexpected partition vector counts",
+            id="partition-mismatch",
+        ),
+        pytest.param(
+            "directory_open_ns",
+            _FbinJavaLong(-1),
+            "negative timing",
+            id="negative-timing",
+        ),
+        pytest.param(
+            "fbin_read_ns",
+            _FbinJavaLong(31),
+            "FBIN read time greater than document ingestion time",
+            id="read-exceeds-ingest",
+        ),
+        pytest.param(
+            "force_merge_ns",
+            _FbinJavaLong(1),
+            "unexpectedly reported force-merge work",
+            id="nonzero-force-merge-time",
+        ),
+    ),
+)
+def test_java_fbin_build_rejects_malformed_bridge_response(
+    fbin_bridge_case: SimpleNamespace,
+    field: str,
+    replacement: object,
+    message: str,
+) -> None:
+    if replacement is _OMIT_FBIN_RESPONSE_FIELD:
+        del fbin_bridge_case.response[field]
+    else:
+        fbin_bridge_case.response[field] = replacement
+
+    with pytest.raises(RuntimeError, match=message):
+        _run_fbin_build(fbin_bridge_case)
+
+
+class _JavaInteger:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    @classmethod
+    def valueOf(cls, value: int) -> "_JavaInteger":
+        return cls(value)
+
+    @classmethod
+    def cast_(cls, value: object) -> "_JavaInteger":
+        assert isinstance(value, cls)
+        return value
+
+    def intValue(self) -> int:
+        return self.value
+
+
+class _JavaHashMap(dict):
+    def put(self, key: str, value: object) -> object | None:
+        previous = self.get(key)
+        self[key] = value
         return previous
-
-    def clearProperty(self, name: str):
-        return self.properties.pop(name, None)
 
 
 class _ConfiguredCodec:
-    def __init__(self, max_conn: int, beam_width: int) -> None:
-        self.max_conn = max_conn
-        self.beam_width = beam_width
-
     @staticmethod
     def getName() -> str:
         return ACCELERATED_HNSW_CODEC
@@ -549,37 +719,50 @@ class _ConfiguredCodec:
     def knnVectorsFormat() -> object:
         return object()
 
-    def __str__(self) -> str:
-        return (
-            "Lucene101ConfiguredHNSWCodec["
-            f"maxConn={self.max_conn}, beamWidth={self.beam_width}]"
-        )
-
 
 def _configured_codec_runtime(
-    system: _RecordingJavaSystem,
-    *,
-    constructor_error: Exception | None = None,
-) -> tuple[LuceneRuntime, list[dict[str, str]], list[str]]:
-    snapshots: list[dict[str, str]] = []
+    *, factory_error: Exception | None = None
+) -> tuple[LuceneRuntime, list[dict[str, int]], list[str]]:
+    requests: list[dict[str, int]] = []
     class_names: list[str] = []
 
-    class ReflectedCodec:
-        @staticmethod
-        def newInstance():
-            snapshots.append(dict(system.properties))
-            if constructor_error is not None:
-                raise constructor_error
-            return _ConfiguredCodec(
-                int(system.properties[HNSW_MAX_CONN_PROPERTY]),
-                int(system.properties[HNSW_BEAM_WIDTH_PROPERTY]),
+    class Factory:
+        def apply(self, request: _JavaHashMap) -> _JavaHashMap:
+            values = {
+                name: _JavaInteger.cast_(value).intValue()
+                for name, value in request.items()
+            }
+            requests.append(values)
+            if factory_error is not None:
+                raise factory_error
+            return _JavaHashMap(
+                {
+                    "codec": _ConfiguredCodec(),
+                    "max_conn": _JavaInteger(values["max_conn"]),
+                    "beam_width": _JavaInteger(values["beam_width"]),
+                }
             )
+
+    class ReflectedFactory:
+        @staticmethod
+        def newInstance() -> Factory:
+            return Factory()
 
     class JavaClass:
         @staticmethod
         def forName(name: str):
             class_names.append(name)
-            return ReflectedCodec()
+            return ReflectedFactory()
+
+    class FunctionBinding:
+        @staticmethod
+        def cast_(factory: object) -> object:
+            return factory
+
+    class MapBinding:
+        @staticmethod
+        def cast_(response: object) -> object:
+            return response
 
     class CodecBinding:
         @staticmethod
@@ -595,60 +778,91 @@ def _configured_codec_runtime(
             raise AssertionError("configured codec must not use Lucene SPI")
 
     runtime = object.__new__(LuceneRuntime)
-    runtime.System = system
     runtime.Class = JavaClass
+    runtime.Function = FunctionBinding
+    runtime.HashMap = _JavaHashMap
+    runtime.Integer = _JavaInteger
+    runtime.Map = MapBinding
     runtime.Codec = CodecBinding
+    runtime._java_configured_codec_factory = None
     runtime.attach_current_thread = lambda: None
-    return runtime, snapshots, class_names
+    return runtime, requests, class_names
 
 
-def test_configured_hnsw_codec_snapshots_and_restores_java_properties() -> (
-    None
-):
-    system = _RecordingJavaSystem({HNSW_MAX_CONN_PROPERTY: "previous"})
-    runtime, snapshots, class_names = _configured_codec_runtime(system)
+def test_configured_hnsw_codec_uses_one_atomic_factory_request() -> None:
+    runtime, requests, class_names = _configured_codec_runtime()
 
     codec = runtime.resolve_configured_hnsw_codec(16, 80)
 
-    assert str(codec) == (
-        "Lucene101ConfiguredHNSWCodec[maxConn=16, beamWidth=80]"
-    )
-    assert snapshots == [
-        {
-            HNSW_MAX_CONN_PROPERTY: "16",
-            HNSW_BEAM_WIDTH_PROPERTY: "80",
-        }
-    ]
-    assert class_names == [CONFIGURED_ACCELERATED_HNSW_CODEC]
-    assert system.properties == {HNSW_MAX_CONN_PROPERTY: "previous"}
+    assert isinstance(codec, _ConfiguredCodec)
+    assert requests == [{"max_conn": 16, "beam_width": 80}]
+    assert class_names == [CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY]
 
 
-def test_configured_hnsw_codec_restores_properties_after_constructor_failure() -> (
-    None
-):
-    system = _RecordingJavaSystem(
-        {
-            HNSW_MAX_CONN_PROPERTY: "previous-m",
-            HNSW_BEAM_WIDTH_PROPERTY: "previous-beam",
-        }
-    )
-    runtime, snapshots, _class_names = _configured_codec_runtime(
-        system, constructor_error=RuntimeError("constructor failed")
+def test_configured_hnsw_codec_reports_factory_failure() -> None:
+    runtime, requests, _class_names = _configured_codec_runtime(
+        factory_error=RuntimeError("constructor failed")
     )
 
     with pytest.raises(RuntimeError, match="constructor failed"):
         runtime.resolve_configured_hnsw_codec(16, 80)
 
-    assert snapshots == [
-        {
-            HNSW_MAX_CONN_PROPERTY: "16",
-            HNSW_BEAM_WIDTH_PROPERTY: "80",
-        }
-    ]
-    assert system.properties == {
-        HNSW_MAX_CONN_PROPERTY: "previous-m",
-        HNSW_BEAM_WIDTH_PROPERTY: "previous-beam",
-    }
+    assert requests == [{"max_conn": 16, "beam_width": 80}]
+
+
+class _WriterConfig:
+    def __init__(self, *, fail: bool = False, retain: bool = True) -> None:
+        self.fail = fail
+        self.retain = retain
+        self.limit = 1_945
+
+    def setRAMPerThreadHardLimitMB(self, value: int) -> None:
+        if self.fail:
+            raise ValueError("setter rejected value")
+        if self.retain:
+            self.limit = value
+
+    def getRAMPerThreadHardLimitMB(self) -> int:
+        return self.limit
+
+
+@pytest.mark.parametrize("hard_limit", (1, 2047))
+def test_ram_per_thread_hard_limit_uses_supported_public_setter(
+    hard_limit: int,
+) -> None:
+    config = _WriterConfig()
+
+    LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+        object.__new__(LuceneRuntime), config, hard_limit
+    )
+
+    assert config.getRAMPerThreadHardLimitMB() == hard_limit
+
+
+@pytest.mark.parametrize("hard_limit", (0, 2048, True))
+def test_ram_per_thread_hard_limit_rejects_unsupported_values(
+    hard_limit: object,
+) -> None:
+    with pytest.raises(RuntimeError, match=r"range \[1, 2047\]"):
+        LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+            object.__new__(LuceneRuntime), _WriterConfig(), hard_limit
+        )
+
+
+def test_ram_per_thread_hard_limit_reports_setter_failure() -> None:
+    with pytest.raises(RuntimeError, match="setter rejected value"):
+        LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+            object.__new__(LuceneRuntime), _WriterConfig(fail=True), 1_024
+        )
+
+
+def test_ram_per_thread_hard_limit_rejects_failed_readback() -> None:
+    with pytest.raises(RuntimeError, match="did not retain"):
+        LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+            object.__new__(LuceneRuntime),
+            _WriterConfig(retain=False),
+            1_024,
+        )
 
 
 def test_float32_vectors_are_converted_to_a_jcc_compatible_sequence() -> None:

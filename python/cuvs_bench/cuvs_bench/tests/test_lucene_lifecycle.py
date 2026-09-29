@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -174,6 +175,196 @@ def test_failed_force_rebuild_preserves_the_previous_valid_index(
     assert (path / ".cuvs-bench-lucene.json").read_bytes() == original_manifest
     assert (path / "segments.fake").read_bytes() == original_payload
     assert list(path.parent.glob(f".{path.name}.build-*")) == []
+
+
+def test_impossible_build_timing_is_rejected_before_index_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    assert backend.build(_dataset(), [index]).success
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+    build_index = runtime.build_index
+
+    def build_with_impossible_timing(*args, **kwargs):
+        result = build_index(*args, **kwargs)
+        return replace(
+            result,
+            timing=replace(result.timing, runtime_build_wall_ns=1),
+        )
+
+    monkeypatch.setattr(runtime, "build_index", build_with_impossible_timing)
+
+    replacement = backend.build(_dataset(offset=0.25), [index], force=True)
+
+    assert not replacement.success
+    assert "impossible runtime_build_wall timing data" in (
+        replacement.error_message
+    )
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+    assert list(destination.parent.glob(f".{destination.name}.build-*")) == []
+
+
+def test_index_size_failure_is_rejected_before_index_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    assert backend.build(_dataset(), [index]).success
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+    measured_paths: list[Path] = []
+
+    def fail_index_size(path: Path) -> int:
+        measured_paths.append(path)
+        raise OSError("index size unavailable")
+
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene._index_size", fail_index_size
+    )
+
+    replacement = backend.build(_dataset(offset=0.25), [index], force=True)
+
+    assert not replacement.success
+    assert replacement.error_message == "OSError: index size unavailable"
+    [staged] = measured_paths
+    assert staged.parent == destination.parent
+    assert staged.name.startswith(f".{destination.name}.build-")
+    assert not staged.exists()
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+
+
+def test_failed_build_reports_an_incomplete_staging_directory_that_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    assert backend.build(_dataset(), [index]).success
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+
+    def fail_after_writing_partial_index(
+        index_path: Path, *_args, **_kwargs
+    ) -> None:
+        (index_path / "partial-segment").write_text(
+            "incomplete", encoding="utf-8"
+        )
+        raise RuntimeError("replacement build failed")
+
+    orphaned_paths: list[Path] = []
+
+    def fail_cleanup(path: Path) -> None:
+        orphaned_paths.append(path)
+        raise OSError("cleanup denied")
+
+    monkeypatch.setattr(
+        runtime, "build_index", fail_after_writing_partial_index
+    )
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree", fail_cleanup
+    )
+
+    replacement = backend.build(_dataset(offset=0.25), [index], force=True)
+
+    assert not replacement.success
+    assert replacement.error_message.startswith(
+        "RuntimeError: replacement build failed"
+    )
+    assert "Failed to discard the incomplete staged index" in (
+        replacement.error_message
+    )
+    assert "cleanup denied" in replacement.error_message
+    [orphaned] = orphaned_paths
+    assert str(orphaned) in replacement.error_message
+    assert (orphaned / "partial-segment").read_text(encoding="utf-8") == (
+        "incomplete"
+    )
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+
+
+def test_missing_failed_staging_is_already_discarded(tmp_path: Path) -> None:
+    build_error = RuntimeError("build failed")
+
+    LuceneBackend._discard_failed_staging(
+        tmp_path / "already-renamed-staging", build_error
+    )
+
+    assert not hasattr(build_error, "__notes__")
+
+
+def test_descendant_cleanup_race_does_not_hide_remaining_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    build_error = RuntimeError("build failed")
+
+    def fail_for_missing_descendant(_path: Path) -> None:
+        raise FileNotFoundError("a staged child disappeared")
+
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree",
+        fail_for_missing_descendant,
+    )
+
+    LuceneBackend._discard_failed_staging(staged, build_error)
+
+    [note] = build_error.__notes__
+    assert "Failed to discard the incomplete staged index" in note
+    assert str(staged) in note
+    assert "a staged child disappeared" in note
+
+
+@pytest.mark.parametrize("control_error", (KeyboardInterrupt, SystemExit))
+def test_staging_cleanup_process_control_takes_precedence_over_build_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_error: type[BaseException],
+) -> None:
+    runtime = RecordingRuntime()
+    runtime.build_error = RuntimeError("build failed")
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    orphaned_paths: list[Path] = []
+
+    def interrupt_cleanup(path: Path) -> None:
+        orphaned_paths.append(path)
+        raise control_error("cleanup interrupted")
+
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree", interrupt_cleanup
+    )
+
+    with pytest.raises(control_error, match="cleanup interrupted") as failure:
+        backend.build(_dataset(), [index])
+
+    [orphaned] = orphaned_paths
+    [note] = failure.value.__notes__
+    assert (
+        "Index construction first failed: RuntimeError: build failed" in note
+    )
+    assert str(orphaned) in note
+    assert orphaned.is_dir()
 
 
 def test_backup_cleanup_failure_does_not_report_a_published_index_as_failed(
@@ -378,9 +569,9 @@ def test_java_fbin_build_rejects_source_mutation_before_atomic_install(
         {
             "m": 16,
             "beam_width": 80,
-            "num_indexing_threads": 4,
+            "premerge_segment_count": 4,
             "force_merge_segment_count": 0,
-            "ram_per_thread_hard_limit_mb": 61_440,
+            "ram_per_thread_hard_limit_mb": 1024,
         }
     )
     vectors = np.arange(8, dtype=np.float32).reshape(4, 2)
@@ -411,6 +602,61 @@ def test_java_fbin_build_rejects_source_mutation_before_atomic_install(
     assert len(runtime.fbin_build_calls) == 2
     index_path = Path(index.file)
     assert list(index_path.parent.glob(f".{index_path.name}.build-*")) == []
+
+
+def test_java_fbin_bridge_failure_does_not_fall_back_or_replace_index(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1024,
+        }
+    )
+    vectors = np.arange(8, dtype=np.float32).reshape(4, 2)
+    source = tmp_path / "base.fbin"
+    _write_fbin(source, vectors)
+    dataset = Dataset(
+        name="tiny-l2",
+        training_vectors=np.empty((0, 0), dtype=np.float32),
+        query_vectors=vectors[:2].copy(),
+        distance_metric="euclidean",
+        base_file=str(source),
+    )
+    first = backend.build(dataset, [index])
+    assert first.success, first.error_message
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+    sentinel = destination / "keep-existing-index"
+    sentinel.write_text("preserve", encoding="utf-8")
+    runtime.fbin_build_calls.clear()
+    runtime.build_calls.clear()
+    runtime.build_error = RuntimeError("Java FBIN bridge failed")
+
+    replacement = backend.build(dataset, [index], force=True)
+
+    assert not replacement.success
+    assert replacement.error_message == "RuntimeError: Java FBIN bridge failed"
+    [failed_request] = runtime.fbin_build_calls
+    assert runtime.build_calls == []
+    assert dataset.training_vectors_materialized is False
+    assert dataset._training_vectors.size == 0
+    staged_path = failed_request["index_path"]
+    assert not staged_path.exists()
+    assert list(destination.parent.glob(f".{destination.name}.build-*")) == []
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
 
 
 def test_search_rejects_changed_vectors_with_the_same_dataset_name(
@@ -600,7 +846,7 @@ def test_manifest_build_parameters_must_match_the_requested_index(
             "beam_width": 80,
             "premerge_segment_count": 4,
             "force_merge_segment_count": 1,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
     assert backend.build(dataset, [index]).success
@@ -633,15 +879,15 @@ def test_reuse_rejects_runtime_topology_evidence_that_conflicts_with_request(
         {
             "m": 16,
             "beam_width": 80,
-            "num_indexing_threads": 4,
+            "premerge_segment_count": 4,
             "force_merge_segment_count": 0,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
     assert backend.build(dataset, [index]).success
     manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["runtime_build_topology"]["actual_indexing_thread_count"] = 3
+    manifest["runtime_build_topology"]["observed_premerge_segment_count"] = 3
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     reuse = backend.build(dataset, [index])
@@ -669,7 +915,7 @@ def test_search_rejects_noncanonical_manifest_build_parameters(
             "beam_width": 80,
             "premerge_segment_count": 4,
             "force_merge_segment_count": 1,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
     assert backend.build(dataset, [index]).success

@@ -4,6 +4,7 @@
  */
 package com.nvidia.cuvs.lucene;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
@@ -22,6 +23,7 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.stream.Stream;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.document.Document;
@@ -41,21 +43,56 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 
 /**
- * Streams a validated FBIN prefix through ordinary Lucene {@link IndexWriter#addDocument} calls.
+ * Streams a validated FBIN prefix through ordinary Lucene {@code IndexWriter.addDocument} calls.
  *
  * <p>This class is a narrow interoperability bridge for generated bindings that cannot directly
- * wrap cuVS-specific classes. It intentionally implements only standard {@link Function} and
- * {@link Map} types. It is not a bulk, mapped, external-vector, or out-of-core index writer: every
+ * wrap cuVS-specific classes. It intentionally implements only standard {@code Function} and
+ * {@code Map} types. It is not a bulk, mapped, external-vector, or out-of-core index writer: every
  * vector is added to a normal Lucene writer, and the resulting index is self-contained.
  *
- * <p>The historical {@code num_indexing_threads} request key denotes a number of equal contiguous
- * partitions. Those partitions are built sequentially with one actual indexing thread, using
- * {@code CREATE} mode for the first and {@code APPEND} mode thereafter. Automatic and final
- * merges are disabled.
+ * <p>The request to {@code apply(Map)} must contain exactly these entries:
+ *
+ * <p>{@code String}: {@code source_path}, {@code index_path}, and {@code expected_codec_name}. The
+ * paths must be nonempty, and the expected codec name must equal the supplied codec's name.
+ *
+ * <p>{@code Codec}: {@code codec}.
+ *
+ * <p>{@code Long}: {@code expected_source_size}, {@code expected_file_vector_count}, and
+ * {@code vector_count}. Source size must be nonnegative; both row counts must be positive; and
+ * {@code vector_count} cannot exceed the file's row count or Lucene's document limit.
+ *
+ * <p>{@code Integer}: {@code expected_dimensions}, {@code expected_header_bytes},
+ * {@code premerge_segment_count}, {@code force_merge_segment_count}, and
+ * {@code ram_per_thread_hard_limit_mb}. Dimensions and pre-merge segments must be positive, the
+ * header is 8 or 16 bytes, final force merge must be zero, and the RAM limit is 1 through 2047 MiB.
+ * {@code vector_count} must divide evenly into {@code premerge_segment_count}; those equal
+ * contiguous partitions are built sequentially using {@code CREATE} mode for the first and
+ * {@code APPEND} mode thereafter. Automatic and final merges are disabled, so a successful build
+ * has exactly one segment per requested partition.
+ *
+ * <p>The response contains these {@code String} entries: {@code codec_name} (the configured codec
+ * name), {@code vector_payload_sha256} (lowercase hexadecimal), and {@code ingest_merge_policy}.
+ * It contains these {@code Integer} entries: {@code dimensions}, {@code header_bytes},
+ * {@code premerge_segment_count}, {@code force_merge_segment_count}, {@code segment_count},
+ * {@code max_buffered_docs}, and {@code applied_ram_per_thread_hard_limit_mb}. It contains these
+ * {@code Long} entries: {@code source_file_size}, {@code source_file_vector_count},
+ * {@code vector_count}, {@code indexed_payload_bytes}, and one key formed from the
+ * {@code premerge_segment_vector_count_} prefix followed by each zero-based decimal segment number.
+ *
+ * <p>All response timing values are boxed {@code Long} nanoseconds: {@code directory_open_ns},
+ * {@code writer_setup_ns}, {@code document_ingest_ns}, {@code fbin_read_ns},
+ * {@code force_merge_ns}, {@code writer_commit_close_ns}, {@code post_build_reader_ns},
+ * {@code directory_close_ns}, and {@code runtime_build_wall_ns}. The runtime wall encloses the
+ * complete call. The FBIN-read timer is nested within document ingestion; the remaining leaf phases
+ * are disjoint. Force-merge time is always zero because this bridge rejects final force merge.
  *
  * <p>The target must be an existing, empty, non-symbolic-link directory. This bridge never removes,
- * replaces, or publishes that directory. Its caller remains responsible for validating and
- * atomically installing the staged index.
+ * replaces, or publishes that directory. Its caller owns the staging lifecycle and must discard
+ * the whole directory after any failure. Rollback applies only to the active writer; if a later
+ * partition fails, earlier committed partitions can remain in the unpublished staging directory.
+ * Invalid requests and data raise {@code IllegalArgumentException}; I/O failures are wrapped in
+ * {@code UncheckedIOException}; codec and Lucene failures propagate as runtime exceptions or
+ * errors.
  */
 public final class CuvsBenchFbinIndexingBridge
     implements Function<Map<String, Object>, Map<String, Object>> {
@@ -68,7 +105,7 @@ public final class CuvsBenchFbinIndexingBridge
   public static final String EXPECTED_DIMENSIONS_KEY = "expected_dimensions";
   public static final String EXPECTED_HEADER_BYTES_KEY = "expected_header_bytes";
   public static final String VECTOR_COUNT_KEY = "vector_count";
-  public static final String NUM_INDEXING_THREADS_KEY = "num_indexing_threads";
+  public static final String PREMERGE_SEGMENT_COUNT_KEY = "premerge_segment_count";
   public static final String FORCE_MERGE_SEGMENT_COUNT_KEY = "force_merge_segment_count";
   public static final String RAM_PER_THREAD_HARD_LIMIT_MB_KEY = "ram_per_thread_hard_limit_mb";
 
@@ -79,10 +116,6 @@ public final class CuvsBenchFbinIndexingBridge
   public static final String HEADER_BYTES_KEY = "header_bytes";
   public static final String INDEXED_PAYLOAD_BYTES_KEY = "indexed_payload_bytes";
   public static final String VECTOR_PAYLOAD_SHA256_KEY = "vector_payload_sha256";
-  public static final String ACTUAL_INDEXING_THREAD_COUNT_KEY = "actual_indexing_thread_count";
-  public static final String MAX_CONCURRENT_INDEXING_THREADS_KEY =
-      "max_concurrent_indexing_threads";
-  public static final String INDEXING_EXECUTION_MODE_KEY = "indexing_execution_mode";
   public static final String SEGMENT_COUNT_KEY = "segment_count";
   public static final String PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX =
       "premerge_segment_vector_count_";
@@ -94,6 +127,7 @@ public final class CuvsBenchFbinIndexingBridge
   public static final String WRITER_SETUP_NS_KEY = "writer_setup_ns";
   public static final String DOCUMENT_INGEST_NS_KEY = "document_ingest_ns";
   public static final String FBIN_READ_NS_KEY = "fbin_read_ns";
+  public static final String FORCE_MERGE_NS_KEY = "force_merge_ns";
   public static final String WRITER_COMMIT_CLOSE_NS_KEY = "writer_commit_close_ns";
   public static final String POST_BUILD_READER_NS_KEY = "post_build_reader_ns";
   public static final String DIRECTORY_CLOSE_NS_KEY = "directory_close_ns";
@@ -105,7 +139,7 @@ public final class CuvsBenchFbinIndexingBridge
   private static final int EXTENDED_HEADER_BYTES = 16;
   private static final int FLOAT_BYTES = Float.BYTES;
   private static final int TARGET_BUFFER_BYTES = 8 * 1024 * 1024;
-  private static final String PARTITIONED_SEQUENTIAL = "partitioned_sequential";
+  private static final int MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2047;
 
   private static final Set<String> REQUEST_KEYS =
       Set.of(
@@ -118,7 +152,7 @@ public final class CuvsBenchFbinIndexingBridge
           EXPECTED_DIMENSIONS_KEY,
           EXPECTED_HEADER_BYTES_KEY,
           VECTOR_COUNT_KEY,
-          NUM_INDEXING_THREADS_KEY,
+          PREMERGE_SEGMENT_COUNT_KEY,
           FORCE_MERGE_SEGMENT_COUNT_KEY,
           RAM_PER_THREAD_HARD_LIMIT_MB_KEY);
 
@@ -176,11 +210,8 @@ public final class CuvsBenchFbinIndexingBridge
       response.put(VECTOR_COUNT_KEY, plan.vectorCount());
       response.put(INDEXED_PAYLOAD_BYTES_KEY, plan.indexedPayloadBytes());
       response.put(VECTOR_PAYLOAD_SHA256_KEY, HexFormat.of().formatHex(digest.digest()));
-      response.put(NUM_INDEXING_THREADS_KEY, request.numIndexingThreads());
+      response.put(PREMERGE_SEGMENT_COUNT_KEY, request.premergeSegmentCount());
       response.put(FORCE_MERGE_SEGMENT_COUNT_KEY, request.forceMergeSegmentCount());
-      response.put(ACTUAL_INDEXING_THREAD_COUNT_KEY, 1);
-      response.put(MAX_CONCURRENT_INDEXING_THREADS_KEY, 1);
-      response.put(INDEXING_EXECUTION_MODE_KEY, PARTITIONED_SEQUENTIAL);
       response.put(SEGMENT_COUNT_KEY, outcome.segmentVectorCounts().length);
       for (int i = 0; i < outcome.segmentVectorCounts().length; i++) {
         response.put(PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX + i, outcome.segmentVectorCounts()[i]);
@@ -192,6 +223,7 @@ public final class CuvsBenchFbinIndexingBridge
       response.put(WRITER_SETUP_NS_KEY, outcome.timings().writerSetupNs);
       response.put(DOCUMENT_INGEST_NS_KEY, outcome.timings().documentIngestNs);
       response.put(FBIN_READ_NS_KEY, outcome.timings().fbinReadNs);
+      response.put(FORCE_MERGE_NS_KEY, 0L);
       response.put(WRITER_COMMIT_CLOSE_NS_KEY, outcome.timings().writerCommitCloseNs);
       response.put(POST_BUILD_READER_NS_KEY, outcome.timings().postBuildReaderNs);
       response.put(DIRECTORY_CLOSE_NS_KEY, outcome.timings().directoryCloseNs);
@@ -212,7 +244,8 @@ public final class CuvsBenchFbinIndexingBridge
     Directory directory = FSDirectory.open(indexPath);
     timings.directoryOpenNs = System.nanoTime() - directoryOpenStarted;
 
-    try {
+    try (TimedClose ignored =
+        new TimedClose(directory, elapsed -> timings.directoryCloseNs += elapsed)) {
       float[] vector = new float[header.dimensions()];
       NumericDocValuesField idField = new NumericDocValuesField(ID_FIELD, 0L);
       KnnFloatVectorField vectorField =
@@ -224,9 +257,7 @@ public final class CuvsBenchFbinIndexingBridge
       ByteBuffer buffer =
           ByteBuffer.allocateDirect(plan.bufferBytes()).order(ByteOrder.LITTLE_ENDIAN);
       long sourcePosition = header.headerBytes();
-      long[] observedCounts = new long[0];
-
-      for (int partition = 0; partition < request.numIndexingThreads(); partition++) {
+      for (int partition = 0; partition < request.premergeSegmentCount(); partition++) {
         long setupStarted = System.nanoTime();
         IndexWriterConfig config = writerConfig(request, plan, partition == 0);
         IndexWriter writer = new IndexWriter(directory, config);
@@ -273,12 +304,6 @@ public final class CuvsBenchFbinIndexingBridge
           rollback(writer, failure);
           throw failure;
         }
-
-        long readerStarted = System.nanoTime();
-        observedCounts =
-            validateCommittedIndex(
-                directory, partition + 1, plan.partitionVectorCount(), header.dimensions());
-        timings.postBuildReaderNs += System.nanoTime() - readerStarted;
       }
 
       long expectedPosition = Math.addExact(header.headerBytes(), plan.indexedPayloadBytes());
@@ -289,14 +314,15 @@ public final class CuvsBenchFbinIndexingBridge
                 + ", observed "
                 + sourcePosition);
       }
+      long readerStarted = System.nanoTime();
+      long[] observedCounts =
+          validateCommittedIndex(
+              directory,
+              request.premergeSegmentCount(),
+              plan.partitionVectorCount(),
+              header.dimensions());
+      timings.postBuildReaderNs += System.nanoTime() - readerStarted;
       return new BuildOutcome(observedCounts, timings);
-    } finally {
-      long closeStarted = System.nanoTime();
-      try {
-        directory.close();
-      } finally {
-        timings.directoryCloseNs += System.nanoTime() - closeStarted;
-      }
     }
   }
 
@@ -311,8 +337,14 @@ public final class CuvsBenchFbinIndexingBridge
     config.setMergeScheduler(new SerialMergeScheduler());
     config.setMaxBufferedDocs(plan.maxBufferedDocs());
     config.setRAMBufferSizeMB(IndexWriterConfig.DISABLE_AUTO_FLUSH);
-    IndexWriterConfigPerThreadHardLimitBridge.setAndVerify(
-        config, request.ramPerThreadHardLimitMb());
+    config.setRAMPerThreadHardLimitMB(request.ramPerThreadHardLimitMb());
+    if (config.getRAMPerThreadHardLimitMB() != request.ramPerThreadHardLimitMb()) {
+      throw new IllegalStateException(
+          "Lucene did not retain the requested per-thread RAM hard limit: requested "
+              + request.ramPerThreadHardLimitMb()
+              + ", observed "
+              + config.getRAMPerThreadHardLimitMB());
+    }
     return config;
   }
 
@@ -564,7 +596,8 @@ public final class CuvsBenchFbinIndexingBridge
     Integer expectedDimensions = requiredValue(request, EXPECTED_DIMENSIONS_KEY, Integer.class);
     Integer expectedHeaderBytes = requiredValue(request, EXPECTED_HEADER_BYTES_KEY, Integer.class);
     Long vectorCount = requiredValue(request, VECTOR_COUNT_KEY, Long.class);
-    Integer numIndexingThreads = requiredValue(request, NUM_INDEXING_THREADS_KEY, Integer.class);
+    Integer premergeSegmentCount =
+        requiredValue(request, PREMERGE_SEGMENT_COUNT_KEY, Integer.class);
     Integer forceMergeSegmentCount =
         requiredValue(request, FORCE_MERGE_SEGMENT_COUNT_KEY, Integer.class);
     Integer hardLimit = requiredValue(request, RAM_PER_THREAD_HARD_LIMIT_MB_KEY, Integer.class);
@@ -599,14 +632,18 @@ public final class CuvsBenchFbinIndexingBridge
     if (vectorCount < 1L) {
       throw new IllegalArgumentException(VECTOR_COUNT_KEY + " must be positive");
     }
-    if (numIndexingThreads < 1) {
-      throw new IllegalArgumentException(NUM_INDEXING_THREADS_KEY + " must be positive");
+    if (premergeSegmentCount < 1) {
+      throw new IllegalArgumentException(PREMERGE_SEGMENT_COUNT_KEY + " must be positive");
     }
     if (forceMergeSegmentCount != 0) {
       throw new IllegalArgumentException(FORCE_MERGE_SEGMENT_COUNT_KEY + " must be 0");
     }
-    if (hardLimit < 1) {
-      throw new IllegalArgumentException(RAM_PER_THREAD_HARD_LIMIT_MB_KEY + " must be positive");
+    if (hardLimit < 1 || hardLimit > MAX_RAM_PER_THREAD_HARD_LIMIT_MB) {
+      throw new IllegalArgumentException(
+          RAM_PER_THREAD_HARD_LIMIT_MB_KEY
+              + " must be in range [1, "
+              + MAX_RAM_PER_THREAD_HARD_LIMIT_MB
+              + "]");
     }
 
     return new Request(
@@ -619,7 +656,7 @@ public final class CuvsBenchFbinIndexingBridge
         expectedDimensions,
         expectedHeaderBytes,
         vectorCount,
-        numIndexingThreads,
+        premergeSegmentCount,
         forceMergeSegmentCount,
         hardLimit);
   }
@@ -643,7 +680,7 @@ public final class CuvsBenchFbinIndexingBridge
       int expectedDimensions,
       int expectedHeaderBytes,
       long vectorCount,
-      int numIndexingThreads,
+      int premergeSegmentCount,
       int forceMergeSegmentCount,
       int ramPerThreadHardLimitMb) {}
 
@@ -670,17 +707,17 @@ public final class CuvsBenchFbinIndexingBridge
         throw new IllegalArgumentException(
             VECTOR_COUNT_KEY + " cannot exceed IndexWriter.MAX_DOCS=" + IndexWriter.MAX_DOCS);
       }
-      if (request.numIndexingThreads() > request.vectorCount()) {
+      if (request.premergeSegmentCount() > request.vectorCount()) {
         throw new IllegalArgumentException(
-            NUM_INDEXING_THREADS_KEY + " cannot exceed vector_count");
+            PREMERGE_SEGMENT_COUNT_KEY + " cannot exceed vector_count");
       }
-      if (request.vectorCount() % request.numIndexingThreads() != 0L) {
+      if (request.vectorCount() % request.premergeSegmentCount() != 0L) {
         throw new IllegalArgumentException(
-            "vector_count must be divisible by num_indexing_threads for equal partitions");
+            "vector_count must be divisible by premerge_segment_count for equal partitions");
       }
 
       try {
-        long partitionVectorCount = request.vectorCount() / request.numIndexingThreads();
+        long partitionVectorCount = request.vectorCount() / request.premergeSegmentCount();
         int rowBytes = Math.multiplyExact(header.dimensions(), FLOAT_BYTES);
         long indexedPayloadBytes = Math.multiplyExact(request.vectorCount(), rowBytes);
         int maxBufferedDocs = Math.toIntExact(Math.addExact(partitionVectorCount, 1L));
@@ -726,6 +763,26 @@ public final class CuvsBenchFbinIndexingBridge
     private long writerCommitCloseNs;
     private long postBuildReaderNs;
     private long directoryCloseNs;
+  }
+
+  static final class TimedClose implements AutoCloseable {
+    private final Closeable closeable;
+    private final LongConsumer elapsedNanos;
+
+    TimedClose(Closeable closeable, LongConsumer elapsedNanos) {
+      this.closeable = closeable;
+      this.elapsedNanos = elapsedNanos;
+    }
+
+    @Override
+    public void close() throws IOException {
+      long started = System.nanoTime();
+      try {
+        closeable.close();
+      } finally {
+        elapsedNanos.accept(System.nanoTime() - started);
+      }
+    }
   }
 
   private record BuildOutcome(long[] segmentVectorCounts, BuildTimings timings) {}

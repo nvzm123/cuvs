@@ -125,6 +125,9 @@ def test_accelerated_hnsw_metadata_records_the_heuristic_derivation() -> None:
         "hnsw_m": 16,
         "hnsw_beam_width": 80,
         "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
+        "graph_degree_source": (
+            "requested_hnsw_same_graph_footprint_derivation"
+        ),
         "graph_degree": 32,
         "intermediate_graph_degree": 48,
     }
@@ -134,7 +137,7 @@ def test_accelerated_hnsw_segment_topology_is_canonical_and_reported() -> None:
     parameters = _build_parameters_for(
         ACCELERATED_HNSW_ALGORITHM,
         {
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
             "force_merge_segment_count": 1,
             "beam_width": 80,
             "codec": ACCELERATED_HNSW_CODEC,
@@ -157,7 +160,7 @@ def test_accelerated_hnsw_segment_topology_is_canonical_and_reported() -> None:
         "beam_width": 80,
         "premerge_segment_count": 4,
         "force_merge_segment_count": 1,
-        "ram_per_thread_hard_limit_mb": 61440,
+        "ram_per_thread_hard_limit_mb": 1945,
     }
     assert _build_parameter_metadata(
         ACCELERATED_HNSW_ALGORITHM, parameters
@@ -165,62 +168,27 @@ def test_accelerated_hnsw_segment_topology_is_canonical_and_reported() -> None:
         "hnsw_m": 16,
         "hnsw_beam_width": 80,
         "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
+        "graph_degree_source": (
+            "requested_hnsw_same_graph_footprint_derivation"
+        ),
         "graph_degree": 32,
         "intermediate_graph_degree": 48,
         "requested_premerge_segment_count": 4,
         "requested_force_merge_segment_count": 1,
-        "ram_per_thread_hard_limit_mb": 61440,
+        "ram_per_thread_hard_limit_mb": 1945,
     }
 
 
-@pytest.mark.parametrize("force_merge_segment_count", (0, 1))
-def test_accelerated_hnsw_partitioned_topology_is_canonical_and_reported(
-    force_merge_segment_count: int,
-) -> None:
-    parameters = _build_parameters_for(
-        ACCELERATED_HNSW_ALGORITHM,
-        {
-            "codec": ACCELERATED_HNSW_CODEC,
-            "m": 16,
-            "beam_width": 80,
-            "num_indexing_threads": 4,
-            "force_merge_segment_count": force_merge_segment_count,
-            "ram_per_thread_hard_limit_mb": 61440,
-        },
-    )
-
-    assert parameters == {
-        "codec": ACCELERATED_HNSW_CODEC,
-        "m": 16,
-        "beam_width": 80,
-        "num_indexing_threads": 4,
-        "force_merge_segment_count": force_merge_segment_count,
-        "ram_per_thread_hard_limit_mb": 61440,
-    }
-    assert _build_parameter_metadata(
-        ACCELERATED_HNSW_ALGORITHM, parameters
-    ) == {
-        "hnsw_m": 16,
-        "hnsw_beam_width": 80,
-        "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
-        "graph_degree": 32,
-        "intermediate_graph_degree": 48,
-        "requested_num_indexing_threads": 4,
-        "requested_force_merge_segment_count": force_merge_segment_count,
-        "ram_per_thread_hard_limit_mb": 61440,
-    }
-
-
-def test_accelerated_hnsw_rejects_mixed_topology_models() -> None:
-    with pytest.raises(ValueError, match="cannot combine"):
+def test_accelerated_hnsw_rejects_num_indexing_threads() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Unsupported Lucene build parameters: num_indexing_threads",
+    ):
         _build_parameters_for(
             ACCELERATED_HNSW_ALGORITHM,
             {
                 "codec": ACCELERATED_HNSW_CODEC,
-                "premerge_segment_count": 4,
                 "num_indexing_threads": 4,
-                "force_merge_segment_count": 1,
-                "ram_per_thread_hard_limit_mb": 61440,
             },
         )
 
@@ -239,32 +207,7 @@ def test_accelerated_hnsw_segment_topology_must_be_all_or_none(
     topology = {
         "premerge_segment_count": 4,
         "force_merge_segment_count": 1,
-        "ram_per_thread_hard_limit_mb": 61440,
-    }
-    topology.pop(missing)
-
-    with pytest.raises(ValueError, match="segment topology requires.*missing"):
-        _build_parameters_for(
-            ACCELERATED_HNSW_ALGORITHM,
-            {"codec": ACCELERATED_HNSW_CODEC, **topology},
-        )
-
-
-@pytest.mark.parametrize(
-    "missing",
-    (
-        "num_indexing_threads",
-        "force_merge_segment_count",
-        "ram_per_thread_hard_limit_mb",
-    ),
-)
-def test_accelerated_hnsw_partitioned_topology_must_be_all_or_none(
-    missing: str,
-) -> None:
-    topology = {
-        "num_indexing_threads": 4,
-        "force_merge_segment_count": 1,
-        "ram_per_thread_hard_limit_mb": 61440,
+        "ram_per_thread_hard_limit_mb": 1945,
     }
     topology.pop(missing)
 
@@ -280,52 +223,59 @@ def test_accelerated_hnsw_partitioned_topology_must_be_all_or_none(
     (0, -1, True, 1.5, "4", None),
     ids=("zero", "negative", "boolean", "float", "string", "none"),
 )
-def test_accelerated_hnsw_rejects_invalid_num_indexing_threads(
+def test_accelerated_hnsw_rejects_invalid_premerge_segment_count(
     value: Any,
+) -> None:
+    topology: dict[str, Any] = {
+        "premerge_segment_count": 4,
+        "force_merge_segment_count": 1,
+        "ram_per_thread_hard_limit_mb": 1945,
+    }
+    topology["premerge_segment_count"] = value
+
+    with pytest.raises(
+        ValueError,
+        match="Lucene premerge_segment_count must be a positive integer",
+    ):
+        _build_parameters_for(
+            ACCELERATED_HNSW_ALGORITHM,
+            {"codec": ACCELERATED_HNSW_CODEC, **topology},
+        )
+
+
+@pytest.mark.parametrize("hard_limit", (1, 2047))
+def test_accelerated_hnsw_accepts_supported_ram_limits(
+    hard_limit: int,
+) -> None:
+    parameters = _build_parameters_for(
+        ACCELERATED_HNSW_ALGORITHM,
+        {
+            "codec": ACCELERATED_HNSW_CODEC,
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": hard_limit,
+        },
+    )
+
+    assert parameters["ram_per_thread_hard_limit_mb"] == hard_limit
+
+
+@pytest.mark.parametrize("hard_limit", (0, 2048, True, 1.5, "1945", None))
+def test_accelerated_hnsw_rejects_unsupported_ram_limits(
+    hard_limit: Any,
 ) -> None:
     with pytest.raises(
         ValueError,
-        match="Lucene num_indexing_threads must be a positive integer",
+        match=r"ram_per_thread_hard_limit_mb must be an integer in \[1, 2047\]",
     ):
         _build_parameters_for(
             ACCELERATED_HNSW_ALGORITHM,
             {
                 "codec": ACCELERATED_HNSW_CODEC,
-                "num_indexing_threads": value,
-                "force_merge_segment_count": 1,
-                "ram_per_thread_hard_limit_mb": 61440,
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 0,
+                "ram_per_thread_hard_limit_mb": hard_limit,
             },
-        )
-
-
-@pytest.mark.parametrize(
-    "name",
-    (
-        "premerge_segment_count",
-        "ram_per_thread_hard_limit_mb",
-    ),
-)
-@pytest.mark.parametrize(
-    "value",
-    (0, -1, True, 1.5, "4", None),
-    ids=("zero", "negative", "boolean", "float", "string", "none"),
-)
-def test_accelerated_hnsw_rejects_invalid_segment_topology_values(
-    name: str, value: Any
-) -> None:
-    topology: dict[str, Any] = {
-        "premerge_segment_count": 4,
-        "force_merge_segment_count": 1,
-        "ram_per_thread_hard_limit_mb": 61440,
-    }
-    topology[name] = value
-
-    with pytest.raises(
-        ValueError, match=rf"Lucene {name} must be a positive integer"
-    ):
-        _build_parameters_for(
-            ACCELERATED_HNSW_ALGORITHM,
-            {"codec": ACCELERATED_HNSW_CODEC, **topology},
         )
 
 
@@ -344,7 +294,7 @@ def test_accelerated_hnsw_force_merge_must_be_zero_or_one(
                 "codec": ACCELERATED_HNSW_CODEC,
                 "premerge_segment_count": 2,
                 "force_merge_segment_count": value,
-                "ram_per_thread_hard_limit_mb": 61440,
+                "ram_per_thread_hard_limit_mb": 1945,
             },
         )
 
@@ -359,7 +309,7 @@ def test_accelerated_hnsw_accepts_supported_force_merge_modes(
             "codec": ACCELERATED_HNSW_CODEC,
             "premerge_segment_count": 4,
             "force_merge_segment_count": force_merge_segment_count,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         },
     )
 
@@ -435,19 +385,13 @@ def test_accelerated_hnsw_requires_the_parameter_pair(
         {
             "premerge_segment_count": 4,
             "force_merge_segment_count": 1,
-            "ram_per_thread_hard_limit_mb": 61440,
-        },
-        {
-            "num_indexing_threads": 4,
-            "force_merge_segment_count": 1,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         },
         {"cuvs_writer_threads": 16},
     ),
     ids=(
         "hnsw-quality",
-        "legacy-segment-topology",
-        "concurrent-segment-topology",
+        "segment-topology",
         "cuvs-writer-threads",
     ),
 )
@@ -733,7 +677,7 @@ name: {ACCELERATED_HNSW_ALGORITHM}
 groups:
   segmented:
     build:
-      ram_per_thread_hard_limit_mb: [61440]
+      ram_per_thread_hard_limit_mb: [1945]
       force_merge_segment_count: [{force_merge_segment_count}]
       beam_width: [80]
       codec: ["{ACCELERATED_HNSW_CODEC}"]
@@ -759,71 +703,13 @@ groups:
         "beam_width": 80,
         "premerge_segment_count": 4,
         "force_merge_segment_count": force_merge_segment_count,
-        "ram_per_thread_hard_limit_mb": 61440,
+        "ram_per_thread_hard_limit_mb": 1945,
     }
     expected_name = (
         f"{ACCELERATED_HNSW_ALGORITHM}_segmented"
         ".m16.beam_width80.premerge_segment_count4"
         f".force_merge_segment_count{force_merge_segment_count}"
-        ".ram_per_thread_hard_limit_mb61440"
-    )
-    assert configuration.indexes[0].build_param == expected_parameters
-    assert configuration.index_name == expected_name
-    assert configuration.index_path == (
-        tmp_path / "tiny-l2" / "index" / expected_name
-    )
-
-
-@pytest.mark.parametrize("force_merge_segment_count", (0, 1))
-def test_config_loader_uses_canonical_partitioned_topology_label_order(
-    tmp_path: Path,
-    force_merge_segment_count: int,
-) -> None:
-    dataset_configuration = tmp_path / "datasets.yaml"
-    dataset_configuration.write_text(
-        "- name: tiny-l2\n  distance: euclidean\n  dims: 2\n",
-        encoding="utf-8",
-    )
-    algorithm_configuration = tmp_path / "accelerated.yaml"
-    algorithm_configuration.write_text(
-        f"""\
-name: {ACCELERATED_HNSW_ALGORITHM}
-groups:
-  partitioned:
-    build:
-      ram_per_thread_hard_limit_mb: [61440]
-      force_merge_segment_count: [{force_merge_segment_count}]
-      beam_width: [80]
-      codec: ["{ACCELERATED_HNSW_CODEC}"]
-      num_indexing_threads: [4]
-      m: [16]
-    search: {{}}
-""",
-        encoding="utf-8",
-    )
-
-    _dataset_config, [configuration] = LuceneConfigLoader().load(
-        dataset="tiny-l2",
-        dataset_path=str(tmp_path),
-        dataset_configuration=str(dataset_configuration),
-        algorithm_configuration=str(algorithm_configuration),
-        algorithms=ACCELERATED_HNSW_ALGORITHM,
-        groups="partitioned",
-    )
-
-    expected_parameters = {
-        "codec": ACCELERATED_HNSW_CODEC,
-        "m": 16,
-        "beam_width": 80,
-        "num_indexing_threads": 4,
-        "force_merge_segment_count": force_merge_segment_count,
-        "ram_per_thread_hard_limit_mb": 61440,
-    }
-    expected_name = (
-        f"{ACCELERATED_HNSW_ALGORITHM}_partitioned"
-        ".m16.beam_width80.num_indexing_threads4"
-        f".force_merge_segment_count{force_merge_segment_count}"
-        ".ram_per_thread_hard_limit_mb61440"
+        ".ram_per_thread_hard_limit_mb1945"
     )
     assert configuration.indexes[0].build_param == expected_parameters
     assert configuration.index_name == expected_name

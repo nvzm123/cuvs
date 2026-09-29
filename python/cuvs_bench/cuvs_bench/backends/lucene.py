@@ -65,20 +65,11 @@ _MAX_DIMENSIONS_BY_ALGORITHM = {
     CAGRA_ALGORITHM: MAX_CAGRA_DIMENSIONS,
 }
 _CUVS_ALGORITHMS = frozenset((ACCELERATED_HNSW_ALGORITHM, CAGRA_ALGORITHM))
-_ACCELERATED_HNSW_LEGACY_TOPOLOGY_KEYS = (
-    "premerge_segment_count",
-    "force_merge_segment_count",
-    "ram_per_thread_hard_limit_mb",
-)
-_ACCELERATED_HNSW_PARTITIONED_TOPOLOGY_KEYS = (
-    "num_indexing_threads",
-    "force_merge_segment_count",
-    "ram_per_thread_hard_limit_mb",
-)
 _ACCELERATED_HNSW_TOPOLOGY_KEYS = frozenset(
     (
-        *_ACCELERATED_HNSW_LEGACY_TOPOLOGY_KEYS,
-        *_ACCELERATED_HNSW_PARTITIONED_TOPOLOGY_KEYS,
+        "premerge_segment_count",
+        "force_merge_segment_count",
+        "ram_per_thread_hard_limit_mb",
     )
 )
 _ACCELERATED_HNSW_BUILD_KEYS = frozenset(
@@ -92,6 +83,8 @@ _MIN_HNSW_BUILD_PARAMETER = 1
 _MAX_HNSW_BUILD_PARAMETER = 512
 _DEFAULT_HNSW_M = 32
 _DEFAULT_HNSW_BEAM_WIDTH = 32
+_GRAPH_DEGREE_SOURCE = "requested_hnsw_same_graph_footprint_derivation"
+_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2047
 _BUILD_ROUTE_POLICY_BY_ALGORITHM = {
     CPU_HNSW_ALGORITHM: "cpu_hnsw",
     ACCELERATED_HNSW_ALGORITHM: "gpu_cagra_or_cpu_hnsw_fallback",
@@ -107,11 +100,6 @@ _MANIFEST_SCHEMA = 4
 _RUNTIME_BUILD_TOPOLOGY_FIELDS = frozenset(
     (
         "requested_premerge_segment_count",
-        "requested_num_indexing_threads",
-        "actual_indexing_thread_count",
-        "max_concurrent_indexing_threads",
-        "indexing_execution_mode",
-        "indexing_worker_document_counts",
         "observed_premerge_segment_count",
         "requested_force_merge_segment_count",
         "premerge_segment_vector_counts",
@@ -151,6 +139,22 @@ class _FbinBridgeBuildInput:
     header_bytes: int
     vector_count: int
     subset_size: int | None
+
+
+@dataclass(frozen=True)
+class _PreparedBuildInput:
+    vectors: np.ndarray | None
+    fbin_bridge: _FbinBridgeBuildInput | None
+    vector_count: int
+    dimensions: int
+    ingest_route: str
+    training_vectors_materialized: bool
+
+
+@dataclass(frozen=True)
+class _FbinBuildEvidence:
+    dataset_identity: dict[str, Any]
+    metadata: dict[str, Any]
 
 
 def _nanoseconds_to_milliseconds(value: int) -> float:
@@ -238,6 +242,7 @@ def _runtime_build_timing_metadata(
         "runtime_directory_open_seconds": timing.directory_open_ns,
         "runtime_writer_setup_seconds": timing.writer_setup_ns,
         "runtime_document_ingest_seconds": timing.document_ingest_ns,
+        "runtime_force_merge_seconds": timing.force_merge_ns,
         "runtime_writer_commit_close_seconds": timing.writer_commit_close_ns,
         "runtime_post_build_reader_seconds": timing.post_build_reader_ns,
         "runtime_directory_close_seconds": timing.directory_close_ns,
@@ -490,6 +495,17 @@ def _positive_hnsw_build_parameter(value: Any, name: str) -> int:
     return value
 
 
+def _ram_per_thread_hard_limit_mb(value: Any) -> int:
+    if type(value) is not int or not (
+        1 <= value <= _MAX_RAM_PER_THREAD_HARD_LIMIT_MB
+    ):
+        raise ValueError(
+            "Lucene ram_per_thread_hard_limit_mb must be an integer in "
+            f"[1, {_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {value!r}"
+        )
+    return value
+
+
 def _force_merge_segment_count(value: Any) -> int:
     if type(value) is not int or value not in (0, 1):
         raise ValueError(
@@ -547,62 +563,34 @@ def _build_parameters_for(
             set(build_params) & _ACCELERATED_HNSW_TOPOLOGY_KEYS
         )
         if configured_topology:
-            legacy_topology = "premerge_segment_count" in build_params
-            partitioned_topology = "num_indexing_threads" in build_params
-            if legacy_topology and partitioned_topology:
-                raise ValueError(
-                    "Configured accelerated-HNSW segment topology cannot "
-                    "combine premerge_segment_count with "
-                    "num_indexing_threads"
-                )
-            if not legacy_topology and not partitioned_topology:
-                raise ValueError(
-                    "Configured accelerated-HNSW segment topology requires "
-                    "exactly one of premerge_segment_count or "
-                    "num_indexing_threads; missing: topology discriminator"
-                )
-            topology_keys = (
-                _ACCELERATED_HNSW_LEGACY_TOPOLOGY_KEYS
-                if legacy_topology
-                else _ACCELERATED_HNSW_PARTITIONED_TOPOLOGY_KEYS
-            )
             missing_topology = [
                 name
-                for name in topology_keys
+                for name in sorted(_ACCELERATED_HNSW_TOPOLOGY_KEYS)
                 if name not in configured_topology
             ]
             if missing_topology:
                 raise ValueError(
                     "Configured accelerated-HNSW segment topology requires "
-                    + ", ".join(topology_keys)
+                    + ", ".join(sorted(_ACCELERATED_HNSW_TOPOLOGY_KEYS))
                     + "; missing: "
                     + ", ".join(missing_topology)
                 )
             force_merge_segment_count = _force_merge_segment_count(
                 build_params["force_merge_segment_count"]
             )
-            ram_per_thread_hard_limit_mb = _positive_hnsw_build_parameter(
-                build_params["ram_per_thread_hard_limit_mb"],
-                "ram_per_thread_hard_limit_mb",
+            ram_per_thread_hard_limit_mb = _ram_per_thread_hard_limit_mb(
+                build_params["ram_per_thread_hard_limit_mb"]
             )
-            if legacy_topology:
-                premerge_segment_count = _positive_hnsw_build_parameter(
-                    build_params["premerge_segment_count"],
-                    "premerge_segment_count",
+            premerge_segment_count = _positive_hnsw_build_parameter(
+                build_params["premerge_segment_count"],
+                "premerge_segment_count",
+            )
+            if premerge_segment_count < force_merge_segment_count:
+                raise ValueError(
+                    "Lucene premerge_segment_count must be greater than or "
+                    "equal to force_merge_segment_count"
                 )
-                if premerge_segment_count < force_merge_segment_count:
-                    raise ValueError(
-                        "Lucene premerge_segment_count must be greater than or "
-                        "equal to force_merge_segment_count"
-                    )
-                normalized["premerge_segment_count"] = premerge_segment_count
-            else:
-                normalized["num_indexing_threads"] = (
-                    _positive_hnsw_build_parameter(
-                        build_params["num_indexing_threads"],
-                        "num_indexing_threads",
-                    )
-                )
+            normalized["premerge_segment_count"] = premerge_segment_count
             normalized.update(
                 {
                     "force_merge_segment_count": force_merge_segment_count,
@@ -629,26 +617,14 @@ def _build_parameter_metadata(
         "hnsw_m": m,
         "hnsw_beam_width": int(parameters["beam_width"]),
         "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
+        "graph_degree_source": _GRAPH_DEGREE_SOURCE,
         "graph_degree": 2 * m,
         "intermediate_graph_degree": 3 * m,
     }
-    topology_key = next(
-        (
-            name
-            for name in ("premerge_segment_count", "num_indexing_threads")
-            if name in parameters
-        ),
-        None,
-    )
-    if topology_key is not None:
-        if topology_key == "premerge_segment_count":
-            metadata["requested_premerge_segment_count"] = parameters[
-                topology_key
-            ]
-        else:
-            metadata["requested_num_indexing_threads"] = parameters[
-                topology_key
-            ]
+    if "premerge_segment_count" in parameters:
+        metadata["requested_premerge_segment_count"] = parameters[
+            "premerge_segment_count"
+        ]
         metadata.update(
             {
                 "requested_force_merge_segment_count": parameters[
@@ -732,7 +708,7 @@ def _fbin_bridge_build_input(
         algorithm != ACCELERATED_HNSW_ALGORITHM
         or dataset.training_vectors_materialized
         or not dataset.base_file
-        or "num_indexing_threads" not in build_parameters
+        or "premerge_segment_count" not in build_parameters
         or build_parameters.get("force_merge_segment_count") != 0
     ):
         return None
@@ -761,12 +737,12 @@ def _fbin_bridge_build_input(
         if subset_size is None
         else min(file_vector_count, subset_size)
     )
-    partitions = int(build_parameters["num_indexing_threads"])
-    if vector_count < partitions or vector_count % partitions:
+    premerge_segments = int(build_parameters["premerge_segment_count"])
+    if vector_count < premerge_segments or vector_count % premerge_segments:
         raise ValueError(
             "Java FBIN bridge requires equal nonempty partitions: vector "
             f"count {vector_count} is not divisible by "
-            f"num_indexing_threads {partitions}"
+            f"premerge_segment_count {premerge_segments}"
         )
     if _source_identity(dataset) != source_identity:
         raise RuntimeError(
@@ -780,6 +756,76 @@ def _fbin_bridge_build_input(
         header_bytes=int(header_bytes),
         vector_count=int(vector_count),
         subset_size=subset_size,
+    )
+
+
+def _prepare_build_input(
+    dataset: Dataset,
+    algorithm: str,
+    build_parameters: Mapping[str, Any],
+    *,
+    maximum_dimensions: int,
+) -> _PreparedBuildInput:
+    """Select one ingestion route and validate its dataset shape."""
+    fbin_bridge = _fbin_bridge_build_input(
+        dataset,
+        algorithm,
+        build_parameters,
+        maximum_dimensions=maximum_dimensions,
+    )
+    if fbin_bridge is not None:
+        return _PreparedBuildInput(
+            vectors=None,
+            fbin_bridge=fbin_bridge,
+            vector_count=fbin_bridge.vector_count,
+            dimensions=fbin_bridge.dimensions,
+            ingest_route=JAVA_FBIN_INGEST_ROUTE,
+            training_vectors_materialized=False,
+        )
+
+    _normalize_subset_size(dataset)
+    vectors = _validate_vectors(
+        dataset.training_vectors,
+        "training vectors",
+        maximum_dimensions=maximum_dimensions,
+    )
+    return _PreparedBuildInput(
+        vectors=vectors,
+        fbin_bridge=None,
+        vector_count=int(vectors.shape[0]),
+        dimensions=int(vectors.shape[1]),
+        ingest_route=PYTHON_INGEST_ROUTE,
+        training_vectors_materialized=dataset.training_vectors_materialized,
+    )
+
+
+def _fbin_build_evidence(
+    dataset: Dataset,
+    request: _FbinBridgeBuildInput,
+    result: RuntimeFbinBuildResult,
+) -> _FbinBuildEvidence:
+    """Revalidate the source and describe the bytes indexed by Java."""
+    if _source_identity(dataset) != request.source_identity:
+        raise RuntimeError(
+            "training vector file changed while the Java FBIN bridge was "
+            "building the index"
+        )
+    return _FbinBuildEvidence(
+        dataset_identity={
+            "name": dataset.name,
+            "vector_count": result.vector_count,
+            "dimensions": result.dimensions,
+            "subset_size": request.subset_size,
+            "sha256": result.vector_payload_sha256,
+            "source": dict(request.source_identity),
+        },
+        metadata={
+            "source_file_size_bytes": result.source_file_size,
+            "source_file_vector_count": result.source_file_vector_count,
+            "source_header_bytes": result.header_bytes,
+            "indexed_payload_bytes": result.indexed_payload_bytes,
+            "vector_payload_sha256": result.vector_payload_sha256,
+        },
     )
 
 
@@ -893,19 +939,10 @@ def _runtime_topology_result_metadata(
     if topology is None:
         return {}
     metadata = dict(topology)
-    for name in (
-        "indexing_worker_document_counts",
-        "premerge_segment_vector_counts",
-    ):
+    for name in ("premerge_segment_vector_counts",):
         metadata[name] = (
             "[" + ",".join(str(value) for value in topology[name]) + "]"
         )
-    for name in (
-        "requested_premerge_segment_count",
-        "requested_num_indexing_threads",
-    ):
-        if metadata[name] is None:
-            metadata.pop(name)
     return metadata
 
 
@@ -942,15 +979,7 @@ def _validate_manifest_runtime_topology(
 
     build_parameters = payload["build_parameters"]
     topology = payload["runtime_build_topology"]
-    topology_parameter = next(
-        (
-            name
-            for name in ("premerge_segment_count", "num_indexing_threads")
-            if name in build_parameters
-        ),
-        None,
-    )
-    if topology_parameter is None:
+    if "premerge_segment_count" not in build_parameters:
         if topology is not None:
             invalid("unexpected evidence for an uncontrolled build")
         return
@@ -960,8 +989,7 @@ def _validate_manifest_runtime_topology(
         invalid("unexpected fields")
 
     positive_integer_fields = (
-        "actual_indexing_thread_count",
-        "max_concurrent_indexing_threads",
+        "requested_premerge_segment_count",
         "observed_premerge_segment_count",
         "max_buffered_docs",
         "applied_ram_per_thread_hard_limit_mb",
@@ -973,17 +1001,7 @@ def _validate_manifest_runtime_topology(
         topology["requested_force_merge_segment_count"]
     ) or topology["requested_force_merge_segment_count"] not in (0, 1):
         invalid("requested_force_merge_segment_count must be 0 or 1")
-    for name in (
-        "requested_premerge_segment_count",
-        "requested_num_indexing_threads",
-    ):
-        value = topology[name]
-        if value is not None and not _is_manifest_integer(value, minimum=1):
-            invalid(f"{name} must be null or a positive integer")
-    for name in (
-        "indexing_worker_document_counts",
-        "premerge_segment_vector_counts",
-    ):
+    for name in ("premerge_segment_vector_counts",):
         values = topology[name]
         if (
             not isinstance(values, list)
@@ -993,8 +1011,6 @@ def _validate_manifest_runtime_topology(
             )
         ):
             invalid(f"{name} must be a non-empty list of positive integers")
-    if not isinstance(topology["indexing_execution_mode"], str):
-        invalid("indexing_execution_mode must be a string")
     if not isinstance(topology["ingest_merge_policy"], str):
         invalid("ingest_merge_policy must be a string")
     if topology["final_merge_policy"] is not None and not isinstance(
@@ -1004,7 +1020,7 @@ def _validate_manifest_runtime_topology(
 
     vector_count = int(payload["dataset"]["vector_count"])
     force_merge = int(build_parameters["force_merge_segment_count"])
-    requested_count = int(build_parameters[topology_parameter])
+    requested_count = int(build_parameters["premerge_segment_count"])
     if vector_count % requested_count:
         invalid("vector count is not divisible by the requested count")
     if topology["requested_force_merge_segment_count"] != force_merge:
@@ -1016,60 +1032,21 @@ def _validate_manifest_runtime_topology(
         invalid("applied RAM hard limit does not match the request")
     if topology["ingest_merge_policy"] != "NoMergePolicy":
         invalid("unexpected ingest merge policy")
-
-    if topology_parameter == "num_indexing_threads":
-        chunk_size = vector_count // requested_count
-        if (
-            topology["requested_premerge_segment_count"] is not None
-            or topology["requested_num_indexing_threads"] != requested_count
-            or topology["indexing_execution_mode"] != "partitioned_sequential"
-            or topology["actual_indexing_thread_count"] != 1
-            or topology["max_concurrent_indexing_threads"] != 1
-            or topology["indexing_worker_document_counts"] != [vector_count]
-            or topology["premerge_segment_vector_counts"]
-            != [chunk_size] * requested_count
-            or topology["observed_premerge_segment_count"] != requested_count
-            or topology["max_buffered_docs"] != chunk_size + 1
-        ):
-            invalid(
-                "partitioned sequential evidence does not match the request"
-            )
-        expected_final_merge_policy = (
-            "TieredMergePolicy"
-            if force_merge == 1 and requested_count > 1
-            else None
-        )
-    else:
-        chunk_size = vector_count // requested_count
-        if (
-            topology["requested_premerge_segment_count"] != requested_count
-            or topology["requested_num_indexing_threads"] is not None
-            or topology["indexing_execution_mode"]
-            != "legacy_premerge_sequential"
-            or topology["actual_indexing_thread_count"] != 1
-            or topology["max_concurrent_indexing_threads"] != 1
-            or topology["indexing_worker_document_counts"] != [vector_count]
-            or topology["premerge_segment_vector_counts"]
-            != [chunk_size] * requested_count
-            or topology["observed_premerge_segment_count"] != requested_count
-            or topology["max_buffered_docs"] != chunk_size + 1
-        ):
-            invalid("legacy sequential evidence does not match the request")
-        expected_final_merge_policy = (
-            "TieredMergePolicy"
-            if force_merge == 1 and requested_count > 1
-            else None
-        )
-
-    worker_counts = topology["indexing_worker_document_counts"]
-    premerge_counts = topology["premerge_segment_vector_counts"]
-    if sum(worker_counts) != vector_count:
-        invalid("worker document counts do not cover the dataset")
+    chunk_size = vector_count // requested_count
     if (
-        len(premerge_counts) != requested_count
-        or sum(premerge_counts) != vector_count
+        topology["requested_premerge_segment_count"] != requested_count
+        or topology["premerge_segment_vector_counts"]
+        != [chunk_size] * requested_count
+        or topology["observed_premerge_segment_count"] != requested_count
+        or topology["max_buffered_docs"] != chunk_size + 1
     ):
-        invalid("observed pre-merge segments do not match the request")
+        invalid("partitioned sequential evidence does not match the request")
+    expected_final_merge_policy = (
+        "TieredMergePolicy"
+        if force_merge == 1 and requested_count > 1
+        else None
+    )
+
     if topology["final_merge_policy"] != expected_final_merge_policy:
         invalid("final merge policy does not match the request")
     expected_final_segments = 1 if force_merge == 1 else requested_count
@@ -1214,7 +1191,7 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
         source = payload["dataset"].get("source")
         if (
             payload["algorithm"] != ACCELERATED_HNSW_ALGORITHM
-            or "num_indexing_threads" not in build_parameters
+            or "premerge_segment_count" not in build_parameters
             or build_parameters.get("force_merge_segment_count") != 0
             or not isinstance(source, Mapping)
             or Path(source["path"]).suffix != ".fbin"
@@ -1672,6 +1649,45 @@ class LuceneBackend(BenchmarkBackend):
             )
         return None
 
+    @staticmethod
+    def _discard_failed_staging(
+        staged: Path, build_error: BaseException
+    ) -> None:
+        """Discard an unpublished build without hiding either failure."""
+        try:
+            shutil.rmtree(staged)
+        except (KeyboardInterrupt, SystemExit) as cleanup_interrupt:
+            cleanup_interrupt.add_note(
+                "Index construction first failed: "
+                f"{type(build_error).__name__}: {build_error}. "
+                f"The incomplete staged index remains at {staged}."
+            )
+            raise
+        except FileNotFoundError as cleanup_error:
+            try:
+                staged.lstat()
+            except FileNotFoundError:
+                # Installation may already have renamed staging into place.
+                return
+            except OSError as inspection_error:
+                build_error.add_note(
+                    "Failed to discard the incomplete staged index at "
+                    f"{staged}: {type(cleanup_error).__name__}: "
+                    f"{cleanup_error}. Could not confirm whether staging "
+                    f"remains: {type(inspection_error).__name__}: "
+                    f"{inspection_error}"
+                )
+                return
+            build_error.add_note(
+                "Failed to discard the incomplete staged index at "
+                f"{staged}: {type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        except Exception as cleanup_error:
+            build_error.add_note(
+                "Failed to discard the incomplete staged index at "
+                f"{staged}: {type(cleanup_error).__name__}: {cleanup_error}"
+            )
+
     def build(
         self,
         dataset: Dataset,
@@ -1747,29 +1763,12 @@ class LuceneBackend(BenchmarkBackend):
                 )
             backend_build_started = time.perf_counter_ns()
             dataset_prepare_started = time.perf_counter_ns()
-            bridge_input = _fbin_bridge_build_input(
+            prepared_input = _prepare_build_input(
                 dataset,
                 self.algorithm,
                 index.build_param,
                 maximum_dimensions=self.maximum_dimensions,
             )
-            vectors: np.ndarray | None = None
-            if bridge_input is None:
-                _normalize_subset_size(dataset)
-                vectors = _validate_vectors(
-                    dataset.training_vectors,
-                    "training vectors",
-                    maximum_dimensions=self.maximum_dimensions,
-                )
-                vector_count = int(vectors.shape[0])
-                dimensions = int(vectors.shape[1])
-                ingest_route = PYTHON_INGEST_ROUTE
-                training_vectors_materialized = True
-            else:
-                vector_count = bridge_input.vector_count
-                dimensions = bridge_input.dimensions
-                ingest_route = JAVA_FBIN_INGEST_ROUTE
-                training_vectors_materialized = False
             dataset_prepare_ns = (
                 time.perf_counter_ns() - dataset_prepare_started
             )
@@ -1794,67 +1793,44 @@ class LuceneBackend(BenchmarkBackend):
             try:
                 build_started = time.perf_counter_ns()
                 bridge_metadata: dict[str, Any] = {}
-                if bridge_input is None:
-                    assert vectors is not None
+                dataset_identity: dict[str, Any] | None = None
+                if prepared_input.fbin_bridge is None:
+                    assert prepared_input.vectors is not None
                     runtime_build = runtime.build_index(
-                        staged, vectors, self.codec, index.build_param
+                        staged,
+                        prepared_input.vectors,
+                        self.codec,
+                        index.build_param,
                     )
                     build_elapsed_ns = time.perf_counter_ns() - build_started
                 else:
+                    request = prepared_input.fbin_bridge
                     runtime_build = runtime.build_index_from_fbin(
                         staged,
-                        bridge_input.source_path,
+                        request.source_path,
                         expected_source_size=int(
-                            bridge_input.source_identity["size"]
+                            request.source_identity["size"]
                         ),
-                        expected_file_vector_count=(
-                            bridge_input.file_vector_count
-                        ),
-                        expected_dimensions=bridge_input.dimensions,
-                        expected_header_bytes=bridge_input.header_bytes,
-                        vector_count=bridge_input.vector_count,
+                        expected_file_vector_count=request.file_vector_count,
+                        expected_dimensions=request.dimensions,
+                        expected_header_bytes=request.header_bytes,
+                        vector_count=request.vector_count,
                         codec_name=self.codec,
                         build_parameters=index.build_param,
                     )
                     build_elapsed_ns = time.perf_counter_ns() - build_started
-                    if (
-                        _source_identity(dataset)
-                        != bridge_input.source_identity
-                    ):
-                        raise RuntimeError(
-                            "training vector file changed while the Java "
-                            "FBIN bridge was building the index"
-                        )
-                    dataset_identity = {
-                        "name": dataset.name,
-                        "vector_count": runtime_build.vector_count,
-                        "dimensions": runtime_build.dimensions,
-                        "subset_size": bridge_input.subset_size,
-                        "sha256": runtime_build.vector_payload_sha256,
-                        "source": dict(bridge_input.source_identity),
-                    }
-                    bridge_metadata = {
-                        "source_file_size_bytes": (
-                            runtime_build.source_file_size
-                        ),
-                        "source_file_vector_count": (
-                            runtime_build.source_file_vector_count
-                        ),
-                        "source_header_bytes": runtime_build.header_bytes,
-                        "indexed_payload_bytes": (
-                            runtime_build.indexed_payload_bytes
-                        ),
-                        "vector_payload_sha256": (
-                            runtime_build.vector_payload_sha256
-                        ),
-                    }
+                    evidence = _fbin_build_evidence(
+                        dataset, request, runtime_build
+                    )
+                    dataset_identity = evidence.dataset_identity
+                    bridge_metadata = evidence.metadata
 
                 validation_started = time.perf_counter_ns()
                 metadata = self._verification_metadata(
                     runtime,
                     staged,
-                    vector_count,
-                    dimensions,
+                    prepared_input.vector_count,
+                    prepared_input.dimensions,
                 )
                 observed_segments = int(metadata["segment_count"])
                 if runtime_build.segment_count != observed_segments:
@@ -1865,7 +1841,6 @@ class LuceneBackend(BenchmarkBackend):
                     )
                 requested_topology = (
                     "premerge_segment_count" in index.build_param
-                    or "num_indexing_threads" in index.build_param
                 )
                 if requested_topology != (runtime_build.topology is not None):
                     raise RuntimeError(
@@ -1880,9 +1855,11 @@ class LuceneBackend(BenchmarkBackend):
                 runtime_topology_metadata = _runtime_topology_result_metadata(
                     runtime_topology_payload
                 )
-                if bridge_input is None:
-                    assert vectors is not None
-                    dataset_identity = _dataset_identity(dataset, vectors)
+                if dataset_identity is None:
+                    assert prepared_input.vectors is not None
+                    dataset_identity = _dataset_identity(
+                        dataset, prepared_input.vectors
+                    )
                 payload = _manifest_payload(
                     dataset_identity,
                     self.algorithm,
@@ -1891,28 +1868,34 @@ class LuceneBackend(BenchmarkBackend):
                     runtime_topology_payload,
                     observed_segments,
                     runtime.artifact_provenance,
-                    ingest_route=ingest_route,
+                    ingest_route=prepared_input.ingest_route,
                     training_vectors_materialized=(
-                        training_vectors_materialized
+                        prepared_input.training_vectors_materialized
                     ),
                 )
                 _validate_manifest_runtime_topology(
                     payload, staged / _MANIFEST_FILE
                 )
                 _write_manifest(staged, payload)
+                runtime_timing_metadata = _runtime_build_timing_metadata(
+                    runtime_build
+                )
                 validation_elapsed_ns = (
                     time.perf_counter_ns() - validation_started
+                )
+
+                index_size_started = time.perf_counter_ns()
+                index_size_bytes = _index_size(staged)
+                index_size_elapsed_ns = (
+                    time.perf_counter_ns() - index_size_started
                 )
 
                 install_started = time.perf_counter_ns()
                 cleanup_warning = self._install_staged_index(staged, path)
                 install_elapsed_ns = time.perf_counter_ns() - install_started
-            except BaseException:
-                shutil.rmtree(staged, ignore_errors=True)
+            except BaseException as build_error:
+                self._discard_failed_staging(staged, build_error)
                 raise
-            index_size_started = time.perf_counter_ns()
-            index_size_bytes = _index_size(path)
-            index_size_elapsed_ns = time.perf_counter_ns() - index_size_started
             lifecycle_metadata: dict[str, Any] = {
                 "dataset_load_validate_seconds": _nanoseconds_to_seconds(
                     dataset_prepare_ns
@@ -1945,7 +1928,7 @@ class LuceneBackend(BenchmarkBackend):
                 "install_time_seconds": _nanoseconds_to_seconds(
                     install_elapsed_ns
                 ),
-                **_runtime_build_timing_metadata(runtime_build),
+                **runtime_timing_metadata,
             }
             if cleanup_warning is not None:
                 lifecycle_metadata["cleanup_warning"] = cleanup_warning
@@ -1959,9 +1942,9 @@ class LuceneBackend(BenchmarkBackend):
                     "codec": self.codec,
                     "group": self.group,
                     "index_name": index.name,
-                    "ingest_route": ingest_route,
+                    "ingest_route": prepared_input.ingest_route,
                     "training_vectors_materialized": (
-                        training_vectors_materialized
+                        prepared_input.training_vectors_materialized
                     ),
                     **parameter_metadata,
                     "pylucene_version": runtime.pylucene_version,
