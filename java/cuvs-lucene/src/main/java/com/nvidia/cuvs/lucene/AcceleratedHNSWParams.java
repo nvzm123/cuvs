@@ -37,6 +37,8 @@ public class AcceleratedHNSWParams {
    */
   public static final int MIN_WRITER_THREADS = 1;
   public static final int MAX_WRITER_THREADS = 512;
+  public static final int MIN_GRAPH_THREADS = 1;
+  public static final int MAX_GRAPH_THREADS = 512;
   public static final int MIN_INT_GRAPH_DEG = 2;
   public static final int MAX_INT_GRAPH_DEG = 512;
   public static final int MIN_GRAPH_DEG = 1;
@@ -53,6 +55,7 @@ public class AcceleratedHNSWParams {
   public static final int MAX_NN_DESCENT_NUM_ITERATIONS = 100;
 
   public static final int DEFAULT_WRITER_THREADS = 1;
+  public static final int DEFAULT_GRAPH_THREADS = 1;
   public static final int DEFAULT_INT_GRAPH_DEGREE = 128;
   public static final int DEFAULT_GRAPH_DEGREE = 64;
   public static final int DEFAULT_HNSW_LAYERS = 1;
@@ -78,6 +81,7 @@ public class AcceleratedHNSWParams {
       };
 
   private final int writerThreads;
+  private final int graphThreads;
   private final int intermediateGraphDegree;
   private final int graphdegree;
   private final int hnswLayers;
@@ -95,7 +99,9 @@ public class AcceleratedHNSWParams {
   /**
    * Constructs an instance of {@link AcceleratedHNSWParams} with specific parameter values.
    *
-   * @param writerThreads Number of cuVS writer threads to use.
+   * @param writerThreads Number of native cuVS writer threads to use.
+   * @param graphThreads Maximum threads per HNSW graph materialization or serialization operation,
+   *     including the calling thread.
    * @param intermediateGraphDegree The intermediate graph degree while building the CAGRA index.
    * @param graphdegree The graph degree to use while building the CAGRA index.
    * @param hnswLayers The number of HNSW layers to build in the HNSW index.
@@ -112,6 +118,7 @@ public class AcceleratedHNSWParams {
    */
   private AcceleratedHNSWParams(
       int writerThreads,
+      int graphThreads,
       int intermediateGraphDegree,
       int graphdegree,
       int hnswLayers,
@@ -127,6 +134,7 @@ public class AcceleratedHNSWParams {
       HnswHeuristicType hnswHeuristicType) {
     super();
     this.writerThreads = writerThreads;
+    this.graphThreads = graphThreads;
     this.intermediateGraphDegree = intermediateGraphDegree;
     this.graphdegree = graphdegree;
     this.hnswLayers = hnswLayers;
@@ -143,12 +151,22 @@ public class AcceleratedHNSWParams {
   }
 
   /**
-   * Get the cuVS writer threads parameter
+   * Get the native cuVS writer threads parameter.
    *
    * @return cuVS writer threads parameter
    */
   public int getWriterThreads() {
     return writerThreads;
+  }
+
+  /**
+   * Get the maximum threads per HNSW graph materialization or serialization operation. The count
+   * includes the calling thread; shared helper capacity may reduce actual concurrency.
+   *
+   * @return HNSW graph processing threads parameter
+   */
+  public int getGraphThreads() {
+    return graphThreads;
   }
 
   /**
@@ -276,6 +294,8 @@ public class AcceleratedHNSWParams {
   public String toString() {
     return "AcceleratedHNSWParams [writerThreads="
         + writerThreads
+        + ", graphThreads="
+        + graphThreads
         + ", intermediateGraphDegree="
         + intermediateGraphDegree
         + ", graphdegree="
@@ -311,6 +331,7 @@ public class AcceleratedHNSWParams {
   public static class Builder {
 
     private int writerThreads = DEFAULT_WRITER_THREADS;
+    private int graphThreads = DEFAULT_GRAPH_THREADS;
     private int intermediateGraphDegree = DEFAULT_INT_GRAPH_DEGREE;
     private int graphdegree = DEFAULT_GRAPH_DEGREE;
     private int hnswLayers = DEFAULT_HNSW_LAYERS;
@@ -326,7 +347,7 @@ public class AcceleratedHNSWParams {
     private HnswHeuristicType hnswHeuristicType = DEFAULT_HNSW_HEURISTIC_TYPE;
 
     /**
-     * Set the number of cuVS writer threads while building the index
+     * Set the number of native cuVS writer threads while building the index.
      * Valid range - Minimum: {@value MIN_WRITER_THREADS}, Maximum: {@value MAX_WRITER_THREADS}
      * Default value - {@value DEFAULT_WRITER_THREADS}
      *
@@ -335,6 +356,19 @@ public class AcceleratedHNSWParams {
      */
     public Builder withWriterThreads(int writerThreads) {
       this.writerThreads = writerThreads;
+      return this;
+    }
+
+    /**
+     * Set the maximum threads per HNSW graph materialization or serialization operation. The count
+     * includes the calling thread. Valid range - Minimum: {@value MIN_GRAPH_THREADS}, Maximum:
+     * {@value MAX_GRAPH_THREADS}. Default value - {@value DEFAULT_GRAPH_THREADS}.
+     *
+     * @param graphThreads maximum graph-processing threads per operation
+     * @return instance of {@link Builder}
+     */
+    public Builder withGraphThreads(int graphThreads) {
+      this.graphThreads = graphThreads;
       return this;
     }
 
@@ -521,6 +555,14 @@ public class AcceleratedHNSWParams {
                 + MAX_WRITER_THREADS
                 + "]");
       }
+      if (graphThreads < MIN_GRAPH_THREADS || graphThreads > MAX_GRAPH_THREADS) {
+        throw new IllegalArgumentException(
+            "graphThreads not in valid range. Valid range: ["
+                + MIN_GRAPH_THREADS
+                + ", "
+                + MAX_GRAPH_THREADS
+                + "]");
+      }
       if (intermediateGraphDegree < MIN_INT_GRAPH_DEG
           || intermediateGraphDegree > MAX_INT_GRAPH_DEG) {
         throw new IllegalArgumentException(
@@ -608,6 +650,7 @@ public class AcceleratedHNSWParams {
       validate();
       return new AcceleratedHNSWParams(
           writerThreads,
+          graphThreads,
           intermediateGraphDegree,
           graphdegree,
           hnswLayers,

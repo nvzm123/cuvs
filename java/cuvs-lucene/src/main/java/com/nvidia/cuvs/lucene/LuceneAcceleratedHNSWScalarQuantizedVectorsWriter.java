@@ -210,10 +210,12 @@ public class LuceneAcceleratedHNSWScalarQuantizedVectorsWriter extends KnnVector
               dataset,
               acceleratedHNSWParams.getHnswLayers(),
               params,
-              QuantizationType.SCALAR);
+              QuantizationType.SCALAR,
+              acceleratedHNSWParams.getGraphThreads());
 
       long vectorIndexOffset = hnswVectorIndex.getFilePointer();
-      int[][] graphLevelNodeOffsets = writeGraph(hnswGraph, hnswVectorIndex);
+      int[][] graphLevelNodeOffsets =
+          writeGraph(hnswGraph, hnswVectorIndex, acceleratedHNSWParams.getGraphThreads());
       long vectorIndexLength = hnswVectorIndex.getFilePointer() - vectorIndexOffset;
       writeMeta(
           hnswVectorIndex,
@@ -306,7 +308,8 @@ public class LuceneAcceleratedHNSWScalarQuantizedVectorsWriter extends KnnVector
 
       long vectorIndexOffset = hnswVectorIndex.getFilePointer();
       // Write the graph to the vector index
-      int[][] graphLevelNodeOffsets = writeGraph(hnswGraph, hnswVectorIndex);
+      int[][] graphLevelNodeOffsets =
+          writeGraph(hnswGraph, hnswVectorIndex, acceleratedHNSWParams.getGraphThreads());
       long vectorIndexLength = hnswVectorIndex.getFilePointer() - vectorIndexOffset;
 
       // Write metadata
