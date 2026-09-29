@@ -88,6 +88,9 @@ def test_successful_build_reports_the_verified_persisted_index_kind(
         assert result.metadata["hnsw_m"] == 32
         assert result.metadata["hnsw_beam_width"] == 32
         assert result.metadata["hnsw_heuristic"] == "SAME_GRAPH_FOOTPRINT"
+        assert result.metadata["graph_degree_source"] == (
+            "requested_hnsw_same_graph_footprint_derivation"
+        )
         assert result.metadata["graph_degree"] == 64
         assert result.metadata["intermediate_graph_degree"] == 96
     if algorithm == CAGRA_ALGORITHM:
@@ -116,7 +119,7 @@ def test_accelerated_build_propagates_and_persists_requested_parameters(
             "beam_width": 80,
             "premerge_segment_count": 4,
             "force_merge_segment_count": 1,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
 
@@ -128,16 +131,19 @@ def test_accelerated_build_propagates_and_persists_requested_parameters(
         "beam_width": 80,
         "premerge_segment_count": 4,
         "force_merge_segment_count": 1,
-        "ram_per_thread_hard_limit_mb": 61440,
+        "ram_per_thread_hard_limit_mb": 1945,
     }
     assert result.success, result.error_message
     assert result.build_params == expected
     assert runtime.build_calls[0][3] == expected
     assert result.metadata["graph_degree"] == 32
     assert result.metadata["intermediate_graph_degree"] == 48
+    assert result.metadata["graph_degree_source"] == (
+        "requested_hnsw_same_graph_footprint_derivation"
+    )
     assert result.metadata["requested_premerge_segment_count"] == 4
     assert result.metadata["requested_force_merge_segment_count"] == 1
-    assert result.metadata["ram_per_thread_hard_limit_mb"] == 61440
+    assert result.metadata["ram_per_thread_hard_limit_mb"] == 1945
     assert result.metadata["premerge_segment_vector_counts"] == "[1,1,1,1]"
     manifest = json.loads(
         (Path(index.file) / ".cuvs-bench-lucene.json").read_text(
@@ -167,7 +173,7 @@ def test_accelerated_build_preserves_no_force_merge_topology(
             "beam_width": 80,
             "premerge_segment_count": premerge_segment_count,
             "force_merge_segment_count": 0,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
 
@@ -196,7 +202,7 @@ def test_accelerated_build_preserves_no_force_merge_topology(
     ("force_merge_segment_count", "expected_segment_count"),
     ((0, 4), (1, 1)),
 )
-def test_accelerated_build_propagates_partitioned_indexing_parameters(
+def test_accelerated_build_persists_observed_topology_for_reuse(
     tmp_path: Path,
     force_merge_segment_count: int,
     expected_segment_count: int,
@@ -209,9 +215,9 @@ def test_accelerated_build_propagates_partitioned_indexing_parameters(
         {
             "m": 16,
             "beam_width": 80,
-            "num_indexing_threads": 4,
+            "premerge_segment_count": 4,
             "force_merge_segment_count": force_merge_segment_count,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
 
@@ -221,21 +227,16 @@ def test_accelerated_build_propagates_partitioned_indexing_parameters(
         "codec": index.build_param["codec"],
         "m": 16,
         "beam_width": 80,
-        "num_indexing_threads": 4,
+        "premerge_segment_count": 4,
         "force_merge_segment_count": force_merge_segment_count,
-        "ram_per_thread_hard_limit_mb": 61440,
+        "ram_per_thread_hard_limit_mb": 1945,
     }
     assert result.success, result.error_message
     assert result.build_params == expected
     assert runtime.build_calls[0][3] == expected
     assert result.metadata["segment_count"] == expected_segment_count
-    assert result.metadata["requested_num_indexing_threads"] == 4
-    assert result.metadata["actual_indexing_thread_count"] == 1
-    assert result.metadata["max_concurrent_indexing_threads"] == 1
-    assert result.metadata["indexing_execution_mode"] == (
-        "partitioned_sequential"
-    )
-    assert result.metadata["indexing_worker_document_counts"] == "[4]"
+    assert result.metadata["requested_premerge_segment_count"] == 4
+    assert result.metadata["observed_premerge_segment_count"] == 4
     assert result.metadata["requested_force_merge_segment_count"] == (
         force_merge_segment_count
     )
@@ -249,17 +250,12 @@ def test_accelerated_build_propagates_partitioned_indexing_parameters(
     assert manifest["schema_version"] == 3
     assert manifest["build_parameters"] == expected
     assert manifest["runtime_build_topology"] == {
-        "requested_premerge_segment_count": None,
-        "requested_num_indexing_threads": 4,
-        "actual_indexing_thread_count": 1,
-        "max_concurrent_indexing_threads": 1,
-        "indexing_execution_mode": "partitioned_sequential",
-        "indexing_worker_document_counts": [4],
+        "requested_premerge_segment_count": 4,
         "observed_premerge_segment_count": 4,
         "requested_force_merge_segment_count": force_merge_segment_count,
         "premerge_segment_vector_counts": [1, 1, 1, 1],
         "max_buffered_docs": 2,
-        "applied_ram_per_thread_hard_limit_mb": 61440,
+        "applied_ram_per_thread_hard_limit_mb": 1945,
         "ingest_merge_policy": "NoMergePolicy",
         "final_merge_policy": (
             "TieredMergePolicy" if force_merge_segment_count == 1 else None
@@ -273,16 +269,14 @@ def test_accelerated_build_propagates_partitioned_indexing_parameters(
     assert reused.metadata["skipped"] is True
     assert search.success, search.error_message
     for reused_metadata in (reused.metadata, search.metadata):
-        assert reused_metadata["requested_num_indexing_threads"] == 4
-        assert reused_metadata["actual_indexing_thread_count"] == 1
-        assert reused_metadata["max_concurrent_indexing_threads"] == 1
-        assert reused_metadata["indexing_execution_mode"] == (
-            "partitioned_sequential"
-        )
-        assert reused_metadata["indexing_worker_document_counts"] == ("[4]")
+        assert reused_metadata["requested_premerge_segment_count"] == 4
+        assert reused_metadata["observed_premerge_segment_count"] == 4
         assert reused_metadata["premerge_segment_vector_counts"] == (
             "[1,1,1,1]"
         )
+    assert result.metadata["runtime_force_merge_seconds"] == (
+        0.00035 if force_merge_segment_count else 0.0
+    )
     assert len(runtime.build_calls) == 1
 
 
@@ -670,6 +664,7 @@ def test_build_timing_rejects_phases_longer_than_the_enclosing_wall() -> None:
         directory_open_ns=1,
         writer_setup_ns=2,
         document_ingest_ns=3,
+        force_merge_ns=1,
         writer_commit_close_ns=4,
         post_build_reader_ns=5,
         directory_close_ns=6,
@@ -1006,6 +1001,9 @@ def test_dry_runs_do_not_resolve_or_start_the_runtime(
                 "hnsw_m": 32,
                 "hnsw_beam_width": 32,
                 "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
+                "graph_degree_source": (
+                    "requested_hnsw_same_graph_footprint_derivation"
+                ),
                 "graph_degree": 64,
                 "intermediate_graph_degree": 96,
             }

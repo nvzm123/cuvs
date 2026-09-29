@@ -49,22 +49,30 @@ Pass that file with `--configuration`, select
 The normalized HNSW parameters are recorded in the index manifest. Result
 metadata records those requested parameters together with graph degrees derived
 from the selected heuristic; the graph-degree fields are not direct native
-observations.
+observations. The machine-readable
+`graph_degree_source=requested_hnsw_same_graph_footprint_derivation` field makes
+that provenance explicit, including when the writer uses its CPU fallback.
 
-Large accelerated-HNSW validations can also control Lucene ingestion
-partitioning and the final segment topology.
-`num_indexing_threads`, `force_merge_segment_count`, and
-`ram_per_thread_hard_limit_mb` must be specified together. The historical
-`num_indexing_threads` spelling is retained for compatibility with the
-vectorsearch-benchmarks CAGRA route: its value is the number of equal,
-contiguous partitions built in sequential passes, not the number of simultaneous
-Python producers. The partition count and RAM limit must be positive integers;
+Large accelerated-HNSW validations can also control sequential ingestion
+partitions and the final segment topology. `premerge_segment_count`,
+`force_merge_segment_count`, and `ram_per_thread_hard_limit_mb` must be
+specified together. The partition count must be a positive integer, the RAM
+limit must be an integer from 1 through 2047 MiB, and
 `force_merge_segment_count` must be either `0` (retain the partition segments)
-or `1` (produce one final segment). Automatic flushes and merges are disabled
-during each partition. When a final count of one is requested, a serial
-`forceMerge(1)` exercises the codec's vector-merge path; this control does not
-by itself make that merge out-of-core. For example, a four-partition build that
-retains all four segments uses:
+or `1` (produce one final segment).
+
+Each equal, contiguous partition uses a separate writer lifecycle. Automatic
+merges are disabled during ingestion, and the document-count flush boundary is
+derived from the partition size. Lucene's supported per-thread RAM safety limit
+remains active. If it causes an earlier flush, the backend rejects the physical
+topology mismatch instead of silently reporting the requested segment shape.
+Use smaller partitions when a partition cannot fit under that safety limit.
+When a final count of one is requested from more than one pre-merge segment, a
+serial `forceMerge(1)` exercises the codec's vector-merge path; an index already
+containing one segment does not invoke a merge and records
+`runtime_force_merge_seconds=0` and `final_merge_policy=null`. This control does
+not by itself make that merge out-of-core. For example, a four-partition build
+that retains all four segments uses:
 
 ```yaml
 name: lucene_accelerated_hnsw
@@ -74,26 +82,22 @@ groups:
       codec: ["Lucene101AcceleratedHNSWCodec"]
       m: [16]
       beam_width: [80]
-      num_indexing_threads: [4]
+      premerge_segment_count: [4]
       force_merge_segment_count: [0]
-      ram_per_thread_hard_limit_mb: [61440]
+      ram_per_thread_hard_limit_mb: [1945]
     search: {}
 ```
 
 This produces and retains four equal segments. Set
 `force_merge_segment_count: [1]` to merge them serially into one segment after
-ingestion. Results truthfully record the compatibility request, one Python/JCC
-ingestion producer, sequential execution, exact partition vector counts,
-derived `max_buffered_docs`, applied hard limit, merge policies, and final
-segment count. The hard-limit bridge is verified at runtime and fails closed
-when Lucene does not retain the requested value. The manifest stores both the
-canonical request and runtime topology evidence. Reuse validates the evidence
-against the request, dataset row count, and final physical segment count, and
-reused build/search results surface that same evidence.
-
-`premerge_segment_count` remains available as a legacy, explicitly sequential
-topology control. It cannot be combined with `num_indexing_threads`; use the
-latter when reproducing the historical vectorsearch-benchmarks configuration.
+ingestion. Results record the requested and observed pre-merge segment counts,
+exact segment vector counts, derived `max_buffered_docs`, applied hard limit,
+merge policies, and final segment count. The public Lucene RAM-limit setter is
+verified at runtime and fails closed when Lucene does not retain the requested
+value. The manifest stores both the canonical request and runtime topology
+evidence. Reuse validates the evidence against the request, dataset row count,
+and final physical segment count, and reused build/search results surface that
+same evidence.
 
 ```bash
 python -m cuvs_bench.run \
@@ -269,17 +273,21 @@ JVM arguments cannot be changed after `lucene.initVM(...)`.
 ## Timing contract
 
 `build_time_seconds` and `index_build_call_seconds` cover the in-process Lucene
-build call: writer setup, document ingestion, writer commit/close, and the
-post-build reader check. They exclude dataset loading, index verification,
-manifest publication, installation, and size measurement; use
+build call: directory open/close, writer setup, document ingestion, an optional
+synchronous force merge, writer commit/close, and the post-build reader check.
+They exclude dataset loading, index verification, manifest publication,
+installation, and size measurement; use
 `backend_build_total_seconds` for that complete backend lifecycle.
 
 In particular, `runtime_document_ingest_seconds` includes NumPy-to-Python and
 Python-to-Java conversion, Java object creation, JCC dispatch, and Lucene work
 performed by `addDocument`. It is not a measurement of cuvs-lucene or GPU graph
-construction alone. `runtime_writer_commit_close_seconds` includes work that
-the selected codec defers until flush, commit, or close. Absolute build times
-from this document-at-a-time path are therefore not directly comparable with a
+construction alone. `runtime_force_merge_seconds` measures an explicitly
+requested synchronous `forceMerge` as a nested sub-timer; it is already included
+in the enclosing build-call timings and must not be added to them.
+`runtime_writer_commit_close_seconds` includes only work that the selected
+codec defers until flush, commit, or close. Absolute build times from this
+document-at-a-time path are therefore not directly comparable with a
 Java-native or bulk-FBIN benchmark harness.
 
 This initial backend invokes one Lucene query at a time. The common cuVS Bench

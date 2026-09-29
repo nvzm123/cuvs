@@ -176,6 +176,126 @@ def test_failed_force_rebuild_preserves_the_previous_valid_index(
     assert list(path.parent.glob(f".{path.name}.build-*")) == []
 
 
+def test_failed_build_reports_staging_that_cleanup_could_not_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    assert backend.build(_dataset(), [index]).success
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+
+    def fail_after_writing_partial_index(
+        index_path: Path, *_args, **_kwargs
+    ) -> None:
+        (index_path / "partial-segment").write_text(
+            "incomplete", encoding="utf-8"
+        )
+        raise RuntimeError("replacement build failed")
+
+    orphaned_paths: list[Path] = []
+
+    def fail_cleanup(path: Path) -> None:
+        orphaned_paths.append(path)
+        raise OSError("cleanup denied")
+
+    monkeypatch.setattr(
+        runtime, "build_index", fail_after_writing_partial_index
+    )
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree", fail_cleanup
+    )
+
+    replacement = backend.build(_dataset(offset=0.25), [index], force=True)
+
+    assert not replacement.success
+    assert replacement.error_message.startswith(
+        "RuntimeError: replacement build failed"
+    )
+    assert "Failed to discard the incomplete staged index" in (
+        replacement.error_message
+    )
+    assert "cleanup denied" in replacement.error_message
+    [orphaned] = orphaned_paths
+    assert str(orphaned) in replacement.error_message
+    assert (orphaned / "partial-segment").read_text(encoding="utf-8") == (
+        "incomplete"
+    )
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+
+
+def test_missing_failed_staging_is_already_discarded(tmp_path: Path) -> None:
+    build_error = RuntimeError("build failed")
+
+    LuceneBackend._discard_failed_staging(
+        tmp_path / "already-renamed-staging", build_error
+    )
+
+    assert not hasattr(build_error, "__notes__")
+
+
+def test_descendant_cleanup_race_does_not_hide_remaining_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    build_error = RuntimeError("build failed")
+
+    def fail_for_missing_descendant(_path: Path) -> None:
+        raise FileNotFoundError("a staged child disappeared")
+
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree",
+        fail_for_missing_descendant,
+    )
+
+    LuceneBackend._discard_failed_staging(staged, build_error)
+
+    [note] = build_error.__notes__
+    assert "Failed to discard the incomplete staged index" in note
+    assert str(staged) in note
+    assert "a staged child disappeared" in note
+
+
+@pytest.mark.parametrize("control_error", (KeyboardInterrupt, SystemExit))
+def test_staging_cleanup_process_control_takes_precedence_over_build_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_error: type[BaseException],
+) -> None:
+    runtime = RecordingRuntime()
+    runtime.build_error = RuntimeError("build failed")
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    orphaned_paths: list[Path] = []
+
+    def interrupt_cleanup(path: Path) -> None:
+        orphaned_paths.append(path)
+        raise control_error("cleanup interrupted")
+
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree", interrupt_cleanup
+    )
+
+    with pytest.raises(control_error, match="cleanup interrupted") as failure:
+        backend.build(_dataset(), [index])
+
+    [orphaned] = orphaned_paths
+    [note] = failure.value.__notes__
+    assert (
+        "Index construction first failed: RuntimeError: build failed" in note
+    )
+    assert str(orphaned) in note
+    assert orphaned.is_dir()
+
+
 def test_backup_cleanup_failure_does_not_report_a_published_index_as_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -543,7 +663,7 @@ def test_manifest_build_parameters_must_match_the_requested_index(
             "beam_width": 80,
             "premerge_segment_count": 4,
             "force_merge_segment_count": 1,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
     assert backend.build(dataset, [index]).success
@@ -576,15 +696,15 @@ def test_reuse_rejects_runtime_topology_evidence_that_conflicts_with_request(
         {
             "m": 16,
             "beam_width": 80,
-            "num_indexing_threads": 4,
+            "premerge_segment_count": 4,
             "force_merge_segment_count": 0,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
     assert backend.build(dataset, [index]).success
     manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["runtime_build_topology"]["actual_indexing_thread_count"] = 3
+    manifest["runtime_build_topology"]["observed_premerge_segment_count"] = 3
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     reuse = backend.build(dataset, [index])
@@ -612,7 +732,7 @@ def test_search_rejects_noncanonical_manifest_build_parameters(
             "beam_width": 80,
             "premerge_segment_count": 4,
             "force_merge_segment_count": 1,
-            "ram_per_thread_hard_limit_mb": 61440,
+            "ram_per_thread_hard_limit_mb": 1945,
         }
     )
     assert backend.build(dataset, [index]).success

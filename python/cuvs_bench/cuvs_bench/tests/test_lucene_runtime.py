@@ -16,9 +16,7 @@ import pytest
 from cuvs_bench.backends import _lucene_runtime
 from cuvs_bench.backends._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
-    CONFIGURED_ACCELERATED_HNSW_CODEC,
-    HNSW_BEAM_WIDTH_PROPERTY,
-    HNSW_MAX_CONN_PROPERTY,
+    CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY,
     _CleanupStack,
     _controlled_build_topology,
     _load_pylucene,
@@ -48,7 +46,7 @@ _ARTIFACT_VERSION = maven_artifact_version()
         (100_000_000, 4, 1, 25_000_000),
     ),
 )
-def test_controlled_topology_derives_exact_equal_segments(
+def test_controlled_topology_derives_equal_partition_plan(
     vector_count: int,
     premerge_segments: int,
     force_merge_segments: int,
@@ -58,7 +56,7 @@ def test_controlled_topology_derives_exact_equal_segments(
         {
             "premerge_segment_count": premerge_segments,
             "force_merge_segment_count": force_merge_segments,
-            "ram_per_thread_hard_limit_mb": 61_440,
+            "ram_per_thread_hard_limit_mb": 1_945,
         },
         vector_count,
     )
@@ -66,31 +64,9 @@ def test_controlled_topology_derives_exact_equal_segments(
     assert topology is not None
     assert topology.premerge_segment_count == premerge_segments
     assert topology.force_merge_segment_count == force_merge_segments
-    assert topology.ram_per_thread_hard_limit_mb == 61_440
+    assert topology.ram_per_thread_hard_limit_mb == 1_945
     assert topology.chunk_size == chunk_size
     assert topology.max_buffered_docs == chunk_size + 1
-
-
-@pytest.mark.parametrize("force_merge_segments", (0, 1))
-def test_num_indexing_threads_uses_partition_flush_boundary(
-    force_merge_segments: int,
-) -> None:
-    topology = _controlled_build_topology(
-        {
-            "num_indexing_threads": 4,
-            "force_merge_segment_count": force_merge_segments,
-            "ram_per_thread_hard_limit_mb": 61_440,
-        },
-        100_000_000,
-    )
-
-    assert topology is not None
-    assert topology.requested_premerge_segment_count is None
-    assert topology.num_indexing_threads == 4
-    assert topology.premerge_segment_count == 4
-    assert topology.force_merge_segment_count == force_merge_segments
-    assert topology.chunk_size == 25_000_000
-    assert topology.max_buffered_docs == 25_000_001
 
 
 @pytest.mark.parametrize(
@@ -103,19 +79,9 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
         ),
         (
             {
-                "premerge_segment_count": 4,
-                "num_indexing_threads": 4,
-                "force_merge_segment_count": 0,
-                "ram_per_thread_hard_limit_mb": 61_440,
-            },
-            100,
-            "cannot combine",
-        ),
-        (
-            {
                 "premerge_segment_count": True,
                 "force_merge_segment_count": 1,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             "must be a positive integer",
@@ -124,7 +90,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": 2,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -133,7 +99,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": True,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -142,7 +108,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": None,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -151,7 +117,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": "0",
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -160,7 +126,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": 0.0,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -169,7 +135,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": -1,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             100,
             r"must be 0 \(disabled\) or 1",
@@ -178,7 +144,7 @@ def test_num_indexing_threads_uses_partition_flush_boundary(
             {
                 "premerge_segment_count": 4,
                 "force_merge_segment_count": 1,
-                "ram_per_thread_hard_limit_mb": 61_440,
+                "ram_per_thread_hard_limit_mb": 1_945,
             },
             101,
             "is not divisible",
@@ -190,6 +156,38 @@ def test_controlled_topology_rejects_ambiguous_shapes(
 ) -> None:
     with pytest.raises(RuntimeError, match=message):
         _controlled_build_topology(parameters, vector_count)
+
+
+@pytest.mark.parametrize("hard_limit", (1, 2047))
+def test_controlled_topology_accepts_supported_ram_limits(
+    hard_limit: int,
+) -> None:
+    topology = _controlled_build_topology(
+        {
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": hard_limit,
+        },
+        100,
+    )
+
+    assert topology is not None
+    assert topology.ram_per_thread_hard_limit_mb == hard_limit
+
+
+@pytest.mark.parametrize("hard_limit", (0, 2048, True))
+def test_controlled_topology_rejects_unsupported_ram_limits(
+    hard_limit: object,
+) -> None:
+    with pytest.raises(RuntimeError, match="ram_per_thread_hard_limit_mb"):
+        _controlled_build_topology(
+            {
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 0,
+                "ram_per_thread_hard_limit_mb": hard_limit,
+            },
+            100,
+        )
 
 
 def _properties(group: str, artifact: str, version: str) -> bytes:
@@ -230,14 +228,11 @@ def _write_artifacts(
         )
         archive.writestr(
             "com/nvidia/cuvs/lucene/"
-            "IndexWriterConfigPerThreadHardLimitBridge.class",
+            "Lucene101AcceleratedHNSWCodecFactory.class",
             b"",
         )
         archive.writestr(
             "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.class", b""
-        )
-        archive.writestr(
-            "com/nvidia/cuvs/lucene/Lucene101ConfiguredHNSWCodec.class", b""
         )
         archive.writestr(
             "META-INF/services/org.apache.lucene.codecs.Codec",
@@ -332,27 +327,31 @@ def test_java_search_timer_reports_jcc_adaptation_failure() -> None:
     assert isinstance(failure.value.__cause__, TypeError)
 
 
-class _RecordingJavaSystem:
-    def __init__(self, properties: dict[str, str] | None = None) -> None:
-        self.properties = dict(properties or {})
+class _JavaInteger:
+    def __init__(self, value: int) -> None:
+        self.value = value
 
-    def getProperty(self, name: str):
-        return self.properties.get(name)
+    @classmethod
+    def valueOf(cls, value: int) -> "_JavaInteger":
+        return cls(value)
 
-    def setProperty(self, name: str, value: str):
-        previous = self.properties.get(name)
-        self.properties[name] = value
+    @classmethod
+    def cast_(cls, value: object) -> "_JavaInteger":
+        assert isinstance(value, cls)
+        return value
+
+    def intValue(self) -> int:
+        return self.value
+
+
+class _JavaHashMap(dict):
+    def put(self, key: str, value: object) -> object | None:
+        previous = self.get(key)
+        self[key] = value
         return previous
-
-    def clearProperty(self, name: str):
-        return self.properties.pop(name, None)
 
 
 class _ConfiguredCodec:
-    def __init__(self, max_conn: int, beam_width: int) -> None:
-        self.max_conn = max_conn
-        self.beam_width = beam_width
-
     @staticmethod
     def getName() -> str:
         return ACCELERATED_HNSW_CODEC
@@ -361,37 +360,50 @@ class _ConfiguredCodec:
     def knnVectorsFormat() -> object:
         return object()
 
-    def __str__(self) -> str:
-        return (
-            "Lucene101ConfiguredHNSWCodec["
-            f"maxConn={self.max_conn}, beamWidth={self.beam_width}]"
-        )
-
 
 def _configured_codec_runtime(
-    system: _RecordingJavaSystem,
-    *,
-    constructor_error: Exception | None = None,
-) -> tuple[LuceneRuntime, list[dict[str, str]], list[str]]:
-    snapshots: list[dict[str, str]] = []
+    *, factory_error: Exception | None = None
+) -> tuple[LuceneRuntime, list[dict[str, int]], list[str]]:
+    requests: list[dict[str, int]] = []
     class_names: list[str] = []
 
-    class ReflectedCodec:
-        @staticmethod
-        def newInstance():
-            snapshots.append(dict(system.properties))
-            if constructor_error is not None:
-                raise constructor_error
-            return _ConfiguredCodec(
-                int(system.properties[HNSW_MAX_CONN_PROPERTY]),
-                int(system.properties[HNSW_BEAM_WIDTH_PROPERTY]),
+    class Factory:
+        def apply(self, request: _JavaHashMap) -> _JavaHashMap:
+            values = {
+                name: _JavaInteger.cast_(value).intValue()
+                for name, value in request.items()
+            }
+            requests.append(values)
+            if factory_error is not None:
+                raise factory_error
+            return _JavaHashMap(
+                {
+                    "codec": _ConfiguredCodec(),
+                    "max_conn": _JavaInteger(values["max_conn"]),
+                    "beam_width": _JavaInteger(values["beam_width"]),
+                }
             )
+
+    class ReflectedFactory:
+        @staticmethod
+        def newInstance() -> Factory:
+            return Factory()
 
     class JavaClass:
         @staticmethod
         def forName(name: str):
             class_names.append(name)
-            return ReflectedCodec()
+            return ReflectedFactory()
+
+    class FunctionBinding:
+        @staticmethod
+        def cast_(factory: object) -> object:
+            return factory
+
+    class MapBinding:
+        @staticmethod
+        def cast_(response: object) -> object:
+            return response
 
     class CodecBinding:
         @staticmethod
@@ -407,60 +419,91 @@ def _configured_codec_runtime(
             raise AssertionError("configured codec must not use Lucene SPI")
 
     runtime = object.__new__(LuceneRuntime)
-    runtime.System = system
     runtime.Class = JavaClass
+    runtime.Function = FunctionBinding
+    runtime.HashMap = _JavaHashMap
+    runtime.Integer = _JavaInteger
+    runtime.Map = MapBinding
     runtime.Codec = CodecBinding
+    runtime._java_configured_codec_factory = None
     runtime.attach_current_thread = lambda: None
-    return runtime, snapshots, class_names
+    return runtime, requests, class_names
 
 
-def test_configured_hnsw_codec_snapshots_and_restores_java_properties() -> (
-    None
-):
-    system = _RecordingJavaSystem({HNSW_MAX_CONN_PROPERTY: "previous"})
-    runtime, snapshots, class_names = _configured_codec_runtime(system)
+def test_configured_hnsw_codec_uses_one_atomic_factory_request() -> None:
+    runtime, requests, class_names = _configured_codec_runtime()
 
     codec = runtime.resolve_configured_hnsw_codec(16, 80)
 
-    assert str(codec) == (
-        "Lucene101ConfiguredHNSWCodec[maxConn=16, beamWidth=80]"
-    )
-    assert snapshots == [
-        {
-            HNSW_MAX_CONN_PROPERTY: "16",
-            HNSW_BEAM_WIDTH_PROPERTY: "80",
-        }
-    ]
-    assert class_names == [CONFIGURED_ACCELERATED_HNSW_CODEC]
-    assert system.properties == {HNSW_MAX_CONN_PROPERTY: "previous"}
+    assert isinstance(codec, _ConfiguredCodec)
+    assert requests == [{"max_conn": 16, "beam_width": 80}]
+    assert class_names == [CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY]
 
 
-def test_configured_hnsw_codec_restores_properties_after_constructor_failure() -> (
-    None
-):
-    system = _RecordingJavaSystem(
-        {
-            HNSW_MAX_CONN_PROPERTY: "previous-m",
-            HNSW_BEAM_WIDTH_PROPERTY: "previous-beam",
-        }
-    )
-    runtime, snapshots, _class_names = _configured_codec_runtime(
-        system, constructor_error=RuntimeError("constructor failed")
+def test_configured_hnsw_codec_reports_factory_failure() -> None:
+    runtime, requests, _class_names = _configured_codec_runtime(
+        factory_error=RuntimeError("constructor failed")
     )
 
     with pytest.raises(RuntimeError, match="constructor failed"):
         runtime.resolve_configured_hnsw_codec(16, 80)
 
-    assert snapshots == [
-        {
-            HNSW_MAX_CONN_PROPERTY: "16",
-            HNSW_BEAM_WIDTH_PROPERTY: "80",
-        }
-    ]
-    assert system.properties == {
-        HNSW_MAX_CONN_PROPERTY: "previous-m",
-        HNSW_BEAM_WIDTH_PROPERTY: "previous-beam",
-    }
+    assert requests == [{"max_conn": 16, "beam_width": 80}]
+
+
+class _WriterConfig:
+    def __init__(self, *, fail: bool = False, retain: bool = True) -> None:
+        self.fail = fail
+        self.retain = retain
+        self.limit = 1_945
+
+    def setRAMPerThreadHardLimitMB(self, value: int) -> None:
+        if self.fail:
+            raise ValueError("setter rejected value")
+        if self.retain:
+            self.limit = value
+
+    def getRAMPerThreadHardLimitMB(self) -> int:
+        return self.limit
+
+
+@pytest.mark.parametrize("hard_limit", (1, 2047))
+def test_ram_per_thread_hard_limit_uses_supported_public_setter(
+    hard_limit: int,
+) -> None:
+    config = _WriterConfig()
+
+    LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+        object.__new__(LuceneRuntime), config, hard_limit
+    )
+
+    assert config.getRAMPerThreadHardLimitMB() == hard_limit
+
+
+@pytest.mark.parametrize("hard_limit", (0, 2048, True))
+def test_ram_per_thread_hard_limit_rejects_unsupported_values(
+    hard_limit: object,
+) -> None:
+    with pytest.raises(RuntimeError, match=r"range \[1, 2047\]"):
+        LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+            object.__new__(LuceneRuntime), _WriterConfig(), hard_limit
+        )
+
+
+def test_ram_per_thread_hard_limit_reports_setter_failure() -> None:
+    with pytest.raises(RuntimeError, match="setter rejected value"):
+        LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+            object.__new__(LuceneRuntime), _WriterConfig(fail=True), 1_024
+        )
+
+
+def test_ram_per_thread_hard_limit_rejects_failed_readback() -> None:
+    with pytest.raises(RuntimeError, match="did not retain"):
+        LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+            object.__new__(LuceneRuntime),
+            _WriterConfig(retain=False),
+            1_024,
+        )
 
 
 def test_float32_vectors_are_converted_to_a_jcc_compatible_sequence() -> None:

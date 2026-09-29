@@ -241,6 +241,90 @@ def _assert_timing_contract(
         assert "subsequent_java_index_searcher_search_mean_ms" not in metadata
 
 
+def _assert_accelerated_hnsw_build_diagnostics(
+    standard_output: str, standard_error: str, case_name: str
+) -> None:
+    assert not case_used_cpu_hnsw_fallback(standard_error, case_name), (
+        f"{case_name} used Lucene's CPU HNSW writer fallback:\n"
+        f"{lucene_case_output(standard_error, case_name)}"
+    )
+    combined_output = standard_output + standard_error
+    for warning in _GRAPH_CLAMP_WARNINGS:
+        assert warning.casefold() not in combined_output.casefold()
+
+
+def _assert_accelerated_hnsw_build_topology(
+    build,
+    physical_vector_counts: tuple[int, ...],
+    *,
+    expected_premerge_vector_counts: tuple[int, ...],
+    expected_final_vector_counts: tuple[int, ...],
+    requested_premerge_segment_count: int,
+    requested_force_merge_segment_count: int,
+    performed_force_merge: bool,
+) -> None:
+    assert physical_vector_counts == expected_final_vector_counts
+    assert build.metadata["segment_count"] == len(expected_final_vector_counts)
+    assert build.metadata["hnsw_m"] == 16
+    assert build.metadata["hnsw_beam_width"] == 80
+    assert build.metadata["graph_degree_source"] == (
+        "requested_hnsw_same_graph_footprint_derivation"
+    )
+    assert build.metadata["requested_premerge_segment_count"] == (
+        requested_premerge_segment_count
+    )
+    assert build.metadata["observed_premerge_segment_count"] == len(
+        expected_premerge_vector_counts
+    )
+    assert build.metadata["requested_force_merge_segment_count"] == (
+        requested_force_merge_segment_count
+    )
+    assert build.metadata["applied_ram_per_thread_hard_limit_mb"] == 1024
+    assert build.metadata["premerge_segment_vector_counts"] == json.dumps(
+        list(expected_premerge_vector_counts), separators=(",", ":")
+    )
+    if performed_force_merge:
+        assert build.metadata["runtime_force_merge_seconds"] > 0.0
+    else:
+        assert build.metadata["runtime_force_merge_seconds"] == 0.0
+
+
+def _assert_persisted_accelerated_hnsw_topology(
+    manifest: dict,
+    *,
+    build_params: dict,
+    expected_premerge_vector_counts: tuple[int, ...],
+    expected_final_vector_counts: tuple[int, ...],
+    requested_force_merge_segment_count: int,
+    performed_force_merge: bool,
+) -> None:
+    assert manifest["build_parameters"] == build_params
+    assert manifest["segment_count"] == len(expected_final_vector_counts)
+    topology = manifest["runtime_build_topology"]
+    assert topology["premerge_segment_vector_counts"] == list(
+        expected_premerge_vector_counts
+    )
+    assert topology["observed_premerge_segment_count"] == len(
+        expected_premerge_vector_counts
+    )
+    assert topology["requested_force_merge_segment_count"] == (
+        requested_force_merge_segment_count
+    )
+    assert topology["final_merge_policy"] == (
+        "TieredMergePolicy" if performed_force_merge else None
+    )
+
+
+def _assert_cpu_hnsw_search_quality(
+    result, query_ids: np.ndarray, expected_neighbors: np.ndarray
+) -> None:
+    assert result.success, result.error_message
+    assert result.metadata["expected_search_route"] == "cpu_hnsw"
+    np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+    assert all(len(set(row)) == len(row) for row in result.neighbors.tolist())
+    assert _recall(result.neighbors, expected_neighbors) >= _MINIMUM_RECALL
+
+
 def test_accelerated_hnsw_builds_on_gpu_and_searches_on_cpu(
     tmp_path,
     capfd,
@@ -262,14 +346,9 @@ def test_accelerated_hnsw_builds_on_gpu_and_searches_on_cpu(
         result = backend.search(dataset, [index], k=10, batch_size=2)[0]
 
     captured = capfd.readouterr()
-    assert not case_used_cpu_hnsw_fallback(captured.err, case_name), (
-        f"{case_name} used Lucene's CPU HNSW writer fallback:\n"
-        f"{lucene_case_output(captured.err, case_name)}"
+    _assert_accelerated_hnsw_build_diagnostics(
+        captured.out, captured.err, case_name
     )
-    for warning in _GRAPH_CLAMP_WARNINGS:
-        assert (
-            warning.casefold() not in (captured.out + captured.err).casefold()
-        )
 
     assert build.metadata["codec"] == ACCELERATED_HNSW_CODEC
     assert build.metadata["persisted_index_kind"] == "hnsw"
@@ -277,8 +356,9 @@ def test_accelerated_hnsw_builds_on_gpu_and_searches_on_cpu(
         "gpu_cagra_or_cpu_hnsw_fallback"
     )
     _assert_artifact_provenance(build.metadata, "build_runtime")
-    assert result.success, result.error_message
-    assert result.metadata["expected_search_route"] == "cpu_hnsw"
+    _assert_cpu_hnsw_search_quality(
+        result, query_ids, dataset.groundtruth_neighbors
+    )
     assert result.metadata["persisted_index_kind"] == "hnsw"
     assert result.metadata["build_route_policy"] == (
         "gpu_cagra_or_cpu_hnsw_fallback"
@@ -291,11 +371,117 @@ def test_accelerated_hnsw_builds_on_gpu_and_searches_on_cpu(
     )
     _assert_artifact_provenance(result.metadata, "build_runtime")
     _assert_artifact_provenance(result.metadata, "search_runtime")
-    np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
-    assert all(len(set(row)) == len(row) for row in result.neighbors.tolist())
-    assert (
-        _recall(result.neighbors, dataset.groundtruth_neighbors)
-        >= _MINIMUM_RECALL
+
+
+@pytest.mark.parametrize(
+    (
+        "premerge_segment_count",
+        "force_merge_segment_count",
+        "expected_premerge_vector_counts",
+        "expected_final_vector_counts",
+    ),
+    (
+        pytest.param(
+            1,
+            1,
+            (1024,),
+            (1024,),
+            id="retain-one-segment-without-force-merge",
+        ),
+        pytest.param(
+            4,
+            0,
+            (256, 256, 256, 256),
+            (256, 256, 256, 256),
+            id="retain-four-segments",
+        ),
+        pytest.param(
+            4,
+            1,
+            (256, 256, 256, 256),
+            (1024,),
+            id="force-merge-four-to-one",
+        ),
+    ),
+)
+def test_accelerated_hnsw_controls_persist_observed_topology(
+    tmp_path,
+    capfd,
+    request,
+    premerge_segment_count,
+    force_merge_segment_count,
+    expected_premerge_vector_counts,
+    expected_final_vector_counts,
+):
+    dataset, query_ids = _case(ACCELERATED_HNSW_ALGORITHM, 128)
+    backend, index = _backend_and_index(
+        tmp_path,
+        ACCELERATED_HNSW_ALGORITHM,
+        ACCELERATED_HNSW_CODEC,
+        [{"num_candidates": 64}],
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": premerge_segment_count,
+            "force_merge_segment_count": force_merge_segment_count,
+            "ram_per_thread_hard_limit_mb": 1024,
+        }
+    )
+    case_name = request.node.nodeid
+    capfd.readouterr()
+
+    with lucene_log_case(case_name):
+        build = backend.build(dataset, [index], force=True)
+        assert build.success, build.error_message
+
+        runtime = backend._get_runtime()
+        runtime.attach_current_thread()
+        directory = runtime.FSDirectory.open(
+            runtime.Paths.get(str(Path(index.file)))
+        )
+        try:
+            physical_vector_counts = runtime._committed_segment_vector_counts(
+                directory
+            )
+        finally:
+            directory.close()
+
+        result = backend.search(dataset, [index], k=10, batch_size=2)[0]
+
+    captured = capfd.readouterr()
+    _assert_accelerated_hnsw_build_diagnostics(
+        captured.out, captured.err, case_name
+    )
+    performed_force_merge = (
+        force_merge_segment_count == 1 and premerge_segment_count > 1
+    )
+    _assert_accelerated_hnsw_build_topology(
+        build,
+        physical_vector_counts,
+        expected_premerge_vector_counts=expected_premerge_vector_counts,
+        expected_final_vector_counts=expected_final_vector_counts,
+        requested_premerge_segment_count=premerge_segment_count,
+        requested_force_merge_segment_count=force_merge_segment_count,
+        performed_force_merge=performed_force_merge,
+    )
+
+    manifest = json.loads(
+        (Path(index.file) / ".cuvs-bench-lucene.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    _assert_persisted_accelerated_hnsw_topology(
+        manifest,
+        build_params=build.build_params,
+        expected_premerge_vector_counts=expected_premerge_vector_counts,
+        expected_final_vector_counts=expected_final_vector_counts,
+        requested_force_merge_segment_count=force_merge_segment_count,
+        performed_force_merge=performed_force_merge,
+    )
+    _assert_cpu_hnsw_search_quality(
+        result, query_ids, dataset.groundtruth_neighbors
     )
 
 
@@ -572,6 +758,9 @@ def test_accelerated_hnsw_logs_cpu_fallback_when_gpu_is_hidden(tmp_path):
         build = backend.build(dataset, [index], force=True)
     assert build.success, build.error_message
     assert build.metadata["persisted_index_kind"] == "hnsw"
+    assert build.metadata["graph_degree_source"] == (
+        "requested_hnsw_same_graph_footprint_derivation"
+    )
 
 
 def test_public_cli_builds_searches_and_exports_cpu_hnsw(tmp_path):

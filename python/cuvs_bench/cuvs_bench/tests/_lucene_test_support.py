@@ -178,11 +178,6 @@ class RecordingRuntime:
             chunk_size = int(vectors.shape[0]) // premerge
             topology = RuntimeBuildTopology(
                 requested_premerge_segment_count=premerge,
-                requested_num_indexing_threads=None,
-                actual_indexing_thread_count=1,
-                max_concurrent_indexing_threads=1,
-                indexing_execution_mode="legacy_premerge_sequential",
-                indexing_worker_document_counts=(int(vectors.shape[0]),),
                 observed_premerge_segment_count=premerge,
                 requested_force_merge_segment_count=force_merge,
                 premerge_segment_vector_counts=(chunk_size,) * premerge,
@@ -198,44 +193,24 @@ class RecordingRuntime:
                 ),
             )
             self.segment_count = 1 if force_merge == 1 else premerge
-        elif "num_indexing_threads" in parameters:
-            indexing_threads = int(parameters["num_indexing_threads"])
-            force_merge = int(parameters["force_merge_segment_count"])
-            rows = int(vectors.shape[0])
-            chunk_size = rows // indexing_threads
-            topology = RuntimeBuildTopology(
-                requested_premerge_segment_count=None,
-                requested_num_indexing_threads=indexing_threads,
-                actual_indexing_thread_count=1,
-                max_concurrent_indexing_threads=1,
-                indexing_execution_mode="partitioned_sequential",
-                indexing_worker_document_counts=(rows,),
-                observed_premerge_segment_count=indexing_threads,
-                requested_force_merge_segment_count=force_merge,
-                premerge_segment_vector_counts=(chunk_size,)
-                * indexing_threads,
-                max_buffered_docs=chunk_size + 1,
-                applied_ram_per_thread_hard_limit_mb=int(
-                    parameters["ram_per_thread_hard_limit_mb"]
-                ),
-                ingest_merge_policy="NoMergePolicy",
-                final_merge_policy=(
-                    "TieredMergePolicy"
-                    if force_merge == 1 and indexing_threads > 1
-                    else None
-                ),
-            )
-            self.segment_count = 1 if force_merge == 1 else indexing_threads
+        force_merge_ns = (
+            350_000
+            if topology is not None
+            and topology.requested_force_merge_segment_count == 1
+            and topology.requested_premerge_segment_count > 1
+            else 0
+        )
         return RuntimeBuildResult(
             segment_count=self.segment_count,
             timing=RuntimeBuildTiming(
                 directory_open_ns=100_000,
                 writer_setup_ns=200_000,
                 document_ingest_ns=300_000,
+                force_merge_ns=force_merge_ns,
                 writer_commit_close_ns=400_000,
                 post_build_reader_ns=500_000,
                 directory_close_ns=600_000,
-                runtime_build_wall_ns=2_100_000,
+                runtime_build_wall_ns=2_100_000 + force_merge_ns,
             ),
             topology=topology,
         )
