@@ -32,7 +32,7 @@ public class TestLucene101AcceleratedHNSWCodecFactory extends LuceneTestCase {
   private static final String ACCELERATED_FORMAT_NAME = "Lucene99AcceleratedHNSWVectorsFormat";
 
   @Test
-  public void testCreatesCodecAndReportsAppliedConfiguration() {
+  public void testCreatesCodecAndReportsAppliedConfiguration() throws Exception {
     var factory = new Lucene101AcceleratedHNSWCodecFactory();
 
     Map<String, Object> response = factory.apply(request(16, 80));
@@ -45,6 +45,7 @@ public class TestLucene101AcceleratedHNSWCodecFactory extends LuceneTestCase {
     assertEquals(ACCELERATED_CODEC_NAME, codec.getName());
     assertNotNull(codec.knnVectorsFormat());
     assertEquals(ACCELERATED_FORMAT_NAME, codec.knnVectorsFormat().getName());
+    assertCodecParameters(codec, 16, 80);
     assertEquals(
         Lucene101AcceleratedHNSWCodec.class, Codec.forName(ACCELERATED_CODEC_NAME).getClass());
   }
@@ -109,6 +110,8 @@ public class TestLucene101AcceleratedHNSWCodecFactory extends LuceneTestCase {
         assertEquals(i % 2 == 0 ? 16 : 24, response.get(MAX_CONN_KEY));
         assertEquals(i % 2 == 0 ? 80 : 96, response.get(BEAM_WIDTH_KEY));
         assertEquals(ACCELERATED_CODEC_NAME, ((Codec) response.get(CODEC_KEY)).getName());
+        assertCodecParameters(
+            (Codec) response.get(CODEC_KEY), i % 2 == 0 ? 16 : 24, i % 2 == 0 ? 80 : 96);
       }
     } finally {
       executor.shutdownNow();
@@ -116,6 +119,20 @@ public class TestLucene101AcceleratedHNSWCodecFactory extends LuceneTestCase {
           "codec-factory executor did not terminate",
           executor.awaitTermination(10, TimeUnit.SECONDS));
     }
+  }
+
+  private static void assertCodecParameters(Codec codec, int maxConn, int beamWidth)
+      throws ReflectiveOperationException {
+    // Inspect the returned format, not the response map: echoed input cannot prove configuration.
+    // Keep this reflection test-only rather than adding a production accessor for the test.
+    var format = codec.knnVectorsFormat();
+    assertTrue(format instanceof Lucene99AcceleratedHNSWVectorsFormat);
+    var parametersField =
+        Lucene99AcceleratedHNSWVectorsFormat.class.getDeclaredField("acceleratedHNSWParams");
+    parametersField.setAccessible(true);
+    var parameters = (AcceleratedHNSWParams) parametersField.get(format);
+    assertEquals(maxConn, parameters.getMaxConn());
+    assertEquals(beamWidth, parameters.getBeamWidth());
   }
 
   private static Map<String, Object> request(int maxConn, int beamWidth) {
