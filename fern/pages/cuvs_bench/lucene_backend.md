@@ -147,6 +147,12 @@ python -m cuvs_bench.run \
 
 ## Runtime requirements
 
+Current indexes use manifest schema 4. Rebuild older manifests with
+`--build --force`. Accelerated-HNSW index names now include the canonical `m`
+and `beam_width` values, even when defaults are used. Old indexes are not
+automatically migrated, and differently named indexes are not automatically
+deleted or replaced.
+
 The Lucene backend is opt-in because its runtime is not provisioned by the
 ordinary cuVS Bench installation. Provisioning the required custom PyLucene
 build is currently external to cuVS Bench. Every algorithm requires PyLucene

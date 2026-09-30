@@ -9,6 +9,7 @@ import hashlib
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -1065,6 +1066,66 @@ def test_writer_rollback_process_control_takes_precedence(
     assert failure.value.__notes__ == [
         "Lucene writer first failed: RuntimeError: write failed"
     ]
+
+
+def _controlled_runtime_with_writer(writer: Mock) -> LuceneRuntime:
+    """Isolate JVM setup while exercising the real write/merge failure paths."""
+    runtime = object.__new__(LuceneRuntime)
+    runtime.IndexWriter = lambda _directory, _config: writer
+    runtime._controlled_ingest_config = lambda *args, **kwargs: (
+        object(),
+        "public_setter",
+    )
+    runtime._controlled_merge_config = lambda *args: (
+        object(),
+        "public_setter",
+    )
+    runtime._document = lambda _document_id, _vector: object()
+    return runtime
+
+
+@pytest.mark.parametrize("failed_operation", ("addDocument", "flush"))
+def test_controlled_ingestion_rolls_back_without_commit_on_failure(
+    failed_operation: str,
+) -> None:
+    writer = Mock(spec=["addDocument", "flush", "commit", "close", "rollback"])
+    original_error = RuntimeError(f"{failed_operation} failed")
+    getattr(writer, failed_operation).side_effect = original_error
+    runtime = _controlled_runtime_with_writer(writer)
+
+    with pytest.raises(RuntimeError) as failure:
+        runtime._write_controlled_chunk(
+            object(),
+            np.zeros((1, 2), dtype=np.float32),
+            object(),
+            SimpleNamespace(),
+            start=0,
+            stop=1,
+            create=True,
+        )
+
+    assert failure.value is original_error
+    writer.rollback.assert_called_once_with()
+    writer.commit.assert_not_called()
+    writer.close.assert_not_called()
+
+
+def test_controlled_merge_rolls_back_without_commit_on_failure() -> None:
+    writer = Mock(spec=["forceMerge", "commit", "close", "rollback"])
+    original_error = RuntimeError("forceMerge failed")
+    writer.forceMerge.side_effect = original_error
+    runtime = _controlled_runtime_with_writer(writer)
+
+    with pytest.raises(RuntimeError) as failure:
+        runtime._force_merge_controlled_index(
+            object(), object(), SimpleNamespace(force_merge_segment_count=1)
+        )
+
+    assert failure.value is original_error
+    writer.forceMerge.assert_called_once_with(1, True)
+    writer.rollback.assert_called_once_with()
+    writer.commit.assert_not_called()
+    writer.close.assert_not_called()
 
 
 def test_reused_jvm_reports_the_initialized_artifact_identity(
