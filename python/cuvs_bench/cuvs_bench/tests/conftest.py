@@ -8,7 +8,7 @@ import pytest
 
 
 def pytest_addoption(parser):
-    """Add the explicit opt-in for live Lucene integration tests."""
+    """Add explicit opt-ins for ordinary and large Lucene integration tests."""
     parser.addoption(
         "--run-lucene-e2e",
         action="store_true",
@@ -18,16 +18,33 @@ def pytest_addoption(parser):
             "GPU-intended cases additionally require cuVS/CUDA/GPU"
         ),
     )
+    parser.addoption(
+        "--run-lucene-large-segment-e2e",
+        action="store_true",
+        default=False,
+        help=(
+            "run only the resource-intensive Lucene cases that build a "
+            "single segment from more than 2 GiB of vector data"
+        ),
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip live Lucene cases unless the suite was selected explicitly."""
-    if config.getoption("--run-lucene-e2e"):
-        return
-    skip = pytest.mark.skip(reason="requires --run-lucene-e2e")
+    """Select ordinary and large Lucene cases through independent opt-ins."""
+    run_ordinary = config.getoption("--run-lucene-e2e")
+    run_large = config.getoption("--run-lucene-large-segment-e2e")
     for item in items:
-        if "lucene_e2e" in item.keywords:
-            item.add_marker(skip)
+        if "lucene_large_segment_e2e" in item.keywords:
+            if not run_large:
+                item.add_marker(
+                    pytest.mark.skip(
+                        reason="requires --run-lucene-large-segment-e2e"
+                    )
+                )
+        elif "lucene_e2e" in item.keywords and not run_ordinary:
+            item.add_marker(
+                pytest.mark.skip(reason="requires --run-lucene-e2e")
+            )
 
 
 def pytest_configure(config):
