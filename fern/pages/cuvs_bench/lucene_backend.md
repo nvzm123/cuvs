@@ -147,7 +147,7 @@ python -m cuvs_bench.run \
 
 ## Runtime requirements
 
-Current indexes use manifest schema 4. Rebuild older manifests with
+Current indexes use manifest schema 5. Rebuild older manifests with
 `--build --force`. Accelerated-HNSW index names now include the canonical `m`
 and `beam_width` values, even when defaults are used. Old indexes are not
 automatically migrated, and differently named indexes are not automatically
@@ -193,6 +193,10 @@ builds. It is selected only when all of these conditions hold:
 
 An explicit in-memory training array, a CPU-only Lucene algorithm, or
 `force_merge_segment_count: 1` retains the existing PyLucene ingestion route.
+Configurations in one sweep share a dataset: if an earlier Python-route build
+materializes its training vectors, later configurations also stay on that
+route. Use separate invocations when comparing ingestion routes and check the
+recorded `ingest_route` rather than assuming which route was selected.
 Once a file-backed build selects the Java bridge, a failed safety check fails
 the build rather than silently changing ingestion routes. Finite values are
 validated while Java reads the selected payload; non-finite input therefore
