@@ -73,12 +73,12 @@ fit under the public safety limit.
 Larger direct-built segments are an explicit unsupported mode. A
 `ram_per_thread_hard_limit_mb` value of 2048 MiB or greater also requires
 `allow_unsupported_lucene_ram_limit: true` and
-`force_merge_segment_count: 0`. The thin JAR applies the requested value to
-Lucene 10.2's protected, non-public
-`LiveIndexWriterConfig.perThreadHardLimitMB` field and reads the value back.
-The bridge rejects a missing field, a field with the wrong type, an access or
-write failure, or a getter-readback mismatch. The override only changes
-Lucene's flush threshold: it does not reserve memory, make construction
+`force_merge_segment_count: 0`. The thin JAR uses reflection to apply the
+requested value to Lucene 10.2's protected, non-public
+`LiveIndexWriterConfig.perThreadHardLimitMB` field, checks its type, and reads
+the value back through Lucene's public getter. The request is rejected if the
+reflective lookup, access, write, or verification fails. The override only
+changes Lucene's flush threshold: it does not reserve memory, make construction
 out-of-core, guarantee that the host/JVM/GPU can hold the segment, or make a
 later force merge safe.
 
@@ -147,7 +147,7 @@ python -m cuvs_bench.run \
 
 ## Runtime requirements
 
-Current indexes use manifest schema 4. Rebuild older manifests with
+Current indexes use manifest schema 5. Rebuild older manifests with
 `--build --force`. Accelerated-HNSW index names now include the canonical `m`
 and `beam_width` values, even when defaults are used. Old indexes are not
 automatically migrated, and differently named indexes are not automatically
@@ -183,11 +183,64 @@ algorithms support an explicit `num_candidates` value greater than or equal to
 
 ### Large-build memory and ingestion
 
-The initial build path materializes the complete training-vector file as a
-NumPy array. It then indexes one document at a time through PyLucene: every row
-is converted to a Python list and Java `float[]`, a Lucene `Document` is
-created, and `IndexWriter.addDocument` crosses the JCC boundary. This path is
-not a streaming, bulk-FBIN, or out-of-core ingestion path.
+The backend has a prototype Java FBIN ingestion route for controlled cuVS
+builds. It is selected only when all of these conditions hold:
+
+- the dataset is backed by an unloaded `float32` `.fbin` file;
+- the algorithm is `lucene_accelerated_hnsw` or `lucene_cuvs_cagra` with the
+  controlled `premerge_segment_count` topology; and
+- `force_merge_segment_count` is `0`.
+
+An explicit in-memory training array, a CPU-only Lucene algorithm, or
+`force_merge_segment_count: 1` retains the existing PyLucene ingestion route.
+Configurations in one sweep share a dataset: if an earlier Python-route build
+materializes its training vectors, later configurations also stay on that
+route. Use separate invocations when comparing ingestion routes and check the
+recorded `ingest_route` rather than assuming which route was selected.
+Once a file-backed build selects the Java bridge, a failed safety check fails
+the build rather than silently changing ingestion routes. Finite values are
+validated while Java reads the selected payload; non-finite input therefore
+fails after route selection and does not fall back to Python ingestion.
+
+The bridge reads the FBIN payload inside the JVM and calls ordinary
+`IndexWriter.addDocument` for each row. It therefore avoids materializing the
+complete training matrix in Python and avoids one JCC call per document. It is
+not the bulk or externally mapped FBIN path from another benchmark harness,
+and it is not an out-of-core index-construction guarantee. In particular, the
+selected codec can still retain a partition's vectors and graph-building state
+until Lucene flushes that partition.
+
+A selected bridge build records
+`ingest_route=java_fbin_index_writer_bridge` and
+`training_vectors_materialized=false`. These fields attest the ingestion route
+and Python materialization state only; they are not GPU-route attestations.
+
+`premerge_segment_count: 1` streams one partition. A value of `4` streams four
+equal contiguous partitions in sequential writer lifecycles and retains four
+segments because force merge is disabled. The setting describes physical
+topology, not concurrent indexing. If the selected per-thread memory limit
+flushes a partition early, the exact post-ingest topology check fails. Increase
+the partition count, or use the explicitly unsupported high-limit mode only
+when the complete partition fits the available process and device memory.
+
+Python validates the source identity before and after the Java call. The Java
+bridge independently validates the legacy 8-byte or extended 16-byte FBIN
+header, the exact file size, and the row and dimension values supplied by
+Python. It also requires a positive selected row count divisible by the
+partition count, rejects non-finite vector values, starts from an empty real
+staging directory, applies `NoMergePolicy`, stores document IDs as numeric doc
+values, and performs one exact document, ID, vector-shape, and segment check
+after all partitions commit. An error rolls back the active writer and leaves
+the destination index untouched. If a later partition fails, earlier commits
+can remain in the unpublished staging directory; the backend discards that
+entire directory rather than installing a partial index.
+
+Selecting this ingestion route does not prove that accelerated HNSW used its
+GPU writer. `Lucene101AcceleratedHNSWCodec` still permits its documented CPU
+HNSW fallback. Result metadata describes the route policy, not an observed
+GPU execution decision; validation that requires native CAGRA must separately
+record the absence of the fallback warning together with native-library and
+GPU-activity evidence.
 
 The accelerated-HNSW writer stages its build input in a complete native-host
 matrix; ordinary ingestion still buffers each segment's vectors in JVM heap.
@@ -197,7 +250,10 @@ separate device-backed construction path. These memory-handling changes do not
 remove Lucene's per-thread flush threshold or provide bounded-total-host-memory
 streaming.
 
-Size the Python process and JVM heap for the dataset and codec being tested.
+Size the JVM heap and GPU memory for the dataset, partition size, and codec
+being tested. The legacy route also requires enough host memory for the Python
+training array.
+
 Additional JVM arguments can be supplied through the Lucene backend
 configuration, for example:
 
@@ -327,14 +383,37 @@ They exclude dataset loading, index verification, manifest publication,
 installation, and size measurement; use
 `backend_build_total_seconds` for that complete backend lifecycle.
 
-In particular, `runtime_document_ingest_seconds` includes NumPy-to-Python and
+The outer build-call timers include configured-codec resolution on both
+ingestion routes. The narrower runtime timers have route-specific ownership:
+the Python ingestion route includes codec resolution in
+`runtime_build_wall_seconds` and `runtime_writer_setup_seconds`, while the Java
+FBIN bridge's runtime wall and writer-setup timers begin after Python has
+resolved the codec. Compare those narrower phases only within the same
+ingestion route; neither route reports an isolated codec-construction timer.
+
+The meaning of `runtime_document_ingest_seconds` depends on the recorded
+ingestion route. On the legacy route it includes NumPy-to-Python and
 Python-to-Java conversion, Java object creation, JCC dispatch, and Lucene work
 performed by `addDocument`. It is not a measurement of cuvs-lucene or GPU graph
-construction alone. `runtime_force_merge_seconds` measures an explicitly
-requested synchronous `forceMerge` as a nested sub-timer; it is already included
-in the enclosing build-call timings and must not be added to them.
-`runtime_writer_commit_close_seconds` includes only work that the selected
-codec defers until flush, commit, or close. Absolute build times from this
+construction alone. On the Java FBIN route, Python source preparation remains
+outside the build call, while Java source/header validation and payload reads
+are inside it. The ingest phase includes FBIN read and decode, payload
+digesting, finite-value validation, reusable field mutation, and ordinary
+`IndexWriter.addDocument` calls inside the JVM. The reusable `Document` and
+fields are constructed before this timer. The ingest phase excludes writer
+flush, commit, and close.
+
+For Java FBIN ingestion, `runtime_fbin_read_seconds` is the nested portion of
+`runtime_document_ingest_seconds` spent in blocking file-channel reads. It does
+not include float decoding, validation, hashing, or Lucene indexing, and it
+must not be added to its parent timing. This route rejects force merge and
+reports `runtime_force_merge_seconds=0`. On other controlled builds, that field
+measures an explicitly requested synchronous `forceMerge` as a nested sub-timer
+already included in the enclosing build call.
+`runtime_writer_commit_close_seconds` measures the full wall time around
+`flush()`, `commit()`, and `close()`. It includes ordinary Lucene bookkeeping
+and storage I/O as well as any graph or codec work deferred to those calls; it
+does not isolate codec or GPU construction. Absolute build times from this
 document-at-a-time path are therefore not directly comparable with a
 Java-native or bulk-FBIN benchmark harness.
 
@@ -397,27 +476,41 @@ cases fail if the codec logs its CPU-writer fallback. A separate GPU-hidden
 negative control verifies that this warning remains observable and attributable
 to the case that produced it.
 
-The direct PyLucene greater-than-2-GiB cases are independently gated because
-they generate a 3 GiB FBIN and build one retained segment by issuing every
-document through the Python/JCC boundary. Run them alone, in a fresh process,
-on a local filesystem with at least 16 GiB free:
+The greater-than-2-GiB segment cases are independently gated and cover both
+production ingestion paths. Run each module serially, without pytest-xdist, in
+a fresh process. Choose a local `--basetemp` filesystem with at least 16 GiB
+free.
+
+The direct PyLucene cases map a generated 3 GiB FBIN read-only and issue every
+document through the production Python/JCC conversion and
+`IndexWriter.addDocument` loop:
 
 ```bash
 python -m pytest -q -s -x \
     python/cuvs_bench/cuvs_bench/tests/test_lucene_large_segment_python_integration.py \
     --run-lucene-large-segment-e2e \
-    --basetemp=/path/to/local-disk/lucene-large-pytest
+    --basetemp=/path/to/local-disk/lucene-large-python
 ```
 
-Run this suite serially, without pytest-xdist. The `-x` option stops after the
-first failure while pytest unwinds the fixture and removes its 3 GiB source
-file.
+The Java streaming cases ingest the same-size source through the FBIN bridge
+without materializing the training vectors in Python:
 
-The test configures a 12 GiB JVM maximum heap and requires at least 16 GiB of
-currently available host memory. It maps the generated vectors read-only to
-avoid a second 3 GiB Python allocation, but still exercises the production
-per-document PyLucene conversion and `IndexWriter.addDocument` loop. Both the
-CAGRA-built HNSW and GPU CAGRA cases require one physical segment, verify the
-explicit 6144 MiB override, and reject CPU/brute-force fallback and graph
-parameter clamp warnings. The large-suite flag does not select the ordinary
-live module, and `--run-lucene-e2e` does not select these capacity cases.
+```bash
+python -m pytest -q -s -x \
+    python/cuvs_bench/cuvs_bench/tests/test_lucene_large_segment_integration.py \
+    --run-lucene-large-segment-e2e \
+    --basetemp=/path/to/local-disk/cuvs-lucene-large-segment
+```
+
+The `-x` option stops after the first failure while pytest unwinds the fixture
+and removes its generated source and index files.
+
+The large-suite flag does not select the ordinary live module, and
+`--run-lucene-e2e` does not select the large cases. The large tests fail rather
+than skip when their explicit resource or runtime prerequisites are missing.
+They configure a 12 GiB maximum JVM heap and require 16 GiB of available host
+memory before JVM startup. These admission checks do not guarantee that the
+host, JVM, or GPU has enough memory to finish. The tests use
+`ram_per_thread_hard_limit_mb: 6144`, verify the reflective field-override
+application mode, require one physical segment, and reject accelerated-HNSW
+CPU fallback, CAGRA brute-force fallback, and graph-parameter clamp warnings.

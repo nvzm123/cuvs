@@ -1,5 +1,5 @@
 #
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -520,6 +520,29 @@ class TestMemmapBinFile:
 
 class TestDatasetLazyLoading:
     """Tests for Dataset transparent vector loading."""
+
+    def test_training_materialization_state_does_not_trigger_lazy_load(
+        self, tmp_path
+    ):
+        data = np.random.rand(4, 2).astype(np.float32)
+        path = str(tmp_path / "base.fbin")
+        _write_test_bin(path, data)
+        dataset = Dataset(name="test", base_file=path)
+
+        assert dataset.training_vectors_materialized is False
+        assert dataset._training_vectors.size == 0
+        np.testing.assert_array_equal(dataset.training_vectors, data)
+        assert dataset.training_vectors_materialized is True
+
+    def test_training_materialization_state_tracks_explicit_vectors(self):
+        vectors = np.ones((2, 3), dtype=np.float32)
+        dataset = Dataset(name="test", training_vectors=vectors)
+
+        assert dataset.training_vectors_materialized is True
+        dataset.training_vectors = np.empty((0, 0), dtype=np.float32)
+        assert dataset.training_vectors_materialized is False
+        dataset.training_vectors = vectors
+        assert dataset.training_vectors_materialized is True
 
     def test_lazy_load_training_vectors(self, tmp_path):
         """Test that base vectors are loaded from file on first access."""
