@@ -38,6 +38,7 @@ from ._lucene_runtime import (
     MAX_CAGRA_TOP_K,
     LuceneRuntime,
     RuntimeBuildResult,
+    RuntimeFbinBuildResult,
     RuntimeSearchResult,
     RuntimeSearchTiming,
     TIMED_BRIDGE_PYLUCENE_DISPATCH,
@@ -101,7 +102,7 @@ _SEARCH_ROUTE_BY_ALGORITHM = {
     CAGRA_ALGORITHM: "gpu_cagra",
 }
 _MANIFEST_FILE = ".cuvs-bench-lucene.json"
-_MANIFEST_SCHEMA = 4
+_MANIFEST_SCHEMA = 5
 _RUNTIME_BUILD_TOPOLOGY_FIELDS = frozenset(
     (
         "requested_premerge_segment_count",
@@ -125,6 +126,8 @@ _RUNTIME_KEYS = (
 _SCORE_ROUNDOFF_TOLERANCE = float(np.spacing(np.float32(1.0)))
 _INDEX_PREWARM_BLOCK_BYTES = 1024 * 1024
 _TIMING_CONTRACT_VERSION = 1
+JAVA_FBIN_INGEST_ROUTE = "java_fbin_index_writer_bridge"
+PYTHON_INGEST_ROUTE = "python_pylucene_document_at_a_time"
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,33 @@ class _IndexPrewarmTiming:
     wall_ns: int
     bytes_read: int
     file_count: int
+
+
+@dataclass(frozen=True)
+class _FbinBridgeBuildInput:
+    source_path: Path
+    source_identity: dict[str, Any]
+    file_vector_count: int
+    dimensions: int
+    header_bytes: int
+    vector_count: int
+    subset_size: int | None
+
+
+@dataclass(frozen=True)
+class _PreparedBuildInput:
+    vectors: np.ndarray | None
+    fbin_bridge: _FbinBridgeBuildInput | None
+    vector_count: int
+    dimensions: int
+    ingest_route: str
+    training_vectors_materialized: bool
+
+
+@dataclass(frozen=True)
+class _FbinBuildEvidence:
+    dataset_identity: dict[str, Any]
+    metadata: dict[str, Any]
 
 
 def _nanoseconds_to_milliseconds(value: int) -> float:
@@ -212,7 +242,7 @@ def _prewarm_index_files(index_path: Path) -> _IndexPrewarmTiming:
 
 
 def _runtime_build_timing_metadata(
-    result: RuntimeBuildResult,
+    result: RuntimeBuildResult | RuntimeFbinBuildResult,
 ) -> dict[str, float]:
     timing = result.timing
     phases = {
@@ -233,6 +263,14 @@ def _runtime_build_timing_metadata(
         **phases,
         "runtime_build_wall_seconds": timing.runtime_build_wall_ns,
     }
+    if timing.fbin_read_ns is not None:
+        if not 0 <= timing.fbin_read_ns <= timing.document_ingest_ns:
+            raise RuntimeError(
+                "Lucene returned impossible FBIN-read timing data: "
+                f"{timing.fbin_read_ns} ns is outside document ingestion "
+                f"[0, {timing.document_ingest_ns}]"
+            )
+        fields["runtime_fbin_read_seconds"] = timing.fbin_read_ns
     return {
         name: _nanoseconds_to_seconds(value) for name, value in fields.items()
     }
@@ -704,6 +742,139 @@ def _normalize_subset_size(dataset: Dataset) -> int | None:
     return normalized
 
 
+def _fbin_bridge_build_input(
+    dataset: Dataset,
+    algorithm: str,
+    build_parameters: Mapping[str, Any],
+    *,
+    maximum_dimensions: int,
+) -> _FbinBridgeBuildInput | None:
+    """Return an immutable FBIN request only for the narrow bridge route."""
+    if (
+        algorithm not in _CUVS_ALGORITHMS
+        or dataset.training_vectors_materialized
+        or not dataset.base_file
+        or "premerge_segment_count" not in build_parameters
+        or build_parameters.get("force_merge_segment_count") != 0
+    ):
+        return None
+    try:
+        dtype = np.dtype(dtype_from_filename(dataset.base_file))
+    except RuntimeError:
+        return None
+    if dtype != np.dtype(np.float32):
+        return None
+
+    subset_size = _normalize_subset_size(dataset)
+    source_identity = _source_identity(dataset)
+    file_vector_count, dimensions, header_bytes = read_bin_header(
+        source_identity["path"], dtype.itemsize
+    )
+    if file_vector_count < 1 or dimensions < 1:
+        raise ValueError(
+            "training vectors must be a nonempty two-dimensional array"
+        )
+    if dimensions > maximum_dimensions:
+        raise ValueError(
+            f"training vectors dimensions must not exceed {maximum_dimensions}"
+        )
+    vector_count = (
+        file_vector_count
+        if subset_size is None
+        else min(file_vector_count, subset_size)
+    )
+    premerge_segments = int(build_parameters["premerge_segment_count"])
+    if vector_count < premerge_segments or vector_count % premerge_segments:
+        raise ValueError(
+            "Java FBIN bridge requires equal nonempty partitions: vector "
+            f"count {vector_count} is not divisible by "
+            f"premerge_segment_count {premerge_segments}"
+        )
+    if _source_identity(dataset) != source_identity:
+        raise RuntimeError(
+            "training vector file changed while its header was being read"
+        )
+    return _FbinBridgeBuildInput(
+        source_path=Path(source_identity["path"]),
+        source_identity=source_identity,
+        file_vector_count=int(file_vector_count),
+        dimensions=int(dimensions),
+        header_bytes=int(header_bytes),
+        vector_count=int(vector_count),
+        subset_size=subset_size,
+    )
+
+
+def _prepare_build_input(
+    dataset: Dataset,
+    algorithm: str,
+    build_parameters: Mapping[str, Any],
+    *,
+    maximum_dimensions: int,
+) -> _PreparedBuildInput:
+    """Select one ingestion route and validate its dataset shape."""
+    fbin_bridge = _fbin_bridge_build_input(
+        dataset,
+        algorithm,
+        build_parameters,
+        maximum_dimensions=maximum_dimensions,
+    )
+    if fbin_bridge is not None:
+        return _PreparedBuildInput(
+            vectors=None,
+            fbin_bridge=fbin_bridge,
+            vector_count=fbin_bridge.vector_count,
+            dimensions=fbin_bridge.dimensions,
+            ingest_route=JAVA_FBIN_INGEST_ROUTE,
+            training_vectors_materialized=False,
+        )
+
+    _normalize_subset_size(dataset)
+    vectors = _validate_vectors(
+        dataset.training_vectors,
+        "training vectors",
+        maximum_dimensions=maximum_dimensions,
+    )
+    return _PreparedBuildInput(
+        vectors=vectors,
+        fbin_bridge=None,
+        vector_count=int(vectors.shape[0]),
+        dimensions=int(vectors.shape[1]),
+        ingest_route=PYTHON_INGEST_ROUTE,
+        training_vectors_materialized=dataset.training_vectors_materialized,
+    )
+
+
+def _fbin_build_evidence(
+    dataset: Dataset,
+    request: _FbinBridgeBuildInput,
+    result: RuntimeFbinBuildResult,
+) -> _FbinBuildEvidence:
+    """Revalidate the source and describe the bytes indexed by Java."""
+    if _source_identity(dataset) != request.source_identity:
+        raise RuntimeError(
+            "training vector file changed while the Java FBIN bridge was "
+            "building the index"
+        )
+    return _FbinBuildEvidence(
+        dataset_identity={
+            "name": dataset.name,
+            "vector_count": result.vector_count,
+            "dimensions": result.dimensions,
+            "subset_size": request.subset_size,
+            "sha256": result.vector_payload_sha256,
+            "source": dict(request.source_identity),
+        },
+        metadata={
+            "source_file_size_bytes": result.source_file_size,
+            "source_file_vector_count": result.source_file_vector_count,
+            "source_header_bytes": result.header_bytes,
+            "indexed_payload_bytes": result.indexed_payload_bytes,
+            "vector_payload_sha256": result.vector_payload_sha256,
+        },
+    )
+
+
 def _dataset_identity(dataset: Dataset, vectors: np.ndarray) -> dict[str, Any]:
     identity: dict[str, Any] = {
         "name": dataset.name,
@@ -778,14 +949,16 @@ def _file_backed_dataset_identity(
 
 
 def _manifest_payload(
-    dataset: Dataset,
-    vectors: np.ndarray,
+    dataset_identity: Mapping[str, Any],
     algorithm: str,
     codec: str,
     build_parameters: Mapping[str, Any],
     runtime_build_topology: Mapping[str, Any] | None,
     segment_count: int,
     build_runtime_artifacts: Mapping[str, str],
+    *,
+    ingest_route: str,
+    training_vectors_materialized: bool,
 ) -> dict[str, Any]:
     return {
         "schema_version": _MANIFEST_SCHEMA,
@@ -797,7 +970,9 @@ def _manifest_payload(
             if runtime_build_topology is not None
             else None
         ),
-        "dataset": _dataset_identity(dataset, vectors),
+        "dataset": dict(dataset_identity),
+        "ingest_route": ingest_route,
+        "training_vectors_materialized": training_vectors_materialized,
         "segment_count": segment_count,
         "build_runtime_artifacts": dict(build_runtime_artifacts),
     }
@@ -1032,6 +1207,8 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
         "build_parameters",
         "runtime_build_topology",
         "dataset",
+        "ingest_route",
+        "training_vectors_materialized",
         "segment_count",
         "build_runtime_artifacts",
     }
@@ -1042,6 +1219,21 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
     ):
         raise RuntimeError(
             f"Lucene index manifest has invalid identifiers: {path}"
+        )
+    ingest_route = payload["ingest_route"]
+    training_vectors_materialized = payload["training_vectors_materialized"]
+    expected_materialized = {
+        JAVA_FBIN_INGEST_ROUTE: False,
+        PYTHON_INGEST_ROUTE: True,
+    }
+    if (
+        ingest_route not in expected_materialized
+        or type(training_vectors_materialized) is not bool
+        or training_vectors_materialized
+        is not expected_materialized[ingest_route]
+    ):
+        raise RuntimeError(
+            f"Lucene index manifest has invalid ingestion evidence: {path}"
         )
     try:
         build_parameters = _build_parameters_for(
@@ -1056,6 +1248,18 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
             f"Lucene index manifest has noncanonical build parameters: {path}"
         )
     _validate_manifest_dataset(payload["dataset"], path)
+    if ingest_route == JAVA_FBIN_INGEST_ROUTE:
+        source = payload["dataset"].get("source")
+        if (
+            payload["algorithm"] not in _CUVS_ALGORITHMS
+            or "premerge_segment_count" not in build_parameters
+            or build_parameters.get("force_merge_segment_count") != 0
+            or not isinstance(source, Mapping)
+            or Path(source["path"]).suffix != ".fbin"
+        ):
+            raise RuntimeError(
+                f"Lucene index manifest has invalid ingestion evidence: {path}"
+            )
     segment_count = payload.get("segment_count")
     if not _is_manifest_integer(segment_count, minimum=1):
         raise RuntimeError(
@@ -1383,6 +1587,10 @@ class LuceneBackend(BenchmarkBackend):
                 self.algorithm, build_parameters
             ),
             "dataset": dict(dataset_identity),
+            "ingest_route": payload["ingest_route"],
+            "training_vectors_materialized": payload[
+                "training_vectors_materialized"
+            ],
             "build_runtime_artifacts": dict(build_runtime_artifacts),
         }
         actual_without_segment_count = dict(payload)
@@ -1601,6 +1809,10 @@ class LuceneBackend(BenchmarkBackend):
                         "codec": self.codec,
                         "group": self.group,
                         "index_name": index.name,
+                        "ingest_route": payload["ingest_route"],
+                        "training_vectors_materialized": payload[
+                            "training_vectors_materialized"
+                        ],
                         **parameter_metadata,
                         **_artifact_metadata(
                             "build_runtime",
@@ -1612,10 +1824,10 @@ class LuceneBackend(BenchmarkBackend):
                 )
             backend_build_started = time.perf_counter_ns()
             dataset_prepare_started = time.perf_counter_ns()
-            _normalize_subset_size(dataset)
-            vectors = _validate_vectors(
-                dataset.training_vectors,
-                "training vectors",
+            prepared_input = _prepare_build_input(
+                dataset,
+                self.algorithm,
+                index.build_param,
                 maximum_dimensions=self.maximum_dimensions,
             )
             dataset_prepare_ns = (
@@ -1641,17 +1853,45 @@ class LuceneBackend(BenchmarkBackend):
             )
             try:
                 build_started = time.perf_counter_ns()
-                runtime_build = runtime.build_index(
-                    staged, vectors, self.codec, index.build_param
-                )
-                build_elapsed_ns = time.perf_counter_ns() - build_started
+                bridge_metadata: dict[str, Any] = {}
+                dataset_identity: dict[str, Any] | None = None
+                if prepared_input.fbin_bridge is None:
+                    assert prepared_input.vectors is not None
+                    runtime_build = runtime.build_index(
+                        staged,
+                        prepared_input.vectors,
+                        self.codec,
+                        index.build_param,
+                    )
+                    build_elapsed_ns = time.perf_counter_ns() - build_started
+                else:
+                    request = prepared_input.fbin_bridge
+                    runtime_build = runtime.build_index_from_fbin(
+                        staged,
+                        request.source_path,
+                        expected_source_size=int(
+                            request.source_identity["size"]
+                        ),
+                        expected_file_vector_count=request.file_vector_count,
+                        expected_dimensions=request.dimensions,
+                        expected_header_bytes=request.header_bytes,
+                        vector_count=request.vector_count,
+                        codec_name=self.codec,
+                        build_parameters=index.build_param,
+                    )
+                    build_elapsed_ns = time.perf_counter_ns() - build_started
+                    evidence = _fbin_build_evidence(
+                        dataset, request, runtime_build
+                    )
+                    dataset_identity = evidence.dataset_identity
+                    bridge_metadata = evidence.metadata
 
                 validation_started = time.perf_counter_ns()
                 metadata = self._verification_metadata(
                     runtime,
                     staged,
-                    int(vectors.shape[0]),
-                    int(vectors.shape[1]),
+                    prepared_input.vector_count,
+                    prepared_input.dimensions,
                 )
                 observed_segments = int(metadata["segment_count"])
                 if runtime_build.segment_count != observed_segments:
@@ -1676,22 +1916,39 @@ class LuceneBackend(BenchmarkBackend):
                 runtime_topology_metadata = _runtime_topology_result_metadata(
                     runtime_topology_payload
                 )
+                if dataset_identity is None:
+                    assert prepared_input.vectors is not None
+                    dataset_identity = _dataset_identity(
+                        dataset, prepared_input.vectors
+                    )
                 payload = _manifest_payload(
-                    dataset,
-                    vectors,
+                    dataset_identity,
                     self.algorithm,
                     self.codec,
                     index.build_param,
                     runtime_topology_payload,
                     observed_segments,
                     runtime.artifact_provenance,
+                    ingest_route=prepared_input.ingest_route,
+                    training_vectors_materialized=(
+                        prepared_input.training_vectors_materialized
+                    ),
                 )
                 _validate_manifest_runtime_topology(
                     payload, staged / _MANIFEST_FILE
                 )
                 _write_manifest(staged, payload)
+                runtime_timing_metadata = _runtime_build_timing_metadata(
+                    runtime_build
+                )
                 validation_elapsed_ns = (
                     time.perf_counter_ns() - validation_started
+                )
+
+                index_size_started = time.perf_counter_ns()
+                index_size_bytes = _index_size(staged)
+                index_size_elapsed_ns = (
+                    time.perf_counter_ns() - index_size_started
                 )
 
                 install_started = time.perf_counter_ns()
@@ -1700,9 +1957,6 @@ class LuceneBackend(BenchmarkBackend):
             except BaseException as build_error:
                 self._discard_failed_staging(staged, build_error)
                 raise
-            index_size_started = time.perf_counter_ns()
-            index_size_bytes = _index_size(path)
-            index_size_elapsed_ns = time.perf_counter_ns() - index_size_started
             lifecycle_metadata: dict[str, Any] = {
                 "dataset_load_validate_seconds": _nanoseconds_to_seconds(
                     dataset_prepare_ns
@@ -1735,7 +1989,7 @@ class LuceneBackend(BenchmarkBackend):
                 "install_time_seconds": _nanoseconds_to_seconds(
                     install_elapsed_ns
                 ),
-                **_runtime_build_timing_metadata(runtime_build),
+                **runtime_timing_metadata,
             }
             if cleanup_warning is not None:
                 lifecycle_metadata["cleanup_warning"] = cleanup_warning
@@ -1749,6 +2003,10 @@ class LuceneBackend(BenchmarkBackend):
                     "codec": self.codec,
                     "group": self.group,
                     "index_name": index.name,
+                    "ingest_route": prepared_input.ingest_route,
+                    "training_vectors_materialized": (
+                        prepared_input.training_vectors_materialized
+                    ),
                     **parameter_metadata,
                     "pylucene_version": runtime.pylucene_version,
                     **_artifact_metadata(
@@ -1756,6 +2014,7 @@ class LuceneBackend(BenchmarkBackend):
                     ),
                     **runtime_topology_metadata,
                     **lifecycle_metadata,
+                    **bridge_metadata,
                     **metadata,
                 },
             )
@@ -1998,6 +2257,10 @@ class LuceneBackend(BenchmarkBackend):
                         "mode": mode,
                         "group": self.group,
                         "index_name": index.name,
+                        "ingest_route": payload["ingest_route"],
+                        "training_vectors_materialized": payload[
+                            "training_vectors_materialized"
+                        ],
                         **parameter_metadata,
                         **_artifact_metadata(
                             "build_runtime",

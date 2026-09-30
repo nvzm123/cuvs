@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -179,7 +180,77 @@ def test_failed_force_rebuild_preserves_the_previous_valid_index(
     assert list(path.parent.glob(f".{path.name}.build-*")) == []
 
 
-def test_failed_build_reports_staging_that_cleanup_could_not_remove(
+def test_impossible_build_timing_is_rejected_before_index_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    assert backend.build(_dataset(), [index]).success
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+    build_index = runtime.build_index
+
+    def build_with_impossible_timing(*args, **kwargs):
+        result = build_index(*args, **kwargs)
+        return replace(
+            result,
+            timing=replace(result.timing, runtime_build_wall_ns=1),
+        )
+
+    monkeypatch.setattr(runtime, "build_index", build_with_impossible_timing)
+
+    replacement = backend.build(_dataset(offset=0.25), [index], force=True)
+
+    assert not replacement.success
+    assert "impossible runtime_build_wall timing data" in (
+        replacement.error_message
+    )
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+    assert list(destination.parent.glob(f".{destination.name}.build-*")) == []
+
+
+def test_index_size_failure_is_rejected_before_index_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    assert backend.build(_dataset(), [index]).success
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+    measured_paths: list[Path] = []
+
+    def fail_index_size(path: Path) -> int:
+        measured_paths.append(path)
+        raise OSError("index size unavailable")
+
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene._index_size", fail_index_size
+    )
+
+    replacement = backend.build(_dataset(offset=0.25), [index], force=True)
+
+    assert not replacement.success
+    assert replacement.error_message == "OSError: index size unavailable"
+    [staged] = measured_paths
+    assert staged.parent == destination.parent
+    assert staged.name.startswith(f".{destination.name}.build-")
+    assert not staged.exists()
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+
+
+def test_failed_build_reports_an_incomplete_staging_directory_that_cannot_be_removed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = RecordingRuntime()
@@ -477,6 +548,118 @@ def test_reusing_a_file_backed_index_does_not_materialize_training_vectors(
     assert result.success, result.error_message
     assert result.metadata["skipped"] is True
     assert len(runtime.build_calls) == 1
+
+
+def test_java_fbin_build_rejects_source_mutation_before_atomic_install(
+    tmp_path: Path,
+) -> None:
+    class MutatingRuntime(RecordingRuntime):
+        mutate_source = False
+
+        def build_index_from_fbin(self, index_path, source_path, **kwargs):
+            result = super().build_index_from_fbin(
+                index_path, source_path, **kwargs
+            )
+            if self.mutate_source:
+                source_path.write_bytes(source_path.read_bytes() + b"changed")
+            return result
+
+    runtime = MutatingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1024,
+        }
+    )
+    vectors = np.arange(8, dtype=np.float32).reshape(4, 2)
+    source = tmp_path / "base.fbin"
+    _write_fbin(source, vectors)
+    dataset = Dataset(
+        name="tiny-l2",
+        training_vectors=np.empty((0, 0)),
+        query_vectors=vectors[:2].copy(),
+        distance_metric="euclidean",
+        base_file=str(source),
+    )
+    first = backend.build(dataset, [index])
+    assert first.success, first.error_message
+    sentinel = Path(index.file) / "keep-existing-index"
+    sentinel.write_text("preserve", encoding="utf-8")
+    runtime.mutate_source = True
+
+    result = backend.build(dataset, [index], force=True)
+
+    assert not result.success
+    assert result.error_message == (
+        "RuntimeError: training vector file changed while the Java FBIN "
+        "bridge was building the index"
+    )
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+    assert dataset.training_vectors_materialized is False
+    assert len(runtime.fbin_build_calls) == 2
+    index_path = Path(index.file)
+    assert list(index_path.parent.glob(f".{index_path.name}.build-*")) == []
+
+
+def test_java_fbin_bridge_failure_does_not_fall_back_or_replace_index(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1024,
+        }
+    )
+    vectors = np.arange(8, dtype=np.float32).reshape(4, 2)
+    source = tmp_path / "base.fbin"
+    _write_fbin(source, vectors)
+    dataset = Dataset(
+        name="tiny-l2",
+        training_vectors=np.empty((0, 0), dtype=np.float32),
+        query_vectors=vectors[:2].copy(),
+        distance_metric="euclidean",
+        base_file=str(source),
+    )
+    first = backend.build(dataset, [index])
+    assert first.success, first.error_message
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+    sentinel = destination / "keep-existing-index"
+    sentinel.write_text("preserve", encoding="utf-8")
+    runtime.fbin_build_calls.clear()
+    runtime.build_calls.clear()
+    runtime.build_error = RuntimeError("Java FBIN bridge failed")
+
+    replacement = backend.build(dataset, [index], force=True)
+
+    assert not replacement.success
+    assert replacement.error_message == "RuntimeError: Java FBIN bridge failed"
+    [failed_request] = runtime.fbin_build_calls
+    assert runtime.build_calls == []
+    assert dataset.training_vectors_materialized is False
+    assert dataset._training_vectors.size == 0
+    staged_path = failed_request["index_path"]
+    assert not staged_path.exists()
+    assert list(destination.parent.glob(f".{destination.name}.build-*")) == []
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
 
 
 def test_search_rejects_changed_vectors_with_the_same_dataset_name(
@@ -817,7 +1000,7 @@ def test_search_requests_rebuild_for_the_previous_manifest_schema(
     assert backend.build(dataset, [index]).success
     manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["schema_version"] = 3
+    manifest["schema_version"] = 4
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     result = backend.search(dataset, [index], k=2)[0]
@@ -869,6 +1052,36 @@ def test_search_rejects_invalid_manifest_integer_fields(
 
     assert not result.success
     assert message in result.error_message
+    assert runtime.search_calls == []
+
+
+@pytest.mark.parametrize(
+    ("ingest_route", "materialized"),
+    (
+        ("python_pylucene_document_at_a_time", False),
+        ("java_fbin_index_writer_bridge", False),
+        ("unrecognized", True),
+    ),
+)
+def test_search_rejects_impossible_manifest_ingestion_evidence(
+    tmp_path: Path, ingest_route: str, materialized: bool
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["ingest_route"] = ingest_route
+    manifest["training_vectors_materialized"] = materialized
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    [result] = backend.search(dataset, [index], k=2)
+
+    assert not result.success
+    assert "invalid ingestion evidence" in result.error_message
     assert runtime.search_calls == []
 
 
@@ -931,6 +1144,8 @@ def test_reusing_the_same_index_reports_a_skipped_build(
         "codec": CPU_HNSW_CODEC,
         "group": "test",
         "index_name": CPU_HNSW_ALGORITHM,
+        "ingest_route": "python_pylucene_document_at_a_time",
+        "training_vectors_materialized": True,
         "persisted_index_kind": "cpu_hnsw",
         "build_route_policy": "cpu_hnsw",
         "segment_count": 1,

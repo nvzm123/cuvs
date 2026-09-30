@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.tests.util.LuceneTestCase;
@@ -111,6 +112,9 @@ public class TestLucene101AcceleratedHNSWCodecFactory extends LuceneTestCase {
       }
     } finally {
       executor.shutdownNow();
+      assertTrue(
+          "codec-factory executor did not terminate",
+          executor.awaitTermination(10, TimeUnit.SECONDS));
     }
   }
 

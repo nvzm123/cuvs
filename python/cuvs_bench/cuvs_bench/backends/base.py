@@ -120,6 +120,16 @@ class Dataset:
         )
 
     @property
+    def training_vectors_materialized(self) -> bool:
+        """Whether a nonempty training-vector matrix is resident in Python.
+
+        Inspecting this property never triggers lazy loading. Backends that
+        can consume ``base_file`` directly can use it to distinguish an
+        unloaded file-backed dataset from an explicitly supplied array.
+        """
+        return bool(self._training_vectors.size)
+
+    @property
     def query_vectors(self) -> np.ndarray:
         """Query vectors for search.
 
