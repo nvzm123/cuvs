@@ -458,10 +458,24 @@ cases fail if the codec logs its CPU-writer fallback. A separate GPU-hidden
 negative control verifies that this warning remains observable and attributable
 to the case that produced it.
 
-The greater-than-2-GiB segment cases are independently gated because they
-generate a 3 GiB FBIN and build one direct segment with both cuVS codecs. Run
-them serially, without pytest-xdist, in a fresh process. Choose a local
-`--basetemp` filesystem with at least 16 GiB free:
+The greater-than-2-GiB segment cases are independently gated and cover both
+production ingestion paths. Run each module serially, without pytest-xdist, in
+a fresh process. Choose a local `--basetemp` filesystem with at least 16 GiB
+free.
+
+The direct PyLucene cases map a generated 3 GiB FBIN read-only and issue every
+document through the production Python/JCC conversion and
+`IndexWriter.addDocument` loop:
+
+```bash
+python -m pytest -q -s -x \
+    python/cuvs_bench/cuvs_bench/tests/test_lucene_large_segment_python_integration.py \
+    --run-lucene-large-segment-e2e \
+    --basetemp=/path/to/local-disk/lucene-large-python
+```
+
+The Java streaming cases ingest the same-size source through the FBIN bridge
+without materializing the training vectors in Python:
 
 ```bash
 python -m pytest -q -s -x \
@@ -480,6 +494,5 @@ They configure a 12 GiB maximum JVM heap and require 16 GiB of available host
 memory before JVM startup. These admission checks do not guarantee that the
 host, JVM, or GPU has enough memory to finish. The tests use
 `ram_per_thread_hard_limit_mb: 6144`, verify the reflective field-override
-application mode, require Java FBIN ingestion without Python materialization,
-and reject accelerated-HNSW CPU fallback, CAGRA brute-force fallback, and graph
-parameter clamp warnings.
+application mode, require one physical segment, and reject accelerated-HNSW
+CPU fallback, CAGRA brute-force fallback, and graph-parameter clamp warnings.
