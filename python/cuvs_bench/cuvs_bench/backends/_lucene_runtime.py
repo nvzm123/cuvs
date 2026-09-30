@@ -27,10 +27,20 @@ CAGRA_CODEC = "CuVS2510GPUSearchCodec"
 CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY = (
     "com.nvidia.cuvs.lucene.Lucene101AcceleratedHNSWCodecFactory"
 )
+INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE = (
+    "com.nvidia.cuvs.lucene.IndexWriterConfigRAMLimitBridge"
+)
 _CONFIGURED_CODEC_RESPONSE_KEY = "codec"
 _HNSW_MAX_CONN_REQUEST_KEY = "max_conn"
 _HNSW_BEAM_WIDTH_REQUEST_KEY = "beam_width"
-_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2047
+_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2_147_483_647
+_FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB = 2048
+_RAM_LIMIT_CONFIG_KEY = "config"
+_RAM_LIMIT_VALUE_KEY = "per_thread_hard_limit_mb"
+_RAM_LIMIT_ALLOW_UNSUPPORTED_KEY = "allow_unsupported_lucene_ram_limit"
+_RAM_LIMIT_APPLICATION_MODE_KEY = "application_mode"
+_PUBLIC_RAM_LIMIT_SETTER_MODE = "public_setter"
+_UNSUPPORTED_RAM_LIMIT_OVERRIDE_MODE = "unsupported_field_override"
 MAX_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = "10.2.0"
 _PYLUCENE_SETUP_GUIDANCE = (
@@ -283,6 +293,7 @@ def _validate_artifacts(
         "com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.class",
         "com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.class",
         "com/nvidia/cuvs/lucene/IndexSearcherTimingBridge.class",
+        "com/nvidia/cuvs/lucene/IndexWriterConfigRAMLimitBridge.class",
         "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodecFactory.class",
         "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.class",
         "META-INF/services/org.apache.lucene.codecs.Codec",
@@ -977,6 +988,7 @@ class RuntimeBuildTopology:
     premerge_segment_vector_counts: tuple[int, ...]
     max_buffered_docs: int
     applied_ram_per_thread_hard_limit_mb: int
+    ram_per_thread_hard_limit_application: str
     ingest_merge_policy: str
     final_merge_policy: str | None
 
@@ -996,6 +1008,9 @@ class RuntimeBuildTopology:
             "max_buffered_docs": self.max_buffered_docs,
             "applied_ram_per_thread_hard_limit_mb": (
                 self.applied_ram_per_thread_hard_limit_mb
+            ),
+            "ram_per_thread_hard_limit_application": (
+                self.ram_per_thread_hard_limit_application
             ),
             "ingest_merge_policy": self.ingest_merge_policy,
             "final_merge_policy": self.final_merge_policy,
@@ -1020,6 +1035,7 @@ class _ControlledBuildTopology:
     premerge_segment_count: int
     force_merge_segment_count: int
     ram_per_thread_hard_limit_mb: int
+    allow_unsupported_lucene_ram_limit: bool
     chunk_size: int
     max_buffered_docs: int
 
@@ -1033,12 +1049,14 @@ def _controlled_build_topology(
         "force_merge_segment_count",
         "ram_per_thread_hard_limit_mb",
     }
+    allow_key = "allow_unsupported_lucene_ram_limit"
     parameters = build_parameters or {}
-    present = required & set(parameters)
+    present = (required | {allow_key}) & set(parameters)
     if not present:
         return None
-    if present != required:
-        missing = ", ".join(sorted(required - present))
+    missing_required = required - set(parameters)
+    if missing_required:
+        missing = ", ".join(sorted(missing_required))
         raise RuntimeError(
             "Controlled Lucene builds require all topology parameters; "
             f"missing: {missing}"
@@ -1059,6 +1077,12 @@ def _controlled_build_topology(
             "ram_per_thread_hard_limit_mb must be in range [1, "
             f"{_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {hard_limit}"
         )
+    allow_unsupported = parameters.get(allow_key, False)
+    if type(allow_unsupported) is not bool:
+        raise RuntimeError(
+            "Controlled Lucene build parameter "
+            "allow_unsupported_lucene_ram_limit must be a boolean"
+        )
     force_merge_value = values["force_merge_segment_count"]
     if type(force_merge_value) is not int or force_merge_value not in (0, 1):
         raise RuntimeError(
@@ -1066,6 +1090,25 @@ def _controlled_build_topology(
             "must be 0 (disabled) or 1"
         )
     force_merge = force_merge_value
+    uses_unsupported_limit = (
+        hard_limit >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB
+    )
+    if uses_unsupported_limit and not allow_unsupported:
+        raise RuntimeError(
+            "Controlled Lucene ram_per_thread_hard_limit_mb values of 2048 "
+            "MiB or greater require "
+            "allow_unsupported_lucene_ram_limit=true"
+        )
+    if allow_unsupported and not uses_unsupported_limit:
+        raise RuntimeError(
+            "Controlled Lucene allow_unsupported_lucene_ram_limit=true "
+            "requires ram_per_thread_hard_limit_mb >= 2048"
+        )
+    if uses_unsupported_limit and force_merge != 0:
+        raise RuntimeError(
+            "Controlled Lucene force_merge_segment_count must be 0 when "
+            "using an unsupported per-thread RAM hard limit"
+        )
     if premerge > vector_count:
         raise RuntimeError(
             "premerge_segment_count cannot exceed the vector count: "
@@ -1088,6 +1131,7 @@ def _controlled_build_topology(
         premerge_segment_count=premerge,
         force_merge_segment_count=force_merge,
         ram_per_thread_hard_limit_mb=hard_limit,
+        allow_unsupported_lucene_ram_limit=allow_unsupported,
         chunk_size=chunk_size,
         max_buffered_docs=max_buffered_docs,
     )
@@ -1130,7 +1174,7 @@ class LuceneRuntime:
     """Own the generated bindings and the narrow Lucene operations Bench uses."""
 
     def __init__(self, lucene: Any):
-        from java.lang import Class, Integer, Long
+        from java.lang import Boolean, Class, Integer, Long, String
         from java.nio.file import Paths
         from java.util import HashMap, Map
         from java.util.function import Function
@@ -1161,9 +1205,11 @@ class LuceneRuntime:
         from org.apache.lucene.store import FSDirectory, IOContext
 
         self.lucene = lucene
+        self.Boolean = Boolean
         self.Class = Class
         self.Integer = Integer
         self.Long = Long
+        self.String = String
         self.HashMap = HashMap
         self.Map = Map
         self.Function = Function
@@ -1195,6 +1241,7 @@ class LuceneRuntime:
         self.artifact_provenance: dict[str, str] = {}
         self._artifact_tokens: dict[str, tuple[int, ...]] = {}
         self._java_search_timer: Any | None = None
+        self._java_ram_limit_bridge: Any | None = None
         self._java_configured_codec_factory: Any | None = None
 
     @classmethod
@@ -1238,15 +1285,42 @@ class LuceneRuntime:
                 f"{type(error).__name__}: {error}"
             ) from error
 
+    def _load_java_ram_limit_bridge(self) -> Any:
+        """Load the RAM-limit bridge through JCC's wrapped Function."""
+        try:
+            instance = self.Class.forName(
+                INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE
+            ).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                "Could not load or adapt "
+                f"{INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE} through "
+                "PyLucene/JCC: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
     def _set_ram_per_thread_hard_limit_mb(
-        self, config: Any, requested_mb: int
-    ) -> None:
+        self,
+        config: Any,
+        requested_mb: int,
+        *,
+        allow_unsupported: bool,
+    ) -> str:
         if type(requested_mb) is not int or not (
             1 <= requested_mb <= _MAX_RAM_PER_THREAD_HARD_LIMIT_MB
         ):
             raise RuntimeError(
                 "Lucene per-thread RAM hard limit must be in range [1, "
                 f"{_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {requested_mb}"
+            )
+        if type(allow_unsupported) is not bool:
+            raise RuntimeError(
+                "Lucene allow_unsupported_lucene_ram_limit must be a boolean"
+            )
+        if requested_mb >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB:
+            return self._set_unsupported_ram_per_thread_hard_limit_mb(
+                config, requested_mb, allow_unsupported
             )
         try:
             config.setRAMPerThreadHardLimitMB(requested_mb)
@@ -1263,6 +1337,59 @@ class LuceneRuntime:
                 f"requested value: requested {requested_mb}, config "
                 f"reported {observed}"
             )
+        return _PUBLIC_RAM_LIMIT_SETTER_MODE
+
+    def _set_unsupported_ram_per_thread_hard_limit_mb(
+        self, config: Any, requested_mb: int, allow_unsupported: bool
+    ) -> str:
+        """Apply an explicitly authorized limit through the thin-JAR bridge."""
+        if not allow_unsupported:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard limits of 2048 MiB or greater "
+                "require allow_unsupported_lucene_ram_limit=true"
+            )
+        bridge = self._java_ram_limit_bridge
+        if bridge is None:
+            bridge = self._load_java_ram_limit_bridge()
+            self._java_ram_limit_bridge = bridge
+        request = self.HashMap()
+        request.put(_RAM_LIMIT_CONFIG_KEY, config)
+        request.put(_RAM_LIMIT_VALUE_KEY, self.Integer.valueOf(requested_mb))
+        request.put(
+            _RAM_LIMIT_ALLOW_UNSUPPORTED_KEY,
+            self.Boolean.valueOf(allow_unsupported),
+        )
+        try:
+            response = self.Map.cast_(bridge.apply(request))
+            applied = int(
+                self.Integer.cast_(
+                    response.get(_RAM_LIMIT_VALUE_KEY)
+                ).intValue()
+            )
+            application_mode = str(
+                self.String.cast_(
+                    response.get(_RAM_LIMIT_APPLICATION_MODE_KEY)
+                )
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not apply the explicitly authorized unsupported "
+                "Lucene per-thread RAM hard limit: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        observed = int(config.getRAMPerThreadHardLimitMB())
+        if applied != requested_mb or observed != requested_mb:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard-limit bridge did not retain the "
+                f"requested value: requested {requested_mb}, bridge returned "
+                f"{applied}, config reported {observed}"
+            )
+        if application_mode != _UNSUPPORTED_RAM_LIMIT_OVERRIDE_MODE:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard-limit bridge returned an "
+                f"unexpected application mode: {application_mode!r}"
+            )
+        return application_mode
 
     @property
     def pylucene_version(self) -> str:
@@ -1398,7 +1525,7 @@ class LuceneRuntime:
         topology: _ControlledBuildTopology,
         *,
         create: bool,
-    ) -> Any:
+    ) -> tuple[Any, str]:
         config = self.IndexWriterConfig()
         config.setOpenMode(
             self.IndexWriterConfig.OpenMode.CREATE
@@ -1416,10 +1543,12 @@ class LuceneRuntime:
         config.setRAMBufferSizeMB(
             float(self.IndexWriterConfig.DISABLE_AUTO_FLUSH)
         )
-        self._set_ram_per_thread_hard_limit_mb(
-            config, topology.ram_per_thread_hard_limit_mb
+        application_mode = self._set_ram_per_thread_hard_limit_mb(
+            config,
+            topology.ram_per_thread_hard_limit_mb,
+            allow_unsupported=(topology.allow_unsupported_lucene_ram_limit),
         )
-        return config
+        return config, application_mode
 
     def _tiered_merge_policy(self) -> Any:
         merge_policy = self.TieredMergePolicy()
@@ -1428,7 +1557,7 @@ class LuceneRuntime:
 
     def _controlled_merge_config(
         self, codec: Any, topology: _ControlledBuildTopology
-    ) -> Any:
+    ) -> tuple[Any, str]:
         config = self.IndexWriterConfig()
         config.setOpenMode(self.IndexWriterConfig.OpenMode.APPEND)
         config.setCodec(codec)
@@ -1436,10 +1565,12 @@ class LuceneRuntime:
         config.setCommitOnClose(False)
         config.setMergeScheduler(self.SerialMergeScheduler())
         config.setMergePolicy(self._tiered_merge_policy())
-        self._set_ram_per_thread_hard_limit_mb(
-            config, topology.ram_per_thread_hard_limit_mb
+        application_mode = self._set_ram_per_thread_hard_limit_mb(
+            config,
+            topology.ram_per_thread_hard_limit_mb,
+            allow_unsupported=(topology.allow_unsupported_lucene_ram_limit),
         )
-        return config
+        return config, application_mode
 
     def _reader_segment_vector_counts(self, reader: Any) -> tuple[int, ...]:
         if int(reader.numDocs()) != int(reader.maxDoc()):
@@ -1493,9 +1624,11 @@ class LuceneRuntime:
         start: int,
         stop: int,
         create: bool,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, str]:
         setup_started = time.perf_counter_ns()
-        config = self._controlled_ingest_config(codec, topology, create=create)
+        config, application_mode = self._controlled_ingest_config(
+            codec, topology, create=create
+        )
         writer = self.IndexWriter(directory, config)
         setup_ns = time.perf_counter_ns() - setup_started
         try:
@@ -1513,16 +1646,18 @@ class LuceneRuntime:
         except BaseException as error:
             _rollback_writer(writer, error)
             raise
-        return setup_ns, ingest_ns, commit_close_ns
+        return setup_ns, ingest_ns, commit_close_ns, application_mode
 
     def _force_merge_controlled_index(
         self,
         directory: Any,
         codec: Any,
         topology: _ControlledBuildTopology,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, str]:
         setup_started = time.perf_counter_ns()
-        config = self._controlled_merge_config(codec, topology)
+        config, application_mode = self._controlled_merge_config(
+            codec, topology
+        )
         writer = self.IndexWriter(directory, config)
         setup_ns = time.perf_counter_ns() - setup_started
         try:
@@ -1536,7 +1671,7 @@ class LuceneRuntime:
         except BaseException as error:
             _rollback_writer(writer, error)
             raise
-        return setup_ns, force_merge_ns, commit_close_ns
+        return setup_ns, force_merge_ns, commit_close_ns, application_mode
 
     def _build_ordinary_index(
         self,
@@ -1589,13 +1724,14 @@ class LuceneRuntime:
         force_merge_ns = 0
         writer_commit_close_ns = 0
         post_build_reader_ns = 0
+        ram_limit_application_modes: set[str] = set()
 
         # Separate writer lifecycles make the requested serial partitions
         # explicit and keep their physical topology independently verifiable.
         for chunk_number in range(controlled.premerge_segment_count):
             start = chunk_number * controlled.chunk_size
             stop = start + controlled.chunk_size
-            setup_ns, ingest_ns, commit_close_ns = (
+            setup_ns, ingest_ns, commit_close_ns, application_mode = (
                 self._write_controlled_chunk(
                     directory,
                     vectors,
@@ -1609,6 +1745,7 @@ class LuceneRuntime:
             writer_setup_ns += setup_ns
             document_ingest_ns += ingest_ns
             writer_commit_close_ns += commit_close_ns
+            ram_limit_application_modes.add(application_mode)
 
         post_build_started = time.perf_counter_ns()
         observed_premerge_counts = self._committed_segment_vector_counts(
@@ -1632,7 +1769,7 @@ class LuceneRuntime:
             controlled.force_merge_segment_count == 1
             and controlled.premerge_segment_count > 1
         ):
-            setup_ns, merge_ns, commit_close_ns = (
+            setup_ns, merge_ns, commit_close_ns, application_mode = (
                 self._force_merge_controlled_index(
                     directory, codec, controlled
                 )
@@ -1640,6 +1777,7 @@ class LuceneRuntime:
             writer_setup_ns += setup_ns
             force_merge_ns += merge_ns
             writer_commit_close_ns += commit_close_ns
+            ram_limit_application_modes.add(application_mode)
             post_build_started = time.perf_counter_ns()
             final_counts = self._committed_segment_vector_counts(directory)
             post_build_reader_ns += time.perf_counter_ns() - post_build_started
@@ -1655,6 +1793,12 @@ class LuceneRuntime:
                 f"segment vector counts {expected_final_counts}, "
                 f"observed {final_counts}"
             )
+        if len(ram_limit_application_modes) != 1:
+            raise RuntimeError(
+                "Controlled Lucene writers used inconsistent per-thread RAM "
+                f"limit mechanisms: {sorted(ram_limit_application_modes)}"
+            )
+        ram_limit_application = ram_limit_application_modes.pop()
         return _IndexBuildPhase(
             writer_setup_ns=writer_setup_ns,
             document_ingest_ns=document_ingest_ns,
@@ -1675,6 +1819,7 @@ class LuceneRuntime:
                 applied_ram_per_thread_hard_limit_mb=(
                     controlled.ram_per_thread_hard_limit_mb
                 ),
+                ram_per_thread_hard_limit_application=(ram_limit_application),
                 ingest_merge_policy="NoMergePolicy",
                 final_merge_policy=final_merge_policy,
             ),
@@ -1692,10 +1837,19 @@ class LuceneRuntime:
         controlled = _controlled_build_topology(
             build_parameters, int(vectors.shape[0])
         )
-        if controlled is not None and codec_name != ACCELERATED_HNSW_CODEC:
+        controlled_codecs = {ACCELERATED_HNSW_CODEC, CAGRA_CODEC}
+        if controlled is not None and codec_name not in controlled_codecs:
             raise RuntimeError(
-                "Controlled segment topology is only supported for "
-                "accelerated-HNSW builds"
+                "Controlled segment topology is only supported for cuVS-backed "
+                "Lucene builds"
+            )
+        if (
+            controlled is not None
+            and codec_name == CAGRA_CODEC
+            and controlled.force_merge_segment_count != 0
+        ):
+            raise RuntimeError(
+                "Controlled CAGRA builds require force_merge_segment_count=0"
             )
         directory_open_started = time.perf_counter_ns()
         directory = self.FSDirectory.open(self.Paths.get(str(index_path)))

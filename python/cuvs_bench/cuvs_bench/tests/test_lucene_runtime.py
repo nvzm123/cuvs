@@ -17,6 +17,7 @@ from cuvs_bench.backends import _lucene_runtime
 from cuvs_bench.backends._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
     CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY,
+    INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE,
     _CleanupStack,
     _controlled_build_topology,
     _load_pylucene,
@@ -65,6 +66,7 @@ def test_controlled_topology_derives_equal_partition_plan(
     assert topology.premerge_segment_count == premerge_segments
     assert topology.force_merge_segment_count == force_merge_segments
     assert topology.ram_per_thread_hard_limit_mb == 1_945
+    assert topology.allow_unsupported_lucene_ram_limit is False
     assert topology.chunk_size == chunk_size
     assert topology.max_buffered_docs == chunk_size + 1
 
@@ -175,8 +177,27 @@ def test_controlled_topology_accepts_supported_ram_limits(
     assert topology.ram_per_thread_hard_limit_mb == hard_limit
 
 
-@pytest.mark.parametrize("hard_limit", (0, 2048, True))
-def test_controlled_topology_rejects_unsupported_ram_limits(
+@pytest.mark.parametrize("hard_limit", (2048, 6144))
+def test_controlled_topology_accepts_explicit_unsupported_ram_limits(
+    hard_limit: int,
+) -> None:
+    topology = _controlled_build_topology(
+        {
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": hard_limit,
+            "allow_unsupported_lucene_ram_limit": True,
+        },
+        100,
+    )
+
+    assert topology is not None
+    assert topology.ram_per_thread_hard_limit_mb == hard_limit
+    assert topology.allow_unsupported_lucene_ram_limit is True
+
+
+@pytest.mark.parametrize("hard_limit", (0, 2_147_483_648, True))
+def test_controlled_topology_rejects_out_of_range_ram_limits(
     hard_limit: object,
 ) -> None:
     with pytest.raises(RuntimeError, match="ram_per_thread_hard_limit_mb"):
@@ -185,6 +206,62 @@ def test_controlled_topology_rejects_unsupported_ram_limits(
                 "premerge_segment_count": 1,
                 "force_merge_segment_count": 0,
                 "ram_per_thread_hard_limit_mb": hard_limit,
+            },
+            100,
+        )
+
+
+def test_controlled_topology_rejects_unsupported_limit_without_opt_in() -> (
+    None
+):
+    with pytest.raises(RuntimeError, match="require.*allow_unsupported"):
+        _controlled_build_topology(
+            {
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 0,
+                "ram_per_thread_hard_limit_mb": 2048,
+            },
+            100,
+        )
+
+
+def test_controlled_topology_rejects_unused_unsupported_limit_opt_in() -> None:
+    with pytest.raises(RuntimeError, match="requires.*>= 2048"):
+        _controlled_build_topology(
+            {
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 0,
+                "ram_per_thread_hard_limit_mb": 2047,
+                "allow_unsupported_lucene_ram_limit": True,
+            },
+            100,
+        )
+
+
+def test_controlled_topology_rejects_merge_with_unsupported_limit() -> None:
+    with pytest.raises(RuntimeError, match="force_merge_segment_count"):
+        _controlled_build_topology(
+            {
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 1,
+                "ram_per_thread_hard_limit_mb": 6144,
+                "allow_unsupported_lucene_ram_limit": True,
+            },
+            100,
+        )
+
+
+@pytest.mark.parametrize("allow_unsupported", (1, "true", None))
+def test_controlled_topology_rejects_non_boolean_unsupported_limit_opt_in(
+    allow_unsupported: object,
+) -> None:
+    with pytest.raises(RuntimeError, match="must be a boolean"):
+        _controlled_build_topology(
+            {
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 0,
+                "ram_per_thread_hard_limit_mb": 6144,
+                "allow_unsupported_lucene_ram_limit": allow_unsupported,
             },
             100,
         )
@@ -225,6 +302,10 @@ def _write_artifacts(
         )
         archive.writestr(
             "com/nvidia/cuvs/lucene/IndexSearcherTimingBridge.class", b""
+        )
+        archive.writestr(
+            "com/nvidia/cuvs/lucene/IndexWriterConfigRAMLimitBridge.class",
+            b"",
         )
         archive.writestr(
             "com/nvidia/cuvs/lucene/"
@@ -341,6 +422,31 @@ class _JavaInteger:
         return value
 
     def intValue(self) -> int:
+        return self.value
+
+
+class _JavaBoolean:
+    def __init__(self, value: bool) -> None:
+        self.value = value
+
+    @classmethod
+    def valueOf(cls, value: bool) -> "_JavaBoolean":
+        return cls(value)
+
+    def booleanValue(self) -> bool:
+        return self.value
+
+
+class _JavaString:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    @classmethod
+    def cast_(cls, value: object) -> "_JavaString":
+        assert isinstance(value, cls)
+        return value
+
+    def __str__(self) -> str:
         return self.value
 
 
@@ -467,33 +573,144 @@ class _WriterConfig:
         return self.limit
 
 
+def _ram_limit_runtime() -> tuple[
+    LuceneRuntime, list[dict[str, object]], list[str]
+]:
+    requests: list[dict[str, object]] = []
+    class_names: list[str] = []
+
+    class Bridge:
+        def apply(self, request: _JavaHashMap) -> _JavaHashMap:
+            config = request["config"]
+            hard_limit = _JavaInteger.cast_(
+                request["per_thread_hard_limit_mb"]
+            ).intValue()
+            allow_unsupported = request[
+                "allow_unsupported_lucene_ram_limit"
+            ].booleanValue()
+            requests.append(
+                {
+                    "config": config,
+                    "per_thread_hard_limit_mb": hard_limit,
+                    "allow_unsupported_lucene_ram_limit": allow_unsupported,
+                }
+            )
+            config.limit = hard_limit
+            return _JavaHashMap(
+                {
+                    "config": config,
+                    "per_thread_hard_limit_mb": _JavaInteger(hard_limit),
+                    "application_mode": _JavaString(
+                        "unsupported_field_override"
+                    ),
+                }
+            )
+
+    class ReflectedBridge:
+        @staticmethod
+        def newInstance() -> Bridge:
+            return Bridge()
+
+    class JavaClass:
+        @staticmethod
+        def forName(name: str) -> ReflectedBridge:
+            class_names.append(name)
+            return ReflectedBridge()
+
+    class FunctionBinding:
+        @staticmethod
+        def cast_(bridge: object) -> object:
+            return bridge
+
+    class MapBinding:
+        @staticmethod
+        def cast_(response: object) -> object:
+            return response
+
+    runtime = object.__new__(LuceneRuntime)
+    runtime.Boolean = _JavaBoolean
+    runtime.Class = JavaClass
+    runtime.Function = FunctionBinding
+    runtime.HashMap = _JavaHashMap
+    runtime.Integer = _JavaInteger
+    runtime.Map = MapBinding
+    runtime.String = _JavaString
+    runtime._java_ram_limit_bridge = None
+    return runtime, requests, class_names
+
+
 @pytest.mark.parametrize("hard_limit", (1, 2047))
 def test_ram_per_thread_hard_limit_uses_supported_public_setter(
     hard_limit: int,
 ) -> None:
     config = _WriterConfig()
 
-    LuceneRuntime._set_ram_per_thread_hard_limit_mb(
-        object.__new__(LuceneRuntime), config, hard_limit
+    application_mode = LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+        object.__new__(LuceneRuntime),
+        config,
+        hard_limit,
+        allow_unsupported=False,
     )
 
     assert config.getRAMPerThreadHardLimitMB() == hard_limit
+    assert application_mode == "public_setter"
 
 
-@pytest.mark.parametrize("hard_limit", (0, 2048, True))
-def test_ram_per_thread_hard_limit_rejects_unsupported_values(
+@pytest.mark.parametrize("hard_limit", (2048, 6144))
+def test_ram_per_thread_hard_limit_uses_explicit_unsupported_bridge(
+    hard_limit: int,
+) -> None:
+    runtime, requests, class_names = _ram_limit_runtime()
+    config = _WriterConfig()
+
+    application_mode = runtime._set_ram_per_thread_hard_limit_mb(
+        config, hard_limit, allow_unsupported=True
+    )
+
+    assert config.getRAMPerThreadHardLimitMB() == hard_limit
+    assert application_mode == "unsupported_field_override"
+    assert requests == [
+        {
+            "config": config,
+            "per_thread_hard_limit_mb": hard_limit,
+            "allow_unsupported_lucene_ram_limit": True,
+        }
+    ]
+    assert class_names == [INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE]
+
+
+@pytest.mark.parametrize("hard_limit", (0, 2_147_483_648, True))
+def test_ram_per_thread_hard_limit_rejects_out_of_range_values(
     hard_limit: object,
 ) -> None:
-    with pytest.raises(RuntimeError, match=r"range \[1, 2047\]"):
+    with pytest.raises(RuntimeError, match=r"range \[1, 2147483647\]"):
         LuceneRuntime._set_ram_per_thread_hard_limit_mb(
-            object.__new__(LuceneRuntime), _WriterConfig(), hard_limit
+            object.__new__(LuceneRuntime),
+            _WriterConfig(),
+            hard_limit,
+            allow_unsupported=False,
+        )
+
+
+def test_ram_per_thread_hard_limit_rejects_unsupported_value_without_opt_in() -> (
+    None
+):
+    with pytest.raises(RuntimeError, match="require.*allow_unsupported"):
+        LuceneRuntime._set_ram_per_thread_hard_limit_mb(
+            object.__new__(LuceneRuntime),
+            _WriterConfig(),
+            2048,
+            allow_unsupported=False,
         )
 
 
 def test_ram_per_thread_hard_limit_reports_setter_failure() -> None:
     with pytest.raises(RuntimeError, match="setter rejected value"):
         LuceneRuntime._set_ram_per_thread_hard_limit_mb(
-            object.__new__(LuceneRuntime), _WriterConfig(fail=True), 1_024
+            object.__new__(LuceneRuntime),
+            _WriterConfig(fail=True),
+            1_024,
+            allow_unsupported=False,
         )
 
 
@@ -503,6 +720,7 @@ def test_ram_per_thread_hard_limit_rejects_failed_readback() -> None:
             object.__new__(LuceneRuntime),
             _WriterConfig(retain=False),
             1_024,
+            allow_unsupported=False,
         )
 
 

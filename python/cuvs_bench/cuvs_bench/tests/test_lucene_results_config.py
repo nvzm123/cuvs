@@ -176,6 +176,7 @@ def test_accelerated_hnsw_segment_topology_is_canonical_and_reported() -> None:
         "requested_premerge_segment_count": 4,
         "requested_force_merge_segment_count": 1,
         "ram_per_thread_hard_limit_mb": 1945,
+        "allow_unsupported_lucene_ram_limit": False,
     }
 
 
@@ -260,13 +261,18 @@ def test_accelerated_hnsw_accepts_supported_ram_limits(
     assert parameters["ram_per_thread_hard_limit_mb"] == hard_limit
 
 
-@pytest.mark.parametrize("hard_limit", (0, 2048, True, 1.5, "1945", None))
-def test_accelerated_hnsw_rejects_unsupported_ram_limits(
+@pytest.mark.parametrize(
+    "hard_limit", (0, 2_147_483_648, True, 1.5, "1945", None)
+)
+def test_accelerated_hnsw_rejects_out_of_range_ram_limits(
     hard_limit: Any,
 ) -> None:
     with pytest.raises(
         ValueError,
-        match=r"ram_per_thread_hard_limit_mb must be an integer in \[1, 2047\]",
+        match=(
+            r"ram_per_thread_hard_limit_mb must be an integer in "
+            r"\[1, 2147483647\]"
+        ),
     ):
         _build_parameters_for(
             ACCELERATED_HNSW_ALGORITHM,
@@ -275,6 +281,71 @@ def test_accelerated_hnsw_rejects_unsupported_ram_limits(
                 "premerge_segment_count": 1,
                 "force_merge_segment_count": 0,
                 "ram_per_thread_hard_limit_mb": hard_limit,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("hard_limit", "algorithm", "codec"),
+    (
+        (2048, ACCELERATED_HNSW_ALGORITHM, ACCELERATED_HNSW_CODEC),
+        (6144, ACCELERATED_HNSW_ALGORITHM, ACCELERATED_HNSW_CODEC),
+        (2048, CAGRA_ALGORITHM, CAGRA_CODEC),
+        (6144, CAGRA_ALGORITHM, CAGRA_CODEC),
+    ),
+)
+def test_cuvs_builds_accept_explicit_unsupported_ram_limits(
+    hard_limit: int, algorithm: str, codec: str
+) -> None:
+    parameters = _build_parameters_for(
+        algorithm,
+        {
+            "codec": codec,
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": hard_limit,
+            "allow_unsupported_lucene_ram_limit": True,
+        },
+    )
+
+    assert parameters["ram_per_thread_hard_limit_mb"] == hard_limit
+    assert parameters["allow_unsupported_lucene_ram_limit"] is True
+
+
+@pytest.mark.parametrize(
+    ("hard_limit", "allow_unsupported", "message"),
+    (
+        (2048, False, "require allow_unsupported"),
+        (2047, True, "requires ram_per_thread_hard_limit_mb >= 2048"),
+        (6144, 1, "must be a boolean"),
+    ),
+)
+def test_cuvs_builds_reject_inconsistent_unsupported_limit_opt_in(
+    hard_limit: int, allow_unsupported: object, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _build_parameters_for(
+            ACCELERATED_HNSW_ALGORITHM,
+            {
+                "codec": ACCELERATED_HNSW_CODEC,
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 0,
+                "ram_per_thread_hard_limit_mb": hard_limit,
+                "allow_unsupported_lucene_ram_limit": allow_unsupported,
+            },
+        )
+
+
+def test_unsupported_ram_limit_disallows_force_merge() -> None:
+    with pytest.raises(ValueError, match="force_merge_segment_count"):
+        _build_parameters_for(
+            ACCELERATED_HNSW_ALGORITHM,
+            {
+                "codec": ACCELERATED_HNSW_CODEC,
+                "premerge_segment_count": 1,
+                "force_merge_segment_count": 1,
+                "ram_per_thread_hard_limit_mb": 6144,
+                "allow_unsupported_lucene_ram_limit": True,
             },
         )
 
@@ -372,30 +443,45 @@ def test_accelerated_hnsw_requires_the_parameter_pair(
 
 
 @pytest.mark.parametrize(
-    ("algorithm", "codec"),
+    ("algorithm", "codec", "extra_parameters"),
     (
-        (CPU_HNSW_ALGORITHM, CPU_HNSW_CODEC),
-        (CAGRA_ALGORITHM, CAGRA_CODEC),
+        pytest.param(
+            CPU_HNSW_ALGORITHM,
+            CPU_HNSW_CODEC,
+            {"m": 16, "beam_width": 80},
+            id="cpu-hnsw-quality",
+        ),
+        pytest.param(
+            CPU_HNSW_ALGORITHM,
+            CPU_HNSW_CODEC,
+            {
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": 1,
+                "ram_per_thread_hard_limit_mb": 1945,
+            },
+            id="cpu-segment-topology",
+        ),
+        pytest.param(
+            CPU_HNSW_ALGORITHM,
+            CPU_HNSW_CODEC,
+            {"cuvs_writer_threads": 16},
+            id="cpu-cuvs-writer-threads",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            {"m": 16, "beam_width": 80},
+            id="cagra-hnsw-quality",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            {"cuvs_writer_threads": 16},
+            id="cagra-cuvs-writer-threads",
+        ),
     ),
 )
-@pytest.mark.parametrize(
-    "extra_parameters",
-    (
-        {"m": 16, "beam_width": 80},
-        {
-            "premerge_segment_count": 4,
-            "force_merge_segment_count": 1,
-            "ram_per_thread_hard_limit_mb": 1945,
-        },
-        {"cuvs_writer_threads": 16},
-    ),
-    ids=(
-        "hnsw-quality",
-        "segment-topology",
-        "cuvs-writer-threads",
-    ),
-)
-def test_nonaccelerated_algorithms_reject_hnsw_build_parameters(
+def test_algorithms_reject_parameters_they_do_not_own(
     algorithm: str, codec: str, extra_parameters: dict[str, int]
 ) -> None:
     with pytest.raises(
@@ -404,6 +490,46 @@ def test_nonaccelerated_algorithms_reject_hnsw_build_parameters(
         _build_parameters_for(
             algorithm,
             {"codec": codec, **extra_parameters},
+        )
+
+
+def test_cagra_segment_topology_is_canonical_and_reported() -> None:
+    parameters = _build_parameters_for(
+        CAGRA_ALGORITHM,
+        {
+            "codec": CAGRA_CODEC,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1945,
+        },
+    )
+
+    assert parameters == {
+        "codec": CAGRA_CODEC,
+        "premerge_segment_count": 4,
+        "force_merge_segment_count": 0,
+        "ram_per_thread_hard_limit_mb": 1945,
+    }
+    assert _build_parameter_metadata(CAGRA_ALGORITHM, parameters) == {
+        "requested_premerge_segment_count": 4,
+        "requested_force_merge_segment_count": 0,
+        "ram_per_thread_hard_limit_mb": 1945,
+        "allow_unsupported_lucene_ram_limit": False,
+    }
+
+
+def test_cagra_segment_topology_disallows_force_merge() -> None:
+    with pytest.raises(
+        ValueError, match="requires force_merge_segment_count=0"
+    ):
+        _build_parameters_for(
+            CAGRA_ALGORITHM,
+            {
+                "codec": CAGRA_CODEC,
+                "premerge_segment_count": 4,
+                "force_merge_segment_count": 1,
+                "ram_per_thread_hard_limit_mb": 1945,
+            },
         )
 
 
@@ -710,6 +836,60 @@ groups:
         ".m16.beam_width80.premerge_segment_count4"
         f".force_merge_segment_count{force_merge_segment_count}"
         ".ram_per_thread_hard_limit_mb1945"
+    )
+    assert configuration.indexes[0].build_param == expected_parameters
+    assert configuration.index_name == expected_name
+    assert configuration.index_path == (
+        tmp_path / "tiny-l2" / "index" / expected_name
+    )
+
+
+def test_config_loader_canonicalizes_cagra_unsupported_ram_limit(
+    tmp_path: Path,
+) -> None:
+    dataset_configuration = tmp_path / "datasets.yaml"
+    dataset_configuration.write_text(
+        "- name: tiny-l2\n  distance: euclidean\n  dims: 2\n",
+        encoding="utf-8",
+    )
+    algorithm_configuration = tmp_path / "cagra.yaml"
+    algorithm_configuration.write_text(
+        f"""\
+name: {CAGRA_ALGORITHM}
+groups:
+  one_large_segment:
+    build:
+      allow_unsupported_lucene_ram_limit: [true]
+      ram_per_thread_hard_limit_mb: [6144]
+      force_merge_segment_count: [0]
+      codec: ["{CAGRA_CODEC}"]
+      premerge_segment_count: [1]
+    search: {{}}
+""",
+        encoding="utf-8",
+    )
+
+    _dataset_config, [configuration] = LuceneConfigLoader().load(
+        dataset="tiny-l2",
+        dataset_path=str(tmp_path),
+        dataset_configuration=str(dataset_configuration),
+        algorithm_configuration=str(algorithm_configuration),
+        algorithms=CAGRA_ALGORITHM,
+        groups="one_large_segment",
+    )
+
+    expected_parameters = {
+        "codec": CAGRA_CODEC,
+        "premerge_segment_count": 1,
+        "force_merge_segment_count": 0,
+        "ram_per_thread_hard_limit_mb": 6144,
+        "allow_unsupported_lucene_ram_limit": True,
+    }
+    expected_name = (
+        f"{CAGRA_ALGORITHM}_one_large_segment"
+        ".premerge_segment_count1.force_merge_segment_count0"
+        ".ram_per_thread_hard_limit_mb6144"
+        ".allow_unsupported_lucene_ram_limitTrue"
     )
     assert configuration.indexes[0].build_param == expected_parameters
     assert configuration.index_name == expected_name

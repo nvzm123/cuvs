@@ -280,6 +280,9 @@ def _assert_accelerated_hnsw_build_topology(
         requested_force_merge_segment_count
     )
     assert build.metadata["applied_ram_per_thread_hard_limit_mb"] == 1024
+    assert build.metadata["ram_per_thread_hard_limit_application"] == (
+        "public_setter"
+    )
     assert build.metadata["premerge_segment_vector_counts"] == json.dumps(
         list(expected_premerge_vector_counts), separators=(",", ":")
     )
@@ -309,6 +312,9 @@ def _assert_persisted_accelerated_hnsw_topology(
     )
     assert topology["requested_force_merge_segment_count"] == (
         requested_force_merge_segment_count
+    )
+    assert topology["ram_per_thread_hard_limit_application"] == (
+        "public_setter"
     )
     assert topology["final_merge_policy"] == (
         "TieredMergePolicy" if performed_force_merge else None
@@ -482,6 +488,123 @@ def test_accelerated_hnsw_controls_persist_observed_topology(
     )
     _assert_cpu_hnsw_search_quality(
         result, query_ids, dataset.groundtruth_neighbors
+    )
+
+
+def test_cagra_controls_retain_direct_segments(tmp_path, capfd):
+    dataset, query_ids = _case(CAGRA_ALGORITHM, 128)
+    backend, index = _backend_and_index(
+        tmp_path, CAGRA_ALGORITHM, CAGRA_CODEC, [{}]
+    )
+    index.build_param.update(
+        {
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1024,
+        }
+    )
+
+    build = backend.build(dataset, [index], force=True)
+    assert build.success, build.error_message
+    result = backend.search(dataset, [index], k=10, batch_size=2)[0]
+    output = "\n".join(capfd.readouterr())
+
+    assert build.metadata["segment_count"] == 4
+    assert build.metadata["premerge_segment_vector_counts"] == (
+        "[256,256,256,256]"
+    )
+    assert build.metadata["ram_per_thread_hard_limit_application"] == (
+        "public_setter"
+    )
+    assert build.metadata["ingest_merge_policy"] == "NoMergePolicy"
+    assert build.metadata["final_merge_policy"] is None
+    assert "falling back to a brute force index" not in output
+    for warning in _GRAPH_CLAMP_WARNINGS:
+        assert warning.casefold() not in output.casefold()
+    assert result.success, result.error_message
+    assert result.metadata["expected_search_route"] == "gpu_cagra"
+    np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+    assert all(len(set(row)) == len(row) for row in result.neighbors.tolist())
+    assert (
+        _recall(result.neighbors, dataset.groundtruth_neighbors)
+        >= _MINIMUM_RECALL
+    )
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "codec", "search_params", "expected_search_route"),
+    (
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            [{"num_candidates": 64}],
+            "cpu_hnsw",
+            id="gpu-cagra-built-hnsw",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            [{}],
+            "gpu_cagra",
+            id="gpu-cagra-search",
+        ),
+    ),
+)
+def test_cuvs_builds_apply_explicit_unsupported_ram_limit(
+    tmp_path,
+    capfd,
+    request,
+    algorithm,
+    codec,
+    search_params,
+    expected_search_route,
+):
+    dataset, query_ids = _case(algorithm, 128)
+    backend, index = _backend_and_index(
+        tmp_path, algorithm, codec, search_params
+    )
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        index.build_param.update({"m": 16, "beam_width": 80})
+    index.build_param.update(
+        {
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 6144,
+            "allow_unsupported_lucene_ram_limit": True,
+        }
+    )
+    case_name = request.node.nodeid
+    capfd.readouterr()
+
+    with lucene_log_case(case_name):
+        build = backend.build(dataset, [index], force=True)
+        assert build.success, build.error_message
+        result = backend.search(dataset, [index], k=10, batch_size=2)[0]
+
+    captured = capfd.readouterr()
+    combined_output = captured.out + captured.err
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        _assert_accelerated_hnsw_build_diagnostics(
+            captured.out, captured.err, case_name
+        )
+    else:
+        assert "falling back to a brute force index" not in combined_output
+        for warning in _GRAPH_CLAMP_WARNINGS:
+            assert warning.casefold() not in combined_output.casefold()
+
+    assert build.metadata["segment_count"] == 1
+    assert build.metadata["applied_ram_per_thread_hard_limit_mb"] == 6144
+    assert build.metadata["ram_per_thread_hard_limit_application"] == (
+        "unsupported_field_override"
+    )
+    assert build.metadata["runtime_force_merge_seconds"] == 0.0
+    assert result.success, result.error_message
+    assert result.metadata["expected_search_route"] == expected_search_route
+    np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+    assert all(len(set(row)) == len(row) for row in result.neighbors.tolist())
+    assert (
+        _recall(result.neighbors, dataset.groundtruth_neighbors)
+        >= _MINIMUM_RECALL
     )
 
 
