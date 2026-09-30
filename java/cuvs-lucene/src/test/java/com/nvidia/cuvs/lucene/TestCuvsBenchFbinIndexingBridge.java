@@ -4,6 +4,7 @@
  */
 package com.nvidia.cuvs.lucene;
 
+import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.CODEC_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.CODEC_NAME_KEY;
@@ -27,6 +28,7 @@ import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.MAX_BUFFERED_DO
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.POST_BUILD_READER_NS_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.PREMERGE_SEGMENT_COUNT_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.PREMERGE_SEGMENT_VECTOR_COUNT_PREFIX;
+import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.RAM_PER_THREAD_HARD_LIMIT_APPLICATION_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.RAM_PER_THREAD_HARD_LIMIT_MB_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.RUNTIME_BUILD_WALL_NS_KEY;
 import static com.nvidia.cuvs.lucene.CuvsBenchFbinIndexingBridge.SEGMENT_COUNT_KEY;
@@ -105,6 +107,9 @@ public class TestCuvsBenchFbinIndexingBridge {
     }
     assertEquals(3, response.get(MAX_BUFFERED_DOCS_KEY));
     assertEquals(HARD_LIMIT_MB, response.get(APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY));
+    assertEquals(
+        IndexWriterConfigRAMLimitBridge.PUBLIC_SETTER_MODE,
+        response.get(RAM_PER_THREAD_HARD_LIMIT_APPLICATION_KEY));
     assertEquals("NoMergePolicy", response.get(INGEST_MERGE_POLICY_KEY));
     assertNonNegativeTiming(response, DIRECTORY_OPEN_NS_KEY);
     assertNonNegativeTiming(response, WRITER_SETUP_NS_KEY);
@@ -347,6 +352,19 @@ public class TestCuvsBenchFbinIndexingBridge {
         "vector_count must have type Long",
         assertThrows(IllegalArgumentException.class, () -> bridge.apply(wrongType)).getMessage());
 
+    Map<String, Object> missingOptIn = request(source, index, codec, 4, 2, 4, 1, 0);
+    missingOptIn.remove(ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY);
+    assertEquals(
+        "allow_unsupported_lucene_ram_limit must have type Boolean",
+        assertThrows(IllegalArgumentException.class, () -> bridge.apply(missingOptIn))
+            .getMessage());
+
+    Map<String, Object> wrongOptIn = request(source, index, codec, 4, 2, 4, 1, 0);
+    wrongOptIn.put(ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY, "true");
+    assertEquals(
+        "allow_unsupported_lucene_ram_limit must have type Boolean",
+        assertThrows(IllegalArgumentException.class, () -> bridge.apply(wrongOptIn)).getMessage());
+
     Map<String, Object> unknown = request(source, index, codec, 4, 2, 4, 1, 0);
     unknown.put("typo", 1);
     assertEquals(
@@ -355,7 +373,7 @@ public class TestCuvsBenchFbinIndexingBridge {
   }
 
   @Test
-  public void testAcceptsLuceneHardLimitBoundariesAndRejects2048() throws Exception {
+  public void testHardLimitModesRequireCanonicalOptIn() throws Exception {
     Path root = temporary.newFolder("hard-limit-boundaries").toPath();
     float[][] vectors = distinctVectors(2, 2);
     Path source = writeFbin(root.resolve("base.fbin"), vectors, false);
@@ -369,10 +387,28 @@ public class TestCuvsBenchFbinIndexingBridge {
       Map<String, Object> response = new CuvsBenchFbinIndexingBridge().apply(supported);
 
       assertEquals(supportedLimit, response.get(APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY));
+      assertEquals(
+          IndexWriterConfigRAMLimitBridge.PUBLIC_SETTER_MODE,
+          response.get(RAM_PER_THREAD_HARD_LIMIT_APPLICATION_KEY));
       assertIndex(index, vectors, 2, 1);
     }
 
-    Path rejectedIndex = Files.createDirectory(root.resolve("index-2048"));
+    for (int unsupportedLimit : new int[] {2048, 6144}) {
+      Path index = Files.createDirectory(root.resolve("index-" + unsupportedLimit));
+      Map<String, Object> unsupported = request(source, index, codec, 2, 2, 2, 1, 0);
+      unsupported.put(RAM_PER_THREAD_HARD_LIMIT_MB_KEY, unsupportedLimit);
+      unsupported.put(ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY, true);
+
+      Map<String, Object> response = new CuvsBenchFbinIndexingBridge().apply(unsupported);
+
+      assertEquals(unsupportedLimit, response.get(APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY));
+      assertEquals(
+          IndexWriterConfigRAMLimitBridge.UNSUPPORTED_FIELD_OVERRIDE_MODE,
+          response.get(RAM_PER_THREAD_HARD_LIMIT_APPLICATION_KEY));
+      assertIndex(index, vectors, 2, 1);
+    }
+
+    Path rejectedIndex = Files.createDirectory(root.resolve("missing-opt-in"));
     Map<String, Object> rejected = request(source, rejectedIndex, codec, 2, 2, 2, 1, 0);
     rejected.put(RAM_PER_THREAD_HARD_LIMIT_MB_KEY, 2048);
 
@@ -380,8 +416,25 @@ public class TestCuvsBenchFbinIndexingBridge {
         assertThrows(
             IllegalArgumentException.class,
             () -> new CuvsBenchFbinIndexingBridge().apply(rejected));
-    assertEquals("ram_per_thread_hard_limit_mb must be in range [1, 2047]", error.getMessage());
+    assertEquals(
+        "ram_per_thread_hard_limit_mb values of 2048 MiB or greater require "
+            + "allow_unsupported_lucene_ram_limit=true",
+        error.getMessage());
     assertDirectoryEmpty(rejectedIndex);
+
+    Path unusedOptInIndex = Files.createDirectory(root.resolve("unused-opt-in"));
+    Map<String, Object> unusedOptIn = request(source, unusedOptInIndex, codec, 2, 2, 2, 1, 0);
+    unusedOptIn.put(ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY, true);
+
+    error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new CuvsBenchFbinIndexingBridge().apply(unusedOptIn));
+    assertEquals(
+        "allow_unsupported_lucene_ram_limit=true requires "
+            + "ram_per_thread_hard_limit_mb >= 2048",
+        error.getMessage());
+    assertDirectoryEmpty(unusedOptInIndex);
   }
 
   @Test
@@ -449,6 +502,7 @@ public class TestCuvsBenchFbinIndexingBridge {
     request.put(PREMERGE_SEGMENT_COUNT_KEY, partitions);
     request.put(FORCE_MERGE_SEGMENT_COUNT_KEY, forceMerge);
     request.put(RAM_PER_THREAD_HARD_LIMIT_MB_KEY, HARD_LIMIT_MB);
+    request.put(ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY, false);
     return request;
   }
 
@@ -546,6 +600,7 @@ public class TestCuvsBenchFbinIndexingBridge {
     request.put(PREMERGE_SEGMENT_COUNT_KEY, 1);
     request.put(FORCE_MERGE_SEGMENT_COUNT_KEY, 0);
     request.put(RAM_PER_THREAD_HARD_LIMIT_MB_KEY, HARD_LIMIT_MB);
+    request.put(ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY, false);
 
     assertThrows(
         IllegalArgumentException.class, () -> new CuvsBenchFbinIndexingBridge().apply(request));

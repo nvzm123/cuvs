@@ -97,7 +97,7 @@ class RecordingIndexVerifier:
         return LuceneIndexVerification(
             codec=expected_codec,
             segment_count=self.runtime.segment_count,
-            field_count=1,
+            field_count=self.runtime.segment_count,
             vector_count=expected_vector_count,
             dimensions=expected_dimensions,
         )
@@ -106,7 +106,8 @@ class RecordingIndexVerifier:
 class RecordingCagraVerifier:
     """Return deterministic persisted-path evidence and retain each request."""
 
-    def __init__(self) -> None:
+    def __init__(self, runtime: "RecordingRuntime") -> None:
+        self.runtime = runtime
         self.calls: list[tuple[Path, int, int]] = []
 
     def verify(
@@ -120,8 +121,8 @@ class RecordingCagraVerifier:
             (index_path, expected_vector_count, expected_dimensions)
         )
         return CagraVerification(
-            segment_count=1,
-            field_count=1,
+            segment_count=self.runtime.segment_count,
+            field_count=self.runtime.segment_count,
             vector_count=expected_vector_count,
             dimensions=expected_dimensions,
         )
@@ -135,7 +136,7 @@ class RecordingRuntime:
     def __init__(self) -> None:
         self.artifact_provenance: dict[str, str] = {}
         self.index_verifier = RecordingIndexVerifier(self)
-        self.cagra_verifier = RecordingCagraVerifier()
+        self.cagra_verifier = RecordingCagraVerifier(self)
         self.build_calls: list[
             tuple[Path, np.ndarray, str, dict[str, Any]]
         ] = []
@@ -187,6 +188,11 @@ class RecordingRuntime:
                 max_buffered_docs=chunk_size + 1,
                 applied_ram_per_thread_hard_limit_mb=int(
                     parameters["ram_per_thread_hard_limit_mb"]
+                ),
+                ram_per_thread_hard_limit_application=(
+                    "unsupported_field_override"
+                    if int(parameters["ram_per_thread_hard_limit_mb"]) >= 2048
+                    else "public_setter"
                 ),
                 ingest_merge_policy="NoMergePolicy",
                 final_merge_policy=(
@@ -272,6 +278,11 @@ class RecordingRuntime:
             premerge_segment_vector_counts=(chunk_size,) * premerge_segments,
             max_buffered_docs=chunk_size + 1,
             applied_ram_per_thread_hard_limit_mb=hard_limit,
+            ram_per_thread_hard_limit_application=(
+                "unsupported_field_override"
+                if hard_limit >= 2048
+                else "public_setter"
+            ),
             ingest_merge_policy="NoMergePolicy",
             final_merge_policy=None,
         )

@@ -41,6 +41,7 @@ public class ThinJarContentsIT {
       Set.of(
           CUVS_LUCENE_PACKAGE + "CuvsBenchFbinIndexingBridge.class",
           CUVS_LUCENE_PACKAGE + "IndexSearcherTimingBridge.class",
+          CUVS_LUCENE_PACKAGE + "IndexWriterConfigRAMLimitBridge.class",
           CUVS_LUCENE_PACKAGE + "Lucene101AcceleratedHNSWCodecFactory.class");
 
   private static final Set<String> REMOVED_PRODUCTION_CLASSES =

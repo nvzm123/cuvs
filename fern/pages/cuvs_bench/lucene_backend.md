@@ -53,20 +53,35 @@ observations. The machine-readable
 `graph_degree_source=requested_hnsw_same_graph_footprint_derivation` field makes
 that provenance explicit, including when the writer uses its CPU fallback.
 
-Large accelerated-HNSW validations can also control sequential ingestion
-partitions and the final segment topology. `premerge_segment_count`,
+Both cuVS-backed algorithms can control sequential ingestion partitions and
+the final segment topology. `premerge_segment_count`,
 `force_merge_segment_count`, and `ram_per_thread_hard_limit_mb` must be
-specified together. The partition count must be a positive integer, the RAM
-limit must be an integer from 1 through 2047 MiB, and
+specified together. The partition count must be a positive integer, and
 `force_merge_segment_count` must be either `0` (retain the partition segments)
-or `1` (produce one final segment).
+or `1` (produce one final segment). CAGRA builds require
+`force_merge_segment_count: 0`; they publish the segments built directly
+rather than invoking the codec's vector-merge path.
 
 Each equal, contiguous partition uses a separate writer lifecycle. Automatic
 merges are disabled during ingestion, and the document-count flush boundary is
-derived from the partition size. Lucene's supported per-thread RAM safety limit
-remains active. If it causes an earlier flush, the backend rejects the physical
-topology mismatch instead of silently reporting the requested segment shape.
-Use smaller partitions when a partition cannot fit under that safety limit.
+derived from the partition size. Values from 1 through 2047 MiB use Lucene's
+public per-thread RAM-limit setter. If that limit causes an earlier flush, the
+backend rejects the physical topology mismatch instead of silently reporting
+the requested segment shape. Use smaller partitions when a partition cannot
+fit under the public safety limit.
+
+Larger direct-built segments are an explicit unsupported mode. A
+`ram_per_thread_hard_limit_mb` value of 2048 MiB or greater also requires
+`allow_unsupported_lucene_ram_limit: true` and
+`force_merge_segment_count: 0`. The thin JAR uses reflection to apply the
+requested value to Lucene 10.2's protected, non-public
+`LiveIndexWriterConfig.perThreadHardLimitMB` field, checks its type, and reads
+the value back through Lucene's public getter. The request is rejected if the
+reflective lookup, access, write, or verification fails. The override only
+changes Lucene's flush threshold: it does not reserve memory, make construction
+out-of-core, guarantee that the host/JVM/GPU can hold the segment, or make a
+later force merge safe.
+
 When a final count of one is requested from more than one pre-merge segment, a
 serial `forceMerge(1)` exercises the codec's vector-merge path; an index already
 containing one segment does not invoke a merge and records
@@ -92,12 +107,31 @@ This produces and retains four equal segments. Set
 `force_merge_segment_count: [1]` to merge them serially into one segment after
 ingestion. Results record the requested and observed pre-merge segment counts,
 exact segment vector counts, derived `max_buffered_docs`, applied hard limit,
-merge policies, and final segment count. The public Lucene RAM-limit setter is
-verified at runtime and fails closed when Lucene does not retain the requested
-value. The manifest stores both the canonical request and runtime topology
-evidence. Reuse validates the evidence against the request, dataset row count,
-and final physical segment count, and reused build/search results surface that
-same evidence.
+RAM-limit application mode, merge policies, and final segment count. Both RAM
+limit paths verify the applied value at runtime. The manifest stores the
+canonical request and runtime topology evidence. Reuse validates the evidence
+against the request, dataset row count, and final physical segment count, and
+reused build/search results surface that same evidence.
+
+For example, this CAGRA configuration requests one directly built segment with
+a 6144 MiB flush threshold:
+
+```yaml
+name: lucene_cuvs_cagra
+groups:
+  one_large_segment:
+    build:
+      codec: ["CuVS2510GPUSearchCodec"]
+      premerge_segment_count: [1]
+      force_merge_segment_count: [0]
+      ram_per_thread_hard_limit_mb: [6144]
+      allow_unsupported_lucene_ram_limit: [true]
+    search: {}
+```
+
+Use this opt-in only after sizing the process and device for the complete
+segment. The same topology keys are available to
+`lucene_accelerated_hnsw`.
 
 ```bash
 python -m cuvs_bench.run \
@@ -143,15 +177,15 @@ algorithms support an explicit `num_candidates` value greater than or equal to
 
 ### Large-build memory and ingestion
 
-The backend has a prototype Java FBIN ingestion route for controlled
-accelerated-HNSW builds. It is selected only when all of these conditions hold:
+The backend has a prototype Java FBIN ingestion route for controlled cuVS
+builds. It is selected only when all of these conditions hold:
 
 - the dataset is backed by an unloaded `float32` `.fbin` file;
-- the algorithm is `lucene_accelerated_hnsw` with the controlled
-  `premerge_segment_count` topology; and
+- the algorithm is `lucene_accelerated_hnsw` or `lucene_cuvs_cagra` with the
+  controlled `premerge_segment_count` topology; and
 - `force_merge_segment_count` is `0`.
 
-An explicit in-memory training array, another Lucene algorithm, or
+An explicit in-memory training array, a CPU-only Lucene algorithm, or
 `force_merge_segment_count: 1` retains the existing PyLucene ingestion route.
 Once a file-backed build selects the Java bridge, a failed safety check fails
 the build rather than silently changing ingestion routes. Finite values are
@@ -174,9 +208,10 @@ and Python materialization state only; they are not GPU-route attestations.
 `premerge_segment_count: 1` streams one partition. A value of `4` streams four
 equal contiguous partitions in sequential writer lifecycles and retains four
 segments because force merge is disabled. The setting describes physical
-topology, not concurrent indexing. If Lucene's supported per-thread memory
-limit flushes a partition early, the exact post-ingest topology check fails;
-increase the partition count rather than bypassing that safety limit.
+topology, not concurrent indexing. If the selected per-thread memory limit
+flushes a partition early, the exact post-ingest topology check fails. Increase
+the partition count, or use the explicitly unsupported high-limit mode only
+when the complete partition fits the available process and device memory.
 
 Python validates the source identity before and after the Java call. The Java
 bridge independently validates the legacy 8-byte or extended 16-byte FBIN
@@ -422,3 +457,29 @@ GPU; missing prerequisites fail rather than skip. Accelerated-HNSW GPU-intended
 cases fail if the codec logs its CPU-writer fallback. A separate GPU-hidden
 negative control verifies that this warning remains observable and attributable
 to the case that produced it.
+
+The greater-than-2-GiB segment cases are independently gated because they
+generate a 3 GiB FBIN and build one direct segment with both cuVS codecs. Run
+them serially, without pytest-xdist, in a fresh process. Choose a local
+`--basetemp` filesystem with at least 16 GiB free:
+
+```bash
+python -m pytest -q -s -x \
+    python/cuvs_bench/cuvs_bench/tests/test_lucene_large_segment_integration.py \
+    --run-lucene-large-segment-e2e \
+    --basetemp=/path/to/local-disk/cuvs-lucene-large-segment
+```
+
+The `-x` option stops after the first failure while pytest unwinds the fixture
+and removes its generated source and index files.
+
+The large-suite flag does not select the ordinary live module, and
+`--run-lucene-e2e` does not select the large cases. The large tests fail rather
+than skip when their explicit resource or runtime prerequisites are missing.
+They configure a 12 GiB maximum JVM heap and require 16 GiB of available host
+memory before JVM startup. These admission checks do not guarantee that the
+host, JVM, or GPU has enough memory to finish. The tests use
+`ram_per_thread_hard_limit_mb: 6144`, verify the reflective field-override
+application mode, require Java FBIN ingestion without Python materialization,
+and reject accelerated-HNSW CPU fallback, CAGRA brute-force fallback, and graph
+parameter clamp warnings.

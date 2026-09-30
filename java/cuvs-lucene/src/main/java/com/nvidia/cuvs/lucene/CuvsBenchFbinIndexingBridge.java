@@ -64,15 +64,20 @@ import org.apache.lucene.store.FSDirectory;
  * <p>{@code Integer}: {@code expected_dimensions}, {@code expected_header_bytes},
  * {@code premerge_segment_count}, {@code force_merge_segment_count}, and
  * {@code ram_per_thread_hard_limit_mb}. Dimensions and pre-merge segments must be positive, the
- * header is 8 or 16 bytes, final force merge must be zero, and the RAM limit is 1 through 2047 MiB.
- * {@code vector_count} must divide evenly into {@code premerge_segment_count}; those equal
- * contiguous partitions are built sequentially using {@code CREATE} mode for the first and
- * {@code APPEND} mode thereafter. Automatic and final merges are disabled, so a successful build
- * has exactly one segment per requested partition.
+ * header is 8 or 16 bytes, and final force merge must be zero.
+ *
+ * <p>{@code Boolean}: {@code allow_unsupported_lucene_ram_limit}. A RAM limit of 2048 MiB or
+ * greater requires {@code true}; lower values require {@code false}. The larger limit deliberately
+ * relies on a verified, non-public Lucene field override and is supported only by this controlled,
+ * no-merge build path. {@code vector_count} must divide evenly into
+ * {@code premerge_segment_count}; those equal contiguous partitions are built sequentially using
+ * {@code CREATE} mode for the first and {@code APPEND} mode thereafter. Automatic and final merges
+ * are disabled, so a successful build has exactly one segment per requested partition.
  *
  * <p>The response contains these {@code String} entries: {@code codec_name} (the configured codec
- * name), {@code vector_payload_sha256} (lowercase hexadecimal), and {@code ingest_merge_policy}.
- * It contains these {@code Integer} entries: {@code dimensions}, {@code header_bytes},
+ * name), {@code vector_payload_sha256} (lowercase hexadecimal), {@code ingest_merge_policy}, and
+ * {@code ram_per_thread_hard_limit_application}. It contains these {@code Integer} entries:
+ * {@code dimensions}, {@code header_bytes},
  * {@code premerge_segment_count}, {@code force_merge_segment_count}, {@code segment_count},
  * {@code max_buffered_docs}, and {@code applied_ram_per_thread_hard_limit_mb}. It contains these
  * {@code Long} entries: {@code source_file_size}, {@code source_file_vector_count},
@@ -108,6 +113,8 @@ public final class CuvsBenchFbinIndexingBridge
   public static final String PREMERGE_SEGMENT_COUNT_KEY = "premerge_segment_count";
   public static final String FORCE_MERGE_SEGMENT_COUNT_KEY = "force_merge_segment_count";
   public static final String RAM_PER_THREAD_HARD_LIMIT_MB_KEY = "ram_per_thread_hard_limit_mb";
+  public static final String ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY =
+      "allow_unsupported_lucene_ram_limit";
 
   public static final String CODEC_NAME_KEY = "codec_name";
   public static final String SOURCE_FILE_SIZE_KEY = "source_file_size";
@@ -122,6 +129,8 @@ public final class CuvsBenchFbinIndexingBridge
   public static final String MAX_BUFFERED_DOCS_KEY = "max_buffered_docs";
   public static final String APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY =
       "applied_ram_per_thread_hard_limit_mb";
+  public static final String RAM_PER_THREAD_HARD_LIMIT_APPLICATION_KEY =
+      "ram_per_thread_hard_limit_application";
   public static final String INGEST_MERGE_POLICY_KEY = "ingest_merge_policy";
   public static final String DIRECTORY_OPEN_NS_KEY = "directory_open_ns";
   public static final String WRITER_SETUP_NS_KEY = "writer_setup_ns";
@@ -139,7 +148,7 @@ public final class CuvsBenchFbinIndexingBridge
   private static final int EXTENDED_HEADER_BYTES = 16;
   private static final int FLOAT_BYTES = Float.BYTES;
   private static final int TARGET_BUFFER_BYTES = 8 * 1024 * 1024;
-  private static final int MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2047;
+  private static final int FIRST_UNSUPPORTED_RAM_LIMIT_MB = 2048;
 
   private static final Set<String> REQUEST_KEYS =
       Set.of(
@@ -154,7 +163,8 @@ public final class CuvsBenchFbinIndexingBridge
           VECTOR_COUNT_KEY,
           PREMERGE_SEGMENT_COUNT_KEY,
           FORCE_MERGE_SEGMENT_COUNT_KEY,
-          RAM_PER_THREAD_HARD_LIMIT_MB_KEY);
+          RAM_PER_THREAD_HARD_LIMIT_MB_KEY,
+          ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY);
 
   @Override
   public Map<String, Object> apply(Map<String, Object> request) {
@@ -218,6 +228,7 @@ public final class CuvsBenchFbinIndexingBridge
       }
       response.put(MAX_BUFFERED_DOCS_KEY, plan.maxBufferedDocs());
       response.put(APPLIED_RAM_PER_THREAD_HARD_LIMIT_MB_KEY, request.ramPerThreadHardLimitMb());
+      response.put(RAM_PER_THREAD_HARD_LIMIT_APPLICATION_KEY, outcome.ramLimitApplicationMode());
       response.put(INGEST_MERGE_POLICY_KEY, NoMergePolicy.class.getSimpleName());
       response.put(DIRECTORY_OPEN_NS_KEY, outcome.timings().directoryOpenNs);
       response.put(WRITER_SETUP_NS_KEY, outcome.timings().writerSetupNs);
@@ -257,10 +268,17 @@ public final class CuvsBenchFbinIndexingBridge
       ByteBuffer buffer =
           ByteBuffer.allocateDirect(plan.bufferBytes()).order(ByteOrder.LITTLE_ENDIAN);
       long sourcePosition = header.headerBytes();
+      String ramLimitApplicationMode = null;
       for (int partition = 0; partition < request.premergeSegmentCount(); partition++) {
         long setupStarted = System.nanoTime();
-        IndexWriterConfig config = writerConfig(request, plan, partition == 0);
-        IndexWriter writer = new IndexWriter(directory, config);
+        WriterConfiguration writerConfiguration = writerConfig(request, plan, partition == 0);
+        if (ramLimitApplicationMode == null) {
+          ramLimitApplicationMode = writerConfiguration.ramLimitApplicationMode();
+        } else if (!ramLimitApplicationMode.equals(writerConfiguration.ramLimitApplicationMode())) {
+          throw new IllegalStateException(
+              "Lucene writers used inconsistent per-thread RAM limit mechanisms");
+        }
+        IndexWriter writer = new IndexWriter(directory, writerConfiguration.config());
         timings.writerSetupNs += System.nanoTime() - setupStarted;
 
         try {
@@ -322,11 +340,11 @@ public final class CuvsBenchFbinIndexingBridge
               plan.partitionVectorCount(),
               header.dimensions());
       timings.postBuildReaderNs += System.nanoTime() - readerStarted;
-      return new BuildOutcome(observedCounts, timings);
+      return new BuildOutcome(observedCounts, timings, ramLimitApplicationMode);
     }
   }
 
-  private static IndexWriterConfig writerConfig(Request request, BuildPlan plan, boolean create) {
+  private static WriterConfiguration writerConfig(Request request, BuildPlan plan, boolean create) {
     IndexWriterConfig config = new IndexWriterConfig();
     config.setOpenMode(
         create ? IndexWriterConfig.OpenMode.CREATE : IndexWriterConfig.OpenMode.APPEND);
@@ -337,15 +355,10 @@ public final class CuvsBenchFbinIndexingBridge
     config.setMergeScheduler(new SerialMergeScheduler());
     config.setMaxBufferedDocs(plan.maxBufferedDocs());
     config.setRAMBufferSizeMB(IndexWriterConfig.DISABLE_AUTO_FLUSH);
-    config.setRAMPerThreadHardLimitMB(request.ramPerThreadHardLimitMb());
-    if (config.getRAMPerThreadHardLimitMB() != request.ramPerThreadHardLimitMb()) {
-      throw new IllegalStateException(
-          "Lucene did not retain the requested per-thread RAM hard limit: requested "
-              + request.ramPerThreadHardLimitMb()
-              + ", observed "
-              + config.getRAMPerThreadHardLimitMB());
-    }
-    return config;
+    String applicationMode =
+        IndexWriterConfigRAMLimitBridge.applyAndVerify(
+            config, request.ramPerThreadHardLimitMb(), request.allowUnsupportedLuceneRamLimit());
+    return new WriterConfiguration(config, applicationMode);
   }
 
   private static long[] validateCommittedIndex(
@@ -601,6 +614,8 @@ public final class CuvsBenchFbinIndexingBridge
     Integer forceMergeSegmentCount =
         requiredValue(request, FORCE_MERGE_SEGMENT_COUNT_KEY, Integer.class);
     Integer hardLimit = requiredValue(request, RAM_PER_THREAD_HARD_LIMIT_MB_KEY, Integer.class);
+    Boolean allowUnsupported =
+        requiredValue(request, ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY, Boolean.class);
 
     if (sourcePath.isEmpty()) {
       throw new IllegalArgumentException(SOURCE_PATH_KEY + " must not be empty");
@@ -638,12 +653,22 @@ public final class CuvsBenchFbinIndexingBridge
     if (forceMergeSegmentCount != 0) {
       throw new IllegalArgumentException(FORCE_MERGE_SEGMENT_COUNT_KEY + " must be 0");
     }
-    if (hardLimit < 1 || hardLimit > MAX_RAM_PER_THREAD_HARD_LIMIT_MB) {
+    if (hardLimit < 1) {
+      throw new IllegalArgumentException(RAM_PER_THREAD_HARD_LIMIT_MB_KEY + " must be positive");
+    }
+    if (hardLimit >= FIRST_UNSUPPORTED_RAM_LIMIT_MB && !allowUnsupported) {
       throw new IllegalArgumentException(
           RAM_PER_THREAD_HARD_LIMIT_MB_KEY
-              + " must be in range [1, "
-              + MAX_RAM_PER_THREAD_HARD_LIMIT_MB
-              + "]");
+              + " values of 2048 MiB or greater require "
+              + ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY
+              + "=true");
+    }
+    if (hardLimit < FIRST_UNSUPPORTED_RAM_LIMIT_MB && allowUnsupported) {
+      throw new IllegalArgumentException(
+          ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT_KEY
+              + "=true requires "
+              + RAM_PER_THREAD_HARD_LIMIT_MB_KEY
+              + " >= 2048");
     }
 
     return new Request(
@@ -658,7 +683,8 @@ public final class CuvsBenchFbinIndexingBridge
         vectorCount,
         premergeSegmentCount,
         forceMergeSegmentCount,
-        hardLimit);
+        hardLimit,
+        allowUnsupported);
   }
 
   private static <T> T requiredValue(
@@ -682,7 +708,10 @@ public final class CuvsBenchFbinIndexingBridge
       long vectorCount,
       int premergeSegmentCount,
       int forceMergeSegmentCount,
-      int ramPerThreadHardLimitMb) {}
+      int ramPerThreadHardLimitMb,
+      boolean allowUnsupportedLuceneRamLimit) {}
+
+  private record WriterConfiguration(IndexWriterConfig config, String ramLimitApplicationMode) {}
 
   private record FbinHeader(long vectorCount, int dimensions, int headerBytes, long fileSize) {}
 
@@ -785,5 +814,6 @@ public final class CuvsBenchFbinIndexingBridge
     }
   }
 
-  private record BuildOutcome(long[] segmentVectorCounts, BuildTimings timings) {}
+  private record BuildOutcome(
+      long[] segmentVectorCounts, BuildTimings timings, String ramLimitApplicationMode) {}
 }

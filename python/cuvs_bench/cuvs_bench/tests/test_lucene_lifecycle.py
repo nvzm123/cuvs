@@ -33,6 +33,9 @@ from cuvs_bench.backends.lucene import (
 from cuvs_bench.orchestrator.config_loaders import IndexConfig
 
 
+_MISSING_RAM_LIMIT_APPLICATION = object()
+
+
 def test_index_prewarm_reads_every_regular_file(tmp_path: Path) -> None:
     (tmp_path / "segments_1").write_bytes(b"segments")
     (tmp_path / "vectors.vec").write_bytes(b"vector-data")
@@ -901,6 +904,61 @@ def test_reuse_rejects_runtime_topology_evidence_that_conflicts_with_request(
     assert runtime.search_calls == []
 
 
+@pytest.mark.parametrize(
+    ("hard_limit", "recorded_mode"),
+    (
+        pytest.param(
+            1945, "unsupported_field_override", id="wrong-supported-mode"
+        ),
+        pytest.param(6144, "public_setter", id="wrong-unsupported-mode"),
+        pytest.param(1945, "unrecognized_mode", id="unknown-mode"),
+        pytest.param(1945, [], id="non-string-mode"),
+        pytest.param(1945, _MISSING_RAM_LIMIT_APPLICATION, id="missing-mode"),
+    ),
+)
+def test_reuse_rejects_incorrect_ram_limit_application_evidence(
+    tmp_path: Path, hard_limit: int, recorded_mode: object
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": hard_limit,
+        }
+    )
+    if hard_limit >= 2048:
+        index.build_param["allow_unsupported_lucene_ram_limit"] = True
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if recorded_mode is _MISSING_RAM_LIMIT_APPLICATION:
+        manifest["runtime_build_topology"].pop(
+            "ram_per_thread_hard_limit_application"
+        )
+    else:
+        manifest["runtime_build_topology"][
+            "ram_per_thread_hard_limit_application"
+        ] = recorded_mode
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    reuse = backend.build(dataset, [index])
+    [search] = backend.search(dataset, [index], k=2)
+
+    assert not reuse.success
+    assert not search.success
+    assert "invalid runtime build topology" in reuse.error_message
+    assert "invalid runtime build topology" in search.error_message
+    assert len(runtime.build_calls) == 1
+    assert runtime.search_calls == []
+
+
 def test_search_rejects_noncanonical_manifest_build_parameters(
     tmp_path: Path,
 ) -> None:
@@ -942,7 +1000,7 @@ def test_search_requests_rebuild_for_the_previous_manifest_schema(
     assert backend.build(dataset, [index]).success
     manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["schema_version"] = 3
+    manifest["schema_version"] = 4
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     result = backend.search(dataset, [index], k=2)[0]

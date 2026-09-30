@@ -31,15 +31,20 @@ paths must be nonempty, and the expected codec name must equal the supplied code
 `Integer`: `expected_dimensions`, `expected_header_bytes`,
 `premerge_segment_count`, `force_merge_segment_count`, and
 `ram_per_thread_hard_limit_mb`. Dimensions and pre-merge segments must be positive, the
-header is 8 or 16 bytes, final force merge must be zero, and the RAM limit is 1 through 2047 MiB.
-`vector_count` must divide evenly into `premerge_segment_count`; those equal
-contiguous partitions are built sequentially using `CREATE` mode for the first and
-`APPEND` mode thereafter. Automatic and final merges are disabled, so a successful build
-has exactly one segment per requested partition.
+header is 8 or 16 bytes, and final force merge must be zero.
+
+`Boolean`: `allow_unsupported_lucene_ram_limit`. A RAM limit of 2048 MiB or
+greater requires `true`; lower values require `false`. The larger limit deliberately
+relies on a verified, non-public Lucene field override and is supported only by this controlled,
+no-merge build path. `vector_count` must divide evenly into
+`premerge_segment_count`; those equal contiguous partitions are built sequentially using
+`CREATE` mode for the first and `APPEND` mode thereafter. Automatic and final merges
+are disabled, so a successful build has exactly one segment per requested partition.
 
 The response contains these `String` entries: `codec_name` (the configured codec
-name), `vector_payload_sha256` (lowercase hexadecimal), and `ingest_merge_policy`.
-It contains these `Integer` entries: `dimensions`, `header_bytes`,
+name), `vector_payload_sha256` (lowercase hexadecimal), `ingest_merge_policy`, and
+`ram_per_thread_hard_limit_application`. It contains these `Integer` entries:
+`dimensions`, `header_bytes`,
 `premerge_segment_count`, `force_merge_segment_count`, `segment_count`,
 `max_buffered_docs`, and `applied_ram_per_thread_hard_limit_mb`. It contains these
 `Long` entries: `source_file_size`, `source_file_vector_count`,
@@ -61,4 +66,4 @@ Invalid requests and data raise `IllegalArgumentException`; I/O failures are wra
 `UncheckedIOException`; codec and Lucene failures propagate as runtime exceptions or
 errors.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuvsBenchFbinIndexingBridge.java:97`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CuvsBenchFbinIndexingBridge.java:102`_

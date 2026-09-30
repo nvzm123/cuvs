@@ -65,26 +65,32 @@ _MAX_DIMENSIONS_BY_ALGORITHM = {
     CAGRA_ALGORITHM: MAX_CAGRA_DIMENSIONS,
 }
 _CUVS_ALGORITHMS = frozenset((ACCELERATED_HNSW_ALGORITHM, CAGRA_ALGORITHM))
-_ACCELERATED_HNSW_TOPOLOGY_KEYS = frozenset(
+_CUVS_TOPOLOGY_REQUIRED_KEYS = frozenset(
     (
         "premerge_segment_count",
         "force_merge_segment_count",
         "ram_per_thread_hard_limit_mb",
     )
 )
+_ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT = "allow_unsupported_lucene_ram_limit"
+_CUVS_TOPOLOGY_KEYS = frozenset(
+    (*_CUVS_TOPOLOGY_REQUIRED_KEYS, _ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT)
+)
 _ACCELERATED_HNSW_BUILD_KEYS = frozenset(
     (
         "m",
         "beam_width",
-        *_ACCELERATED_HNSW_TOPOLOGY_KEYS,
+        *_CUVS_TOPOLOGY_KEYS,
     )
 )
+_CAGRA_BUILD_KEYS = _CUVS_TOPOLOGY_KEYS
 _MIN_HNSW_BUILD_PARAMETER = 1
 _MAX_HNSW_BUILD_PARAMETER = 512
 _DEFAULT_HNSW_M = 32
 _DEFAULT_HNSW_BEAM_WIDTH = 32
 _GRAPH_DEGREE_SOURCE = "requested_hnsw_same_graph_footprint_derivation"
-_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2047
+_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2_147_483_647
+_FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB = 2048
 _BUILD_ROUTE_POLICY_BY_ALGORITHM = {
     CPU_HNSW_ALGORITHM: "cpu_hnsw",
     ACCELERATED_HNSW_ALGORITHM: "gpu_cagra_or_cpu_hnsw_fallback",
@@ -96,7 +102,7 @@ _SEARCH_ROUTE_BY_ALGORITHM = {
     CAGRA_ALGORITHM: "gpu_cagra",
 }
 _MANIFEST_FILE = ".cuvs-bench-lucene.json"
-_MANIFEST_SCHEMA = 4
+_MANIFEST_SCHEMA = 5
 _RUNTIME_BUILD_TOPOLOGY_FIELDS = frozenset(
     (
         "requested_premerge_segment_count",
@@ -105,6 +111,7 @@ _RUNTIME_BUILD_TOPOLOGY_FIELDS = frozenset(
         "premerge_segment_vector_counts",
         "max_buffered_docs",
         "applied_ram_per_thread_hard_limit_mb",
+        "ram_per_thread_hard_limit_application",
         "ingest_merge_policy",
         "final_merge_policy",
     )
@@ -487,7 +494,7 @@ def _bounded_hnsw_build_parameter(value: Any, name: str) -> int:
     return value
 
 
-def _positive_hnsw_build_parameter(value: Any, name: str) -> int:
+def _positive_build_parameter(value: Any, name: str) -> int:
     if type(value) is not int or value < 1:
         raise ValueError(
             f"Lucene {name} must be a positive integer, got {value!r}"
@@ -502,6 +509,15 @@ def _ram_per_thread_hard_limit_mb(value: Any) -> int:
         raise ValueError(
             "Lucene ram_per_thread_hard_limit_mb must be an integer in "
             f"[1, {_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {value!r}"
+        )
+    return value
+
+
+def _allow_unsupported_lucene_ram_limit(value: Any) -> bool:
+    if type(value) is not bool:
+        raise ValueError(
+            "Lucene allow_unsupported_lucene_ram_limit must be a boolean, "
+            f"got {value!r}"
         )
     return value
 
@@ -529,6 +545,8 @@ def _build_parameters_for(
     allowed = {"codec"}
     if algorithm == ACCELERATED_HNSW_ALGORITHM:
         allowed.update(_ACCELERATED_HNSW_BUILD_KEYS)
+    elif algorithm == CAGRA_ALGORITHM:
+        allowed.update(_CAGRA_BUILD_KEYS)
     unsupported = set(build_params) - allowed
     if unsupported:
         raise ValueError(
@@ -559,46 +577,69 @@ def _build_parameters_for(
                 ),
             }
         )
-        configured_topology = (
-            set(build_params) & _ACCELERATED_HNSW_TOPOLOGY_KEYS
+    configured_topology = set(build_params) & _CUVS_TOPOLOGY_KEYS
+    if configured_topology:
+        missing_topology = sorted(
+            _CUVS_TOPOLOGY_REQUIRED_KEYS - set(build_params)
         )
-        if configured_topology:
-            missing_topology = [
-                name
-                for name in sorted(_ACCELERATED_HNSW_TOPOLOGY_KEYS)
-                if name not in configured_topology
-            ]
-            if missing_topology:
-                raise ValueError(
-                    "Configured accelerated-HNSW segment topology requires "
-                    + ", ".join(sorted(_ACCELERATED_HNSW_TOPOLOGY_KEYS))
-                    + "; missing: "
-                    + ", ".join(missing_topology)
-                )
-            force_merge_segment_count = _force_merge_segment_count(
-                build_params["force_merge_segment_count"]
+        if missing_topology:
+            raise ValueError(
+                "Configured cuVS-backed segment topology requires "
+                + ", ".join(sorted(_CUVS_TOPOLOGY_REQUIRED_KEYS))
+                + "; missing: "
+                + ", ".join(missing_topology)
             )
-            ram_per_thread_hard_limit_mb = _ram_per_thread_hard_limit_mb(
-                build_params["ram_per_thread_hard_limit_mb"]
+        force_merge_segment_count = _force_merge_segment_count(
+            build_params["force_merge_segment_count"]
+        )
+        ram_per_thread_hard_limit_mb = _ram_per_thread_hard_limit_mb(
+            build_params["ram_per_thread_hard_limit_mb"]
+        )
+        premerge_segment_count = _positive_build_parameter(
+            build_params["premerge_segment_count"],
+            "premerge_segment_count",
+        )
+        allow_unsupported = _allow_unsupported_lucene_ram_limit(
+            build_params.get(_ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT, False)
+        )
+        uses_unsupported_limit = (
+            ram_per_thread_hard_limit_mb
+            >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB
+        )
+        if uses_unsupported_limit and not allow_unsupported:
+            raise ValueError(
+                "Lucene ram_per_thread_hard_limit_mb values of 2048 MiB or "
+                "greater require allow_unsupported_lucene_ram_limit=true"
             )
-            premerge_segment_count = _positive_hnsw_build_parameter(
-                build_params["premerge_segment_count"],
-                "premerge_segment_count",
+        if allow_unsupported and not uses_unsupported_limit:
+            raise ValueError(
+                "Lucene allow_unsupported_lucene_ram_limit=true requires "
+                "ram_per_thread_hard_limit_mb >= 2048"
             )
-            if premerge_segment_count < force_merge_segment_count:
-                raise ValueError(
-                    "Lucene premerge_segment_count must be greater than or "
-                    "equal to force_merge_segment_count"
-                )
-            normalized["premerge_segment_count"] = premerge_segment_count
-            normalized.update(
-                {
-                    "force_merge_segment_count": force_merge_segment_count,
-                    "ram_per_thread_hard_limit_mb": (
-                        ram_per_thread_hard_limit_mb
-                    ),
-                }
+        if uses_unsupported_limit and force_merge_segment_count != 0:
+            raise ValueError(
+                "Lucene force_merge_segment_count must be 0 when using an "
+                "unsupported per-thread RAM hard limit"
             )
+        if algorithm == CAGRA_ALGORITHM and force_merge_segment_count != 0:
+            raise ValueError(
+                "lucene_cuvs_cagra currently requires "
+                "force_merge_segment_count=0"
+            )
+        if premerge_segment_count < force_merge_segment_count:
+            raise ValueError(
+                "Lucene premerge_segment_count must be greater than or "
+                "equal to force_merge_segment_count"
+            )
+        normalized.update(
+            {
+                "premerge_segment_count": premerge_segment_count,
+                "force_merge_segment_count": force_merge_segment_count,
+                "ram_per_thread_hard_limit_mb": (ram_per_thread_hard_limit_mb),
+            }
+        )
+        if allow_unsupported:
+            normalized[_ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT] = True
     return normalized
 
 
@@ -610,17 +651,19 @@ def _build_parameter_metadata(
     algorithm: str, build_params: Mapping[str, Any]
 ) -> dict[str, Any]:
     parameters = _build_parameters_for(algorithm, build_params)
-    if "m" not in parameters:
-        return {}
-    m = int(parameters["m"])
-    metadata = {
-        "hnsw_m": m,
-        "hnsw_beam_width": int(parameters["beam_width"]),
-        "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
-        "graph_degree_source": _GRAPH_DEGREE_SOURCE,
-        "graph_degree": 2 * m,
-        "intermediate_graph_degree": 3 * m,
-    }
+    metadata: dict[str, Any] = {}
+    if "m" in parameters:
+        m = int(parameters["m"])
+        metadata.update(
+            {
+                "hnsw_m": m,
+                "hnsw_beam_width": int(parameters["beam_width"]),
+                "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
+                "graph_degree_source": _GRAPH_DEGREE_SOURCE,
+                "graph_degree": 2 * m,
+                "intermediate_graph_degree": 3 * m,
+            }
+        )
     if "premerge_segment_count" in parameters:
         metadata["requested_premerge_segment_count"] = parameters[
             "premerge_segment_count"
@@ -633,6 +676,9 @@ def _build_parameter_metadata(
                 "ram_per_thread_hard_limit_mb": parameters[
                     "ram_per_thread_hard_limit_mb"
                 ],
+                "allow_unsupported_lucene_ram_limit": parameters.get(
+                    _ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT, False
+                ),
             }
         )
     return metadata
@@ -705,7 +751,7 @@ def _fbin_bridge_build_input(
 ) -> _FbinBridgeBuildInput | None:
     """Return an immutable FBIN request only for the narrow bridge route."""
     if (
-        algorithm != ACCELERATED_HNSW_ALGORITHM
+        algorithm not in _CUVS_ALGORITHMS
         or dataset.training_vectors_materialized
         or not dataset.base_file
         or "premerge_segment_count" not in build_parameters
@@ -1017,6 +1063,12 @@ def _validate_manifest_runtime_topology(
         topology["final_merge_policy"], str
     ):
         invalid("final_merge_policy must be null or a string")
+    application_mode = topology["ram_per_thread_hard_limit_application"]
+    if not isinstance(application_mode, str) or application_mode not in {
+        "public_setter",
+        "unsupported_field_override",
+    }:
+        invalid("unexpected RAM hard-limit application mode")
 
     vector_count = int(payload["dataset"]["vector_count"])
     force_merge = int(build_parameters["force_merge_segment_count"])
@@ -1030,6 +1082,15 @@ def _validate_manifest_runtime_topology(
         != build_parameters["ram_per_thread_hard_limit_mb"]
     ):
         invalid("applied RAM hard limit does not match the request")
+    requested_hard_limit = build_parameters["ram_per_thread_hard_limit_mb"]
+    expected_application_mode = (
+        "unsupported_field_override"
+        if requested_hard_limit
+        >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB
+        else "public_setter"
+    )
+    if application_mode != expected_application_mode:
+        invalid("RAM hard-limit application mode does not match the request")
     if topology["ingest_merge_policy"] != "NoMergePolicy":
         invalid("unexpected ingest merge policy")
     chunk_size = vector_count // requested_count
@@ -1190,7 +1251,7 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
     if ingest_route == JAVA_FBIN_INGEST_ROUTE:
         source = payload["dataset"].get("source")
         if (
-            payload["algorithm"] != ACCELERATED_HNSW_ALGORITHM
+            payload["algorithm"] not in _CUVS_ALGORITHMS
             or "premerge_segment_count" not in build_parameters
             or build_parameters.get("force_merge_segment_count") != 0
             or not isinstance(source, Mapping)
