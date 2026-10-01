@@ -23,6 +23,7 @@ from cuvs_bench.backends._lucene_runtime import (
     QueryTiming,
     RuntimeBuildResult,
     RuntimeBuildTiming,
+    RuntimeBuildTopology,
     RuntimeSearchResult,
     RuntimeSearchTiming,
     SearchHit,
@@ -94,7 +95,7 @@ class RecordingIndexVerifier:
         return LuceneIndexVerification(
             codec=expected_codec,
             segment_count=self.runtime.segment_count,
-            field_count=1,
+            field_count=self.runtime.segment_count,
             vector_count=expected_vector_count,
             dimensions=expected_dimensions,
         )
@@ -103,7 +104,8 @@ class RecordingIndexVerifier:
 class RecordingCagraVerifier:
     """Return deterministic persisted-path evidence and retain each request."""
 
-    def __init__(self) -> None:
+    def __init__(self, runtime: "RecordingRuntime") -> None:
+        self.runtime = runtime
         self.calls: list[tuple[Path, int, int]] = []
 
     def verify(
@@ -117,8 +119,8 @@ class RecordingCagraVerifier:
             (index_path, expected_vector_count, expected_dimensions)
         )
         return CagraVerification(
-            segment_count=1,
-            field_count=1,
+            segment_count=self.runtime.segment_count,
+            field_count=self.runtime.segment_count,
             vector_count=expected_vector_count,
             dimensions=expected_dimensions,
         )
@@ -132,8 +134,10 @@ class RecordingRuntime:
     def __init__(self) -> None:
         self.artifact_provenance: dict[str, str] = {}
         self.index_verifier = RecordingIndexVerifier(self)
-        self.cagra_verifier = RecordingCagraVerifier()
-        self.build_calls: list[tuple[Path, np.ndarray, str]] = []
+        self.cagra_verifier = RecordingCagraVerifier(self)
+        self.build_calls: list[
+            tuple[Path, np.ndarray, str, dict[str, Any]]
+        ] = []
         self.search_calls: list[dict[str, Any]] = []
         self.build_error: Exception | None = None
         self.search_error: Exception | None = None
@@ -148,24 +152,73 @@ class RecordingRuntime:
         self.artifact_verification_count += 1
 
     def build_index(
-        self, index_path: Path, vectors: np.ndarray, codec_name: str
+        self,
+        index_path: Path,
+        vectors: np.ndarray,
+        codec_name: str,
+        build_parameters: Mapping[str, Any] | None = None,
     ) -> RuntimeBuildResult:
-        self.build_calls.append((index_path, vectors.copy(), codec_name))
+        self.build_calls.append(
+            (
+                index_path,
+                vectors.copy(),
+                codec_name,
+                dict(build_parameters or {}),
+            )
+        )
         if self.build_error is not None:
             raise self.build_error
         self.document_count, self.dimensions = vectors.shape
+        self.segment_count = 1
         (index_path / "segments.fake").write_text(codec_name, encoding="utf-8")
+        parameters = dict(build_parameters or {})
+        topology = None
+        if "premerge_segment_count" in parameters:
+            premerge = int(parameters["premerge_segment_count"])
+            force_merge = int(parameters["force_merge_segment_count"])
+            chunk_size = int(vectors.shape[0]) // premerge
+            topology = RuntimeBuildTopology(
+                requested_premerge_segment_count=premerge,
+                observed_premerge_segment_count=premerge,
+                requested_force_merge_segment_count=force_merge,
+                premerge_segment_vector_counts=(chunk_size,) * premerge,
+                max_buffered_docs=chunk_size + 1,
+                applied_ram_per_thread_hard_limit_mb=int(
+                    parameters["ram_per_thread_hard_limit_mb"]
+                ),
+                ram_per_thread_hard_limit_application=(
+                    "unsupported_field_override"
+                    if parameters["ram_per_thread_hard_limit_mb"] >= 2048
+                    else "public_setter"
+                ),
+                ingest_merge_policy="NoMergePolicy",
+                final_merge_policy=(
+                    "TieredMergePolicy"
+                    if force_merge == 1 and premerge > 1
+                    else None
+                ),
+            )
+            self.segment_count = 1 if force_merge == 1 else premerge
+        force_merge_ns = (
+            350_000
+            if topology is not None
+            and topology.requested_force_merge_segment_count == 1
+            and topology.requested_premerge_segment_count > 1
+            else 0
+        )
         return RuntimeBuildResult(
-            segment_count=1,
+            segment_count=self.segment_count,
             timing=RuntimeBuildTiming(
                 directory_open_ns=100_000,
                 writer_setup_ns=200_000,
                 document_ingest_ns=300_000,
+                force_merge_ns=force_merge_ns,
                 writer_commit_close_ns=400_000,
                 post_build_reader_ns=500_000,
                 directory_close_ns=600_000,
-                runtime_build_wall_ns=2_100_000,
+                runtime_build_wall_ns=2_100_000 + force_merge_ns,
             ),
+            topology=topology,
         )
 
     def search_index(
