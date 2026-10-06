@@ -526,33 +526,23 @@ public class CuVS2510GPUVectorsReader extends KnnVectorsReader {
           // Setting itopK as topK because in any case iTopK should be ATLEAST equal to topK
           searchParams = new CagraSearchParams.Builder().withItopkSize(topK).build();
         }
-        CagraIndex cagraIndex = cuvsIndex.getCagraIndex();
-        assert cagraIndex != null;
-        CagraQuery query = null;
-
         CuVSMatrix.Builder<?> builder =
             CuVSMatrix.deviceBuilder(
                 getCuVSResourcesInstance(), 1, target.length, CuVSMatrix.DataType.FLOAT);
         builder.addVector(target);
-        CuVSMatrix queryVector = builder.build();
-
-        if (acceptDocs != null) {
-          query =
+        try (CuVSMatrix queryVector = builder.build()) {
+          CagraQuery.Builder queryBuilder =
               new CagraQuery.Builder(getCuVSResourcesInstance())
                   .withTopK(topK)
                   .withSearchParams(searchParams)
-                  .withQueryVectors(queryVector)
-                  .withPrefilter(mask[0], maskLength)
-                  .build();
-        } else {
-          query =
-              new CagraQuery.Builder(getCuVSResourcesInstance())
-                  .withTopK(topK)
-                  .withSearchParams(searchParams)
-                  .withQueryVectors(queryVector)
-                  .build();
+                  .withQueryVectors(queryVector);
+          if (acceptDocs != null) {
+            queryBuilder.withPrefilter(mask[0], maskLength);
+          }
+          CagraIndex cagraIndex = cuvsIndex.getCagraIndex();
+          assert cagraIndex != null;
+          searchResult = cagraIndex.search(queryBuilder.build()).getResults();
         }
-        searchResult = cagraIndex.search(query).getResults();
       } else {
         BruteForceIndex bruteforceIndex = cuvsIndex.getBruteforceIndex();
         assert bruteforceIndex != null;
