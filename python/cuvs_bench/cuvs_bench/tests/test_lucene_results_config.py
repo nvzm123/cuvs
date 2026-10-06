@@ -253,6 +253,80 @@ def test_config_loader_maps_each_algorithm_to_its_codec_and_requirement(
     assert by_algorithm[CAGRA_ALGORITHM].backend_config["group"] == "test"
 
 
+@pytest.mark.parametrize(
+    ("groups", "algorithm_groups", "expected_groups"),
+    (
+        pytest.param("base", None, ["base"], id="common-only"),
+        pytest.param(
+            "base",
+            f"{CPU_HNSW_ALGORITHM}.test",
+            ["base", "test"],
+            id="add-algorithm-group",
+        ),
+        pytest.param(
+            "test",
+            f"{CPU_HNSW_ALGORITHM}.base",
+            ["test", "base"],
+            id="preserve-order",
+        ),
+        pytest.param(
+            "base,test",
+            (
+                f"{CPU_HNSW_ALGORITHM}.test,"
+                f"{CPU_HNSW_ALGORITHM}.base"
+            ),
+            ["base", "test"],
+            id="deduplicate",
+        ),
+    ),
+)
+def test_config_loader_adds_algorithm_groups_to_common_groups(
+    tmp_path: Path,
+    groups: str,
+    algorithm_groups: str | None,
+    expected_groups: list[str],
+) -> None:
+    dataset_configuration = tmp_path / "datasets.yaml"
+    dataset_configuration.write_text(
+        "- name: tiny-l2\n  distance: euclidean\n  dims: 2\n",
+        encoding="utf-8",
+    )
+
+    _dataset_config, configurations = LuceneConfigLoader().load(
+        dataset="tiny-l2",
+        dataset_path=str(tmp_path),
+        dataset_configuration=str(dataset_configuration),
+        algorithms=CPU_HNSW_ALGORITHM,
+        groups=groups,
+        algo_groups=algorithm_groups,
+    )
+
+    assert [
+        configuration.backend_config["group"]
+        for configuration in configurations
+    ] == expected_groups
+
+
+def test_config_loader_rejects_unknown_algorithm_group(
+    tmp_path: Path,
+) -> None:
+    dataset_configuration = tmp_path / "datasets.yaml"
+    dataset_configuration.write_text(
+        "- name: tiny-l2\n  distance: euclidean\n  dims: 2\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="No Lucene group 'missing'"):
+        LuceneConfigLoader().load(
+            dataset="tiny-l2",
+            dataset_path=str(tmp_path),
+            dataset_configuration=str(dataset_configuration),
+            algorithms=CPU_HNSW_ALGORITHM,
+            groups="base",
+            algo_groups=f"{CPU_HNSW_ALGORITHM}.missing",
+        )
+
+
 def test_config_loader_rejects_dataset_names_that_can_escape_the_root(
     tmp_path: Path,
 ) -> None:

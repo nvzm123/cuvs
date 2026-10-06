@@ -778,7 +778,11 @@ class LuceneConfigLoader(ConfigLoader):
             config = configs.get(algorithm)
             if config is None:
                 raise ValueError(f"No configuration found for {algorithm!r}")
-            selected_groups = requested_pairs.get(algorithm, groups)
+            selected_groups = list(
+                dict.fromkeys(
+                    [*groups, *requested_pairs.get(algorithm, [])]
+                )
+            )
             for group in selected_groups:
                 try:
                     group_config = config["groups"][group]
