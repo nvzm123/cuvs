@@ -10,7 +10,6 @@ from typing import Any, Optional
 
 import click
 import yaml
-from click.core import ParameterSource
 
 from ..backends.registry import get_backend_class
 from ..orchestrator import BenchmarkOrchestrator
@@ -41,10 +40,10 @@ def _default_algorithm() -> str:
     """Choose the displayed prompt default from the selected backend."""
     context = click.get_current_context(silent=True)
     backend = _DEFAULT_BACKEND
-    if context is not None:
-        backend = context.params.get("backend", _DEFAULT_BACKEND)
-        if backend_config := context.params.get("backend_config"):
-            backend = _read_backend_config(backend_config)["backend"]
+    if context is not None and (
+        backend_config := context.params.get("backend_config")
+    ):
+        backend = _read_backend_config(backend_config)["backend"]
     backend_class = get_backend_class(str(backend))
     if backend_class.default_algorithm is not None:
         return backend_class.default_algorithm
@@ -212,19 +211,12 @@ def _default_algorithm() -> str:
     help="Number of Optuna trials for tune mode (default: 100).",
 )
 @click.option(
-    "--backend",
-    default=_DEFAULT_BACKEND,
-    show_default=True,
-    help="Backend type to run.",
-)
-@click.option(
     "--backend-config",
     default=None,
     help="Path to YAML configuration file for non-C++ backends. "
     "The file must contain a 'backend' field specifying the backend "
     "type (e.g., 'opensearch', 'elastic'). All other fields are "
-    "passed as backend-specific parameters. If --backend is also provided, "
-    "the values must match.",
+    "passed as backend-specific parameters.",
 )
 def main(
     subset_size: Optional[int],
@@ -248,7 +240,6 @@ def main(
     mode: str,
     constraints: Optional[str],
     n_trials: Optional[int],
-    backend: str,
     backend_config: Optional[str],
 ) -> None:
     """
@@ -296,13 +287,11 @@ def main(
         Tune mode constraints as JSON string.
     n_trials : Optional[int]
         Number of Optuna trials for tune mode.
-    backend : str
-        Backend type to run. Defaults to the C++ Google Benchmark backend.
     backend_config : Optional[str]
-        Path to YAML config for non-C++ backends. The YAML file must contain
-        a 'backend' field (e.g., 'opensearch', 'elastic') and any
-        backend-specific connection parameters (host, port, etc.). If
-        ``--backend`` is also provided, the values must match.
+        Path to YAML config for non-C++ backends. If not provided, defaults
+        to the C++ Google Benchmark backend. The YAML file must contain a
+        'backend' field (e.g., 'opensearch', 'elastic') and any
+        backend-specific connection parameters (host, port, etc.).
 
     """
     if data_export:
@@ -319,23 +308,11 @@ def main(
     if not build and not search:
         build = search = True
 
-    context = click.get_current_context()
-    backend_source = context.get_parameter_source("backend")
-
-    backend_type = backend
+    backend_type = _DEFAULT_BACKEND
     backend_kwargs = {}
     if backend_config:
         cfg = _read_backend_config(backend_config)
-        configured_backend = cfg.pop("backend")
-        if (
-            backend_source is not ParameterSource.DEFAULT
-            and configured_backend != backend
-        ):
-            raise ValueError(
-                "--backend and the 'backend' field in --backend-config "
-                "must match"
-            )
-        backend_type = configured_backend
+        backend_type = cfg.pop("backend")
         backend_kwargs = cfg
 
     orchestrator = BenchmarkOrchestrator(backend_type=backend_type)

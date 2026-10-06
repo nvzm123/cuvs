@@ -41,7 +41,7 @@ requirements:
     - setuptools>=77.0.0
   run:
     - ${{ pin_compatible("cuda-version", upper_bound="x", lower_bound="x") }}
-    - click>=8.0
+    - click
     - cupy >=14.0.1,!=14.1.0
     - cuvs =${{ version }}
     - h5py ${{ h5py_version }}

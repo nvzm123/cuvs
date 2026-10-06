@@ -33,6 +33,15 @@ class _PluginBackend:
         return "; ".join(result.error_message for result in failures)
 
 
+def _write_backend_config(
+    tmp_path: Path, backend: str, *settings: str
+) -> Path:
+    backend_config = tmp_path / "backend.yaml"
+    lines = [f"backend: {backend}", *settings]
+    backend_config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return backend_config
+
+
 def _invoke_run(
     tmp_path: Path,
     *extra_args: str,
@@ -105,10 +114,12 @@ def test_cli_keeps_the_cpp_backend_and_algorithm_defaults(tmp_path: Path):
 
 
 def test_registered_backend_controls_its_prompt_default(tmp_path: Path):
+    backend_config = _write_backend_config(tmp_path, "third_party")
+
     result, captured, _write_results = _invoke_run(
         tmp_path,
-        "--backend",
-        "third_party",
+        "--backend-config",
+        str(backend_config),
         input_text="\n",
     )
 
@@ -121,10 +132,12 @@ def test_backend_without_a_default_keeps_the_cli_default(tmp_path: Path):
     class BackendWithoutDefault(_PluginBackend):
         default_algorithm = None
 
+    backend_config = _write_backend_config(tmp_path, "third_party")
+
     result, captured, _write_results = _invoke_run(
         tmp_path,
-        "--backend",
-        "third_party",
+        "--backend-config",
+        str(backend_config),
         input_text="\n",
         plugin_backend=BackendWithoutDefault,
     )
@@ -134,10 +147,12 @@ def test_backend_without_a_default_keeps_the_cli_default(tmp_path: Path):
 
 
 def test_cli_preserves_an_explicit_algorithm(tmp_path: Path):
+    backend_config = _write_backend_config(tmp_path, "third_party")
+
     result, captured, _write_results = _invoke_run(
         tmp_path,
-        "--backend",
-        "third_party",
+        "--backend-config",
+        str(backend_config),
         "--algorithms",
         "user_selected_algorithm",
     )
@@ -147,9 +162,8 @@ def test_cli_preserves_an_explicit_algorithm(tmp_path: Path):
 
 
 def test_backend_config_keeps_selecting_the_backend(tmp_path: Path):
-    backend_config = tmp_path / "backend.yaml"
-    backend_config.write_text(
-        "backend: opensearch\nhost: search.example\n", encoding="utf-8"
+    backend_config = _write_backend_config(
+        tmp_path, "opensearch", "host: search.example"
     )
 
     result, captured, _write_results = _invoke_run(
@@ -165,25 +179,6 @@ def test_backend_config_keeps_selecting_the_backend(tmp_path: Path):
     assert captured["run_kwargs"]["host"] == "search.example"
 
 
-def test_explicit_backend_must_match_backend_config(tmp_path: Path):
-    backend_config = tmp_path / "backend.yaml"
-    backend_config.write_text("backend: cpp_gbench\n", encoding="utf-8")
-
-    result, captured, _write_results = _invoke_run(
-        tmp_path,
-        "--backend",
-        "third_party",
-        "--backend-config",
-        str(backend_config),
-        "--algorithms",
-        "plugin_algorithm",
-    )
-
-    assert result.exit_code != 0
-    assert "must match" in str(result.exception)
-    assert captured == {}
-
-
 def test_cli_invokes_export_before_reporting_backend_failure(tmp_path: Path):
     failed = BuildResult(
         index_path="",
@@ -195,10 +190,12 @@ def test_cli_invokes_export_before_reporting_backend_failure(tmp_path: Path):
         error_message="backend operation failed",
     )
 
+    backend_config = _write_backend_config(tmp_path, "third_party")
+
     result, _captured, write_results = _invoke_run(
         tmp_path,
-        "--backend",
-        "third_party",
+        "--backend-config",
+        str(backend_config),
         "--algorithms",
         "plugin_algorithm",
         run_results=[failed],

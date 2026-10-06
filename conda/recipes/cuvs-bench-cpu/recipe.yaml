@@ -89,7 +89,7 @@ requirements:
         - libboost-devel=1.87
         - mkl-devel=2023
   run:
-    - click>=8.0
+    - click
     - glog ${{ glog_version }}
     - h5py ${{ h5py_version }}
     - matplotlib-base>=3.9
