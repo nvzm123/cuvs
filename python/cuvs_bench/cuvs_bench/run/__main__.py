@@ -21,6 +21,7 @@ from .data_export import (
 
 
 _DEFAULT_BACKEND = "cpp_gbench"
+_BACKEND_CONFIG_CACHE_KEY = "cuvs_bench.backend_config"
 
 
 def _read_backend_config(path: str) -> dict[str, Any]:
@@ -36,6 +37,16 @@ def _read_backend_config(path: str) -> dict[str, Any]:
     return dict(config)
 
 
+def _backend_config_snapshot(path: str) -> dict[str, Any]:
+    """Return one backend configuration snapshot per CLI invocation."""
+    context = click.get_current_context()
+    cached_config = context.meta.get(_BACKEND_CONFIG_CACHE_KEY)
+    if cached_config is None:
+        cached_config = _read_backend_config(path)
+        context.meta[_BACKEND_CONFIG_CACHE_KEY] = cached_config
+    return dict(cached_config)
+
+
 def _default_algorithm() -> str:
     """Choose the displayed prompt default from the selected backend."""
     context = click.get_current_context(silent=True)
@@ -43,7 +54,7 @@ def _default_algorithm() -> str:
     if context is not None and (
         backend_config := context.params.get("backend_config")
     ):
-        backend = _read_backend_config(backend_config)["backend"]
+        backend = _backend_config_snapshot(backend_config)["backend"]
     backend_class = get_backend_class(str(backend))
     if backend_class.default_algorithm is not None:
         return backend_class.default_algorithm
@@ -311,7 +322,7 @@ def main(
     backend_type = _DEFAULT_BACKEND
     backend_kwargs = {}
     if backend_config:
-        cfg = _read_backend_config(backend_config)
+        cfg = _backend_config_snapshot(backend_config)
         backend_type = cfg.pop("backend")
         backend_kwargs = cfg
 

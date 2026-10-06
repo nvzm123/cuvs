@@ -128,6 +128,33 @@ def test_registered_backend_controls_its_prompt_default(tmp_path: Path):
     assert captured["run_kwargs"]["algorithms"] == "plugin_default"
 
 
+def test_backend_default_and_dispatch_share_one_config_snapshot(
+    tmp_path: Path,
+):
+    backend_config = _write_backend_config(tmp_path, "third_party")
+    changing_snapshots = (
+        {"backend": "third_party"},
+        {"backend": "opensearch"},
+        {"backend": "cpp_gbench"},
+    )
+
+    with patch(
+        "cuvs_bench.run.__main__._read_backend_config",
+        side_effect=changing_snapshots,
+    ) as read_backend_config:
+        result, captured, _write_results = _invoke_run(
+            tmp_path,
+            "--backend-config",
+            str(backend_config),
+            input_text="\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    assert read_backend_config.call_count == 1
+    assert captured["backend_type"] == "third_party"
+    assert captured["run_kwargs"]["algorithms"] == "plugin_default"
+
+
 def test_backend_without_a_default_keeps_the_cli_default(tmp_path: Path):
     class BackendWithoutDefault(_PluginBackend):
         default_algorithm = None
