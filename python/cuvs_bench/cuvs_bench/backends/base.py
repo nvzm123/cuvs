@@ -11,7 +11,7 @@ along with standardized data structures for datasets and results.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Optional, Sequence, TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
@@ -368,6 +368,10 @@ class BenchmarkBackend(ABC):
         - requires_network : bool - Whether backend requires network (default: False)
     """
 
+    # Registration exposes this optional class-level default to the generic
+    # CLI.
+    default_algorithm: Optional[str] = None
+
     def __init__(self, config: Dict[str, Any]):
         """Initialize backend with configuration."""
         self.config = config
@@ -494,6 +498,13 @@ class BenchmarkBackend(ABC):
         Default implementation does nothing. Override if needed.
         """
         pass
+
+    @classmethod
+    def result_failure_message(
+        cls, results: Sequence[BuildResult | SearchResult]
+    ) -> Optional[str]:
+        """Return a fatal result summary when the backend requires one."""
+        return None
 
     def _check_gpu_available(self) -> bool:
         """

@@ -12,17 +12,16 @@ import click
 import yaml
 from click.core import ParameterSource
 
+from ..backends.registry import get_backend_class
+from ..orchestrator import BenchmarkOrchestrator
 from .data_export import (
     convert_json_to_csv_build,
     convert_json_to_csv_search,
     write_results_to_csv,
 )
-from ..orchestrator import BenchmarkOrchestrator
 
 
 _DEFAULT_BACKEND = "cpp_gbench"
-_DEFAULT_ALGORITHM = "cuvs_cagra"
-_LUCENE_DEFAULT_ALGORITHM = "lucene_cuvs_cagra"
 
 
 def _read_backend_config(path: str) -> dict[str, Any]:
@@ -41,16 +40,20 @@ def _read_backend_config(path: str) -> dict[str, Any]:
 def _default_algorithm() -> str:
     """Choose the displayed prompt default from the selected backend."""
     context = click.get_current_context(silent=True)
-    if context is None:
-        return _DEFAULT_ALGORITHM
-    backend = context.params.get("backend", _DEFAULT_BACKEND)
-    if backend_config := context.params.get("backend_config"):
-        backend = _read_backend_config(backend_config)["backend"]
-    return (
-        _LUCENE_DEFAULT_ALGORITHM
-        if backend == "lucene"
-        else _DEFAULT_ALGORITHM
-    )
+    backend = _DEFAULT_BACKEND
+    if context is not None:
+        backend = context.params.get("backend", _DEFAULT_BACKEND)
+        if backend_config := context.params.get("backend_config"):
+            backend = _read_backend_config(backend_config)["backend"]
+    backend_class = get_backend_class(str(backend))
+    if backend_class.default_algorithm is not None:
+        return backend_class.default_algorithm
+    default_backend_class = get_backend_class(_DEFAULT_BACKEND)
+    if default_backend_class.default_algorithm is None:
+        raise RuntimeError(
+            "The default backend must define a default algorithm"
+        )
+    return default_backend_class.default_algorithm
 
 
 @click.command()
@@ -127,8 +130,8 @@ def _default_algorithm() -> str:
     prompt="Enter the comma separated list of named algorithms to run",
     help="Run only comma separated list of named algorithms. If parameters "
     "`groups` and `algo-groups` are both undefined, then group `base` "
-    "is run by default. The prompt defaults to `lucene_cuvs_cagra` for the "
-    "Lucene backend and `cuvs_cagra` otherwise.",
+    "is run by default. A backend may provide its own prompt default; "
+    "otherwise the CLI default is retained.",
 )
 @click.option(
     "--groups",
@@ -212,15 +215,14 @@ def _default_algorithm() -> str:
     "--backend",
     default=_DEFAULT_BACKEND,
     show_default=True,
-    help="Backend type to run. The default preserves the C++ benchmark "
-    "workflow; select 'lucene' to opt in to the Lucene backend.",
+    help="Backend type to run.",
 )
 @click.option(
     "--backend-config",
     default=None,
     help="Path to YAML configuration file for non-C++ backends. "
     "The file must contain a 'backend' field specifying the backend "
-    "type (e.g., 'lucene', 'opensearch', 'elastic'). All other fields are "
+    "type (e.g., 'opensearch', 'elastic'). All other fields are "
     "passed as backend-specific parameters. If --backend is also provided, "
     "the values must match.",
 )
@@ -298,7 +300,7 @@ def main(
         Backend type to run. Defaults to the C++ Google Benchmark backend.
     backend_config : Optional[str]
         Path to YAML config for non-C++ backends. The YAML file must contain
-        a 'backend' field (e.g., 'lucene', 'opensearch', 'elastic') and any
+        a 'backend' field (e.g., 'opensearch', 'elastic') and any
         backend-specific connection parameters (host, port, etc.). If
         ``--backend`` is also provided, the values must match.
 
@@ -371,14 +373,8 @@ def main(
             convert_json_to_csv_search(dataset, dataset_path)
     else:
         write_results_to_csv(results, dataset, dataset_path, count, batch_size)
-        if backend_type == "lucene":
-            failures = [result for result in results if not result.success]
-            if failures:
-                details = "; ".join(
-                    result.error_message or "unknown Lucene backend failure"
-                    for result in failures
-                )
-                raise click.ClickException(details)
+        if failure_message := orchestrator.result_failure_message(results):
+            raise click.ClickException(failure_message)
 
 
 if __name__ == "__main__":

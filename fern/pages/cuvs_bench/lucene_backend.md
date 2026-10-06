@@ -107,7 +107,7 @@ least 3 GB of disk space.
 ```bash
 export PYLUCENE_BUILD_ROOT="$HOME/.local/share/cuvs/pylucene-10.2.0"
 
-python/cuvs_bench/tools/pylucene/build_pylucene_10_2.sh \
+conda/recipes/cuvs-bench/build_pylucene_10_2.sh \
     --python python3 \
     --build-root "$PYLUCENE_BUILD_ROOT"
 

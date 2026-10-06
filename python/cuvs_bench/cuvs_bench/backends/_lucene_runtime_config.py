@@ -20,6 +20,8 @@ _MAVEN_REPOSITORY_ENV = "MAVEN_LOCAL_REPO"
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 _VERSION_FILE = _PACKAGE_ROOT / "VERSION"
+_CUVS_MAVEN_DIRECTORY = Path("com/nvidia/cuvs")
+_CUVS_LUCENE_MAVEN_DIRECTORY = _CUVS_MAVEN_DIRECTORY / "lucene"
 
 _CUDA_TARGET_BY_MACHINE = {
     "aarch64": "sbsa-linux",
@@ -57,9 +59,7 @@ def _artifact_candidates(kind: str) -> tuple[Path, ...]:
             / "target"
             / f"cuvs-java-{version}.jar",
             repository
-            / "com"
-            / "nvidia"
-            / "cuvs"
+            / _CUVS_MAVEN_DIRECTORY
             / "cuvs-java"
             / version
             / f"cuvs-java-{version}.jar",
@@ -72,10 +72,7 @@ def _artifact_candidates(kind: str) -> tuple[Path, ...]:
             / "target"
             / f"cuvs-lucene-{version}.jar",
             repository
-            / "com"
-            / "nvidia"
-            / "cuvs"
-            / "lucene"
+            / _CUVS_LUCENE_MAVEN_DIRECTORY
             / "cuvs-lucene"
             / version
             / f"cuvs-lucene-{version}.jar",

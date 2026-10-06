@@ -7,19 +7,49 @@ import os
 import subprocess
 import tomllib
 from importlib import resources
+from importlib.metadata import entry_points
 from pathlib import Path
 from unittest.mock import patch
 
 import yaml
 from click.testing import CliRunner
 
+from cuvs_bench.backends.base import BuildResult
+from cuvs_bench.backends.lucene import (
+    CAGRA_ALGORITHM,
+    LuceneBackend,
+    register as register_lucene,
+)
+from cuvs_bench.orchestrator import BenchmarkOrchestrator
 from cuvs_bench.run.__main__ import main as run_main
 
 
 _PROJECT_ROOT = Path(__file__).parents[2]
+_REPOSITORY_ROOT = Path(__file__).parents[4]
+_LUCENE_ENTRY_POINT = "cuvs_bench.backends.lucene:register"
+_PYLUCENE_RECIPE_DIRECTORY = (
+    _REPOSITORY_ROOT / "conda" / "recipes" / "cuvs-bench"
+)
+_PYLUCENE_BUILD_HELPER = (
+    _PYLUCENE_RECIPE_DIRECTORY / "build_pylucene_10_2.sh"
+)
+_PYLUCENE_PATCH = _PYLUCENE_RECIPE_DIRECTORY / "pylucene-10.2.0.patch"
+
+
+def _verify_installed_lucene_plugin() -> None:
+    """Exercise the installed entry points without importing PyLucene."""
+    for group in ("cuvs_bench.backends", "cuvs_bench.config_loaders"):
+        assert any(
+            item.name == "lucene" and item.value == _LUCENE_ENTRY_POINT
+            for item in entry_points(group=group)
+        ), f"installed cuvs-bench is missing the {group!r} Lucene entry point"
+
+    orchestrator = BenchmarkOrchestrator("lucene")
+    assert orchestrator.backend_type == "lucene"
 
 
 def _invoke_run(tmp_path, *extra_args, input_text=""):
+    register_lucene()
     captured = {}
 
     class RecordingOrchestrator:
@@ -70,6 +100,51 @@ def test_lucene_backend_selects_cagra_default(tmp_path):
     assert result.exit_code == 0, result.output
     assert captured["backend_type"] == "lucene"
     assert captured["run_kwargs"]["algorithms"] == "lucene_cuvs_cagra"
+
+
+def test_registered_backend_class_controls_the_prompt_default(tmp_path):
+    class PluginBackend:
+        default_algorithm = "plugin_default"
+
+    with patch(
+        "cuvs_bench.run.__main__.get_backend_class",
+        return_value=PluginBackend,
+    ):
+        result, captured = _invoke_run(
+            tmp_path,
+            "--backend",
+            "third_party",
+            input_text="\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    assert captured["backend_type"] == "third_party"
+    assert captured["run_kwargs"]["algorithms"] == "plugin_default"
+
+
+def test_plugin_without_a_default_keeps_the_cli_default(tmp_path):
+    class PluginBackend:
+        default_algorithm = None
+
+    class DefaultBackend:
+        default_algorithm = "cuvs_cagra"
+
+    def backend_class(name):
+        return PluginBackend if name == "third_party" else DefaultBackend
+
+    with patch(
+        "cuvs_bench.run.__main__.get_backend_class",
+        side_effect=backend_class,
+    ):
+        result, captured = _invoke_run(
+            tmp_path,
+            "--backend",
+            "third_party",
+            input_text="\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    assert captured["run_kwargs"]["algorithms"] == "cuvs_cagra"
 
 
 def test_lucene_backend_preserves_explicit_cpu_algorithm(tmp_path):
@@ -167,9 +242,83 @@ def test_lucene_plugin_uses_lazy_entry_points():
     pyproject = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text())
     entry_points = pyproject["project"]["entry-points"]
 
-    target = "cuvs_bench.backends.lucene:register"
-    assert entry_points["cuvs_bench.backends"]["lucene"] == target
-    assert entry_points["cuvs_bench.config_loaders"]["lucene"] == target
+    assert (
+        entry_points["cuvs_bench.backends"]["lucene"]
+        == _LUCENE_ENTRY_POINT
+    )
+    assert (
+        entry_points["cuvs_bench.config_loaders"]["lucene"]
+        == _LUCENE_ENTRY_POINT
+    )
+
+
+def test_lucene_backend_makes_failed_results_fatal() -> None:
+    successful = BuildResult(
+        index_path="",
+        build_time_seconds=0.0,
+        index_size_bytes=0,
+        algorithm=CAGRA_ALGORITHM,
+        build_params={},
+    )
+    failed = BuildResult(
+        index_path="",
+        build_time_seconds=0.0,
+        index_size_bytes=0,
+        algorithm=CAGRA_ALGORITHM,
+        build_params={},
+        success=False,
+        error_message="GPU path was unavailable",
+    )
+
+    assert LuceneBackend.result_failure_message([successful]) is None
+    assert LuceneBackend.result_failure_message([successful, failed]) == (
+        "GPU path was unavailable"
+    )
+
+
+def test_lucene_cli_fails_after_recording_failed_results(tmp_path: Path):
+    failed = BuildResult(
+        index_path="",
+        build_time_seconds=0.0,
+        index_size_bytes=0,
+        algorithm=CAGRA_ALGORITHM,
+        build_params={},
+        success=False,
+        error_message="GPU path was unavailable",
+    )
+    arguments = [
+        "--dataset",
+        "test-data",
+        "--dataset-path",
+        str(tmp_path),
+        "--batch-size",
+        "10",
+        "-k",
+        "10",
+        "--groups",
+        "test",
+        "-m",
+        "latency",
+        "--backend",
+        "lucene",
+        "--algorithms",
+        CAGRA_ALGORITHM,
+    ]
+    register_lucene()
+
+    with (
+        patch.object(
+            BenchmarkOrchestrator,
+            "run_benchmark",
+            return_value=[failed],
+        ),
+        patch("cuvs_bench.run.__main__.write_results_to_csv") as write_results,
+    ):
+        result = CliRunner().invoke(run_main, arguments)
+
+    assert result.exit_code == 1
+    assert "GPU path was unavailable" in result.output
+    write_results.assert_called_once()
 
 
 def test_lucene_algorithm_configs_are_packaged_resources():
@@ -194,19 +343,15 @@ def test_lucene_algorithm_configs_are_packaged_resources():
 
 
 def test_pylucene_source_builder_is_self_describing() -> None:
-    tool_directory = _PROJECT_ROOT / "tools" / "pylucene"
-    helper = tool_directory / "build_pylucene_10_2.sh"
-    compatibility_patch = tool_directory / "pylucene-10.2.0.patch"
-
     completed = subprocess.run(
-        ["bash", str(helper), "--help"],
+        ["bash", str(_PYLUCENE_BUILD_HELPER), "--help"],
         check=False,
         capture_output=True,
         text=True,
     )
 
-    assert os.access(helper, os.X_OK)
-    assert compatibility_patch.is_file()
+    assert os.access(_PYLUCENE_BUILD_HELPER, os.X_OK)
+    assert _PYLUCENE_PATCH.is_file()
     assert completed.returncode == 0, completed.stderr
     assert "Build an isolated PyLucene 10.2.0 environment" in completed.stdout
 
@@ -214,14 +359,12 @@ def test_pylucene_source_builder_is_self_describing() -> None:
 def test_pylucene_source_builder_rejects_unsafe_build_roots(
     tmp_path: Path,
 ) -> None:
-    helper = _PROJECT_ROOT / "tools" / "pylucene" / "build_pylucene_10_2.sh"
-
     for unsafe_character in (" ", ":", ";", "$", "`", "&", "#", "|"):
         build_root = tmp_path / f"unsafe{unsafe_character}root"
         completed = subprocess.run(
             [
                 "bash",
-                str(helper),
+                str(_PYLUCENE_BUILD_HELPER),
                 "--build-root",
                 str(build_root),
                 "--prepare-only",
@@ -239,7 +382,6 @@ def test_pylucene_source_builder_rejects_unsafe_build_roots(
 def test_pylucene_source_builder_rejects_unsafe_resolved_build_root(
     tmp_path: Path,
 ) -> None:
-    helper = _PROJECT_ROOT / "tools" / "pylucene" / "build_pylucene_10_2.sh"
     unsafe_target = tmp_path / "unsafe;target"
     unsafe_target.mkdir()
     build_root = tmp_path / "safe-link"
@@ -248,7 +390,7 @@ def test_pylucene_source_builder_rejects_unsafe_resolved_build_root(
     completed = subprocess.run(
         [
             "bash",
-            str(helper),
+            str(_PYLUCENE_BUILD_HELPER),
             "--build-root",
             str(build_root),
             "--prepare-only",
@@ -261,3 +403,7 @@ def test_pylucene_source_builder_rejects_unsafe_resolved_build_root(
     assert completed.returncode != 0
     assert "--build-root may contain only" in completed.stderr
     assert not (unsafe_target / ".build.lock").exists()
+
+
+if __name__ == "__main__":
+    _verify_installed_lucene_plugin()
