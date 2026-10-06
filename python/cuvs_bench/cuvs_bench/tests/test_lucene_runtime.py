@@ -370,13 +370,10 @@ def test_missing_pylucene_reports_the_required_runtime(
 
     message = str(error.value)
     assert "requires the custom PyLucene 10.2.0 runtime" in message
-    assert "fern/pages/cuvs_bench/lucene_backend.md" in message
-    assert "python/cuvs_bench/tools/pylucene/build_pylucene_10_2.sh" in message
-    assert "<stable-absolute-path>/activate.sh" in message
-    assert (
-        "https://docs.nvidia.com/cuvs/user-guide/benchmarking-guide/"
-        "cu-vs-bench-tool/lucene-backend"
-    ) in message
+    assert "Install and activate the optional Lucene runtime" in message
+    assert "http" not in message
+    assert ".md" not in message
+    assert ".sh" not in message
     assert "PyLucene import failed: no lucene module" in message
 
 
@@ -393,13 +390,10 @@ def test_incompatible_pylucene_version_fails_before_vm_initialization(
 
     message = str(error.value)
     assert "expected 10.2.0, found 10.1.0" in message
-    assert "fern/pages/cuvs_bench/lucene_backend.md" in message
-    assert "python/cuvs_bench/tools/pylucene/build_pylucene_10_2.sh" in message
-    assert "<stable-absolute-path>/activate.sh" in message
-    assert (
-        "https://docs.nvidia.com/cuvs/user-guide/benchmarking-guide/"
-        "cu-vs-bench-tool/lucene-backend"
-    ) in message
+    assert "Install and activate a compatible PyLucene runtime" in message
+    assert "http" not in message
+    assert ".md" not in message
+    assert ".sh" not in message
     assert fake_lucene.initializations == []
 
 

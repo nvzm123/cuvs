@@ -26,14 +26,6 @@ ACCELERATED_HNSW_CODEC = "Lucene101AcceleratedHNSWCodec"
 CAGRA_CODEC = "CuVS2510GPUSearchCodec"
 MAX_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = "10.2.0"
-_PYLUCENE_SETUP_GUIDANCE = (
-    "Setup documentation: fern/pages/cuvs_bench/lucene_backend.md "
-    "(published at https://docs.nvidia.com/cuvs/user-guide/benchmarking-guide/"
-    "cu-vs-bench-tool/lucene-backend). Source-checkout helper: "
-    "python/cuvs_bench/tools/pylucene/build_pylucene_10_2.sh "
-    "(run it with --build-root <stable-absolute-path>, then source "
-    "<stable-absolute-path>/activate.sh)."
-)
 
 _ID_FIELD = "id"
 _VECTOR_FIELD = "vector"
@@ -45,8 +37,22 @@ _CAGRA_DATA_CODEC_NAME = "Lucene102CuVSVectorsFormatIndex"
 _CAGRA_FORMAT_VERSION = 0
 _FLOAT32_ENCODING_ORDINAL = 1
 _EUCLIDEAN_SIMILARITY_ORDINAL = 0
+_CUVS_JAVA_PACKAGE = "com.nvidia.cuvs"
+_CUVS_LUCENE_PACKAGE = f"{_CUVS_JAVA_PACKAGE}.lucene"
+_CUVS_JAVA_PACKAGE_DIRECTORY = _CUVS_JAVA_PACKAGE.replace(".", "/")
+_CUVS_LUCENE_PACKAGE_DIRECTORY = _CUVS_LUCENE_PACKAGE.replace(".", "/")
+_MAVEN_METADATA_DIRECTORY = "META-INF/maven"
+_CUVS_JAVA_MAVEN_PROPERTIES = (
+    f"{_MAVEN_METADATA_DIRECTORY}/{_CUVS_JAVA_PACKAGE}/"
+    "cuvs-java/pom.properties"
+)
+_CUVS_LUCENE_MAVEN_PROPERTIES = (
+    f"{_MAVEN_METADATA_DIRECTORY}/{_CUVS_LUCENE_PACKAGE}/"
+    "cuvs-lucene/pom.properties"
+)
+_CODEC_SERVICE_DESCRIPTOR = "META-INF/services/org.apache.lucene.codecs.Codec"
 _INDEX_SEARCHER_TIMING_BRIDGE = (
-    "com.nvidia.cuvs.lucene.IndexSearcherTimingBridge"
+    f"{_CUVS_LUCENE_PACKAGE}.IndexSearcherTimingBridge"
 )
 _SEARCHER_REQUEST_KEY = "searcher"
 _QUERY_REQUEST_KEY = "query"
@@ -124,9 +130,9 @@ def _rollback_writer(writer: Any, error: BaseException) -> None:
 def _read_jar(path: Path, label: str) -> tuple[set[str], dict[str, bytes]]:
     inspected = {
         "META-INF/MANIFEST.MF",
-        "META-INF/maven/com.nvidia.cuvs/cuvs-java/pom.properties",
-        "META-INF/maven/com.nvidia.cuvs.lucene/cuvs-lucene/pom.properties",
-        "META-INF/services/org.apache.lucene.codecs.Codec",
+        _CUVS_JAVA_MAVEN_PROPERTIES,
+        _CUVS_LUCENE_MAVEN_PROPERTIES,
+        _CODEC_SERVICE_DESCRIPTOR,
     }
     try:
         with zipfile.ZipFile(path) as archive:
@@ -247,9 +253,10 @@ def _validate_artifacts(
     }
     java_entries, java_contents = _read_jar(java_jar, "cuvs_java_jar")
     java_required = {
-        "com/nvidia/cuvs/CagraIndex.class",
-        "com/nvidia/cuvs/CuVSResources.class",
-        "META-INF/versions/22/com/nvidia/cuvs/spi/JDKProvider.class",
+        f"{_CUVS_JAVA_PACKAGE_DIRECTORY}/CagraIndex.class",
+        f"{_CUVS_JAVA_PACKAGE_DIRECTORY}/CuVSResources.class",
+        "META-INF/versions/22/"
+        f"{_CUVS_JAVA_PACKAGE_DIRECTORY}/spi/JDKProvider.class",
     }
     missing = sorted(java_required - java_entries)
     if missing:
@@ -273,11 +280,12 @@ def _validate_artifacts(
 
     lucene_entries, lucene_contents = _read_jar(lucene_jar, "cuvs_lucene_jar")
     lucene_required = {
-        "com/nvidia/cuvs/lucene/CuVS2510GPUVectorsFormat.class",
-        "com/nvidia/cuvs/lucene/CuVS2510GPUSearchCodec.class",
-        "com/nvidia/cuvs/lucene/IndexSearcherTimingBridge.class",
-        "com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.class",
-        "META-INF/services/org.apache.lucene.codecs.Codec",
+        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/CuVS2510GPUVectorsFormat.class",
+        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/CuVS2510GPUSearchCodec.class",
+        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/IndexSearcherTimingBridge.class",
+        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/"
+        "Lucene101AcceleratedHNSWCodec.class",
+        _CODEC_SERVICE_DESCRIPTOR,
     }
     missing = sorted(lucene_required - lucene_entries)
     if missing:
@@ -304,36 +312,37 @@ def _validate_artifacts(
         )
     providers = {
         line.partition("#")[0].strip()
-        for line in lucene_contents[
-            "META-INF/services/org.apache.lucene.codecs.Codec"
-        ]
+        for line in lucene_contents[_CODEC_SERVICE_DESCRIPTOR]
         .decode("utf-8")
         .splitlines()
         if line.partition("#")[0].strip()
     }
-    if "com.nvidia.cuvs.lucene.CuVS2510GPUSearchCodec" not in providers:
+    if f"{_CUVS_LUCENE_PACKAGE}.CuVS2510GPUSearchCodec" not in providers:
         raise RuntimeError(
             "cuvs_lucene_jar does not advertise CuVS2510GPUSearchCodec"
         )
-    if "com.nvidia.cuvs.lucene.Lucene101AcceleratedHNSWCodec" not in providers:
+    if (
+        f"{_CUVS_LUCENE_PACKAGE}.Lucene101AcceleratedHNSWCodec"
+        not in providers
+    ):
         raise RuntimeError(
             "cuvs_lucene_jar does not advertise Lucene101AcceleratedHNSWCodec"
         )
 
     java_coordinates = _maven_coordinates(
         java_contents,
-        "META-INF/maven/com.nvidia.cuvs/cuvs-java/pom.properties",
+        _CUVS_JAVA_MAVEN_PROPERTIES,
     )
     lucene_coordinates = _maven_coordinates(
         lucene_contents,
-        "META-INF/maven/com.nvidia.cuvs.lucene/cuvs-lucene/pom.properties",
+        _CUVS_LUCENE_MAVEN_PROPERTIES,
     )
-    if java_coordinates[:2] != ("com.nvidia.cuvs", "cuvs-java"):
+    if java_coordinates[:2] != (_CUVS_JAVA_PACKAGE, "cuvs-java"):
         raise RuntimeError(
             f"Unexpected cuvs-java coordinates: {java_coordinates[:2]}"
         )
     if lucene_coordinates[:2] != (
-        "com.nvidia.cuvs.lucene",
+        _CUVS_LUCENE_PACKAGE,
         "cuvs-lucene",
     ):
         raise RuntimeError(
@@ -375,8 +384,9 @@ def _load_pylucene() -> Any:
     except ImportError as error:
         raise ImportError(
             "The Lucene backend requires the custom PyLucene 10.2.0 runtime, "
-            "which is not included in cuVS Bench packages. "
-            f"{_PYLUCENE_SETUP_GUIDANCE} PyLucene import failed: {error}"
+            "which is not included in cuVS Bench packages. Install and "
+            "activate the optional Lucene runtime before selecting this "
+            f"backend. PyLucene import failed: {error}"
         ) from error
 
 
@@ -432,8 +442,9 @@ def initialize_pylucene(
     if actual_version != REQUIRED_PYLUCENE_VERSION:
         raise RuntimeError(
             "PyLucene must match cuvs-lucene's Lucene version: expected "
-            f"{REQUIRED_PYLUCENE_VERSION}, found {actual_version}. "
-            f"{_PYLUCENE_SETUP_GUIDANCE}"
+            f"{REQUIRED_PYLUCENE_VERSION}, found {actual_version}. Install "
+            "and activate a compatible PyLucene runtime before selecting "
+            "this backend."
         )
     vmargs = _vmargs(config)
     with _JVM_LOCK:

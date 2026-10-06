@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass
 from numbers import Integral
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -855,6 +855,8 @@ class LuceneConfigLoader(ConfigLoader):
 class LuceneBackend(BenchmarkBackend):
     """Build and query one immutable Lucene vector index per configuration."""
 
+    default_algorithm = CAGRA_ALGORITHM
+
     def __init__(
         self,
         config: dict[str, Any],
@@ -873,6 +875,19 @@ class LuceneBackend(BenchmarkBackend):
         self.maximum_dimensions = _MAX_DIMENSIONS_BY_ALGORITHM[self.algorithm]
         self._runtime_factory = runtime_factory
         self._runtime: LuceneRuntime | None = None
+
+    @classmethod
+    def result_failure_message(
+        cls, results: Sequence[BuildResult | SearchResult]
+    ) -> str | None:
+        """Fail the public command when any Lucene operation failed."""
+        failures = [result for result in results if not result.success]
+        if not failures:
+            return None
+        return "; ".join(
+            result.error_message or "unknown Lucene backend failure"
+            for result in failures
+        )
 
     @property
     def algo(self) -> str:
