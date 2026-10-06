@@ -30,6 +30,11 @@ REQUIRED_PYLUCENE_VERSION = "10.2.0"
 _ID_FIELD = "id"
 _VECTOR_FIELD = "vector"
 _MAX_DIMENSIONS = 4096
+# These private-format constants power an independent verifier. Keep them
+# synchronized with
+# CuVS2510GPUVectorsFormat.VERSION_CURRENT,
+# CuVS2510GPUVectorsWriter.writeMeta(), and
+# CuVS2510GPUVectorsReader.FieldEntry.readEntry().
 _CAGRA_META_EXTENSION = ".vemc"
 _CAGRA_META_CODEC_NAME = "Lucene102CuVSVectorsFormatMeta"
 _CAGRA_DATA_EXTENSION = ".vcag"
