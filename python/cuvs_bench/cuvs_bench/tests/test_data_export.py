@@ -5,6 +5,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from cuvs_bench.backends.base import BuildResult, SearchResult
 from cuvs_bench.orchestrator.config_loaders import (
@@ -14,7 +15,35 @@ from cuvs_bench.orchestrator.config_loaders import (
 )
 from cuvs_bench.orchestrator.orchestrator import BenchmarkOrchestrator
 from cuvs_bench.plot.__main__ import load_all_results
-from cuvs_bench.run.data_export import write_results_to_csv
+from cuvs_bench.run.data_export import (
+    _SEARCH_PARAMS_IDENTITY_COLUMN,
+    write_results_to_csv,
+)
+
+
+def _search_result(
+    algorithm,
+    index_name,
+    search_params,
+    recall,
+    *,
+    outcome="completed",
+):
+    metadata = {"group": "base", "index_name": index_name}
+    if outcome == "skipped":
+        metadata["skipped"] = True
+    return SearchResult(
+        neighbors=np.empty((0, 2), dtype=np.int64),
+        distances=np.empty((0, 2), dtype=np.float32),
+        search_time_ms=10.0,
+        queries_per_second=100.0,
+        recall=recall,
+        algorithm=algorithm,
+        search_params=[search_params],
+        metadata=metadata,
+        success=outcome != "failed",
+        error_message="search failed" if outcome == "failed" else None,
+    )
 
 
 def test_python_backend_csv_is_plot_compatible(tmp_path):
@@ -23,12 +52,12 @@ def test_python_backend_csv_is_plot_compatible(tmp_path):
     index_name = "test-index"
     results = [
         BuildResult(
-            index_path=index_name,
+            index_path="temporary-build-path",
             build_time_seconds=1.5,
             index_size_bytes=1024,
             algorithm=algorithm,
             build_params={"m": 16},
-            metadata={"group": "base"},
+            metadata={"group": "base", "index_name": index_name},
         ),
         SearchResult(
             neighbors=np.empty((0, 2), dtype=np.int64),
@@ -113,6 +142,331 @@ def test_python_backend_csv_is_plot_compatible(tmp_path):
         )
         assert algorithm in plotted
         assert plotted[algorithm]
+
+
+def test_failed_and_dry_results_preserve_existing_measurements(tmp_path):
+    dataset = "test-dataset"
+    algorithm = "test-backend-algorithm"
+    index_name = "test-index"
+    build = BuildResult(
+        index_path=index_name,
+        build_time_seconds=1.5,
+        index_size_bytes=1024,
+        algorithm=algorithm,
+        build_params={},
+        metadata={"group": "base"},
+    )
+    search = SearchResult(
+        neighbors=np.empty((0, 2), dtype=np.int64),
+        distances=np.empty((0, 2), dtype=np.float32),
+        search_time_ms=10.0,
+        queries_per_second=100.0,
+        recall=1.0,
+        algorithm=algorithm,
+        search_params=[{}],
+        metadata={
+            "group": "base",
+            "index_name": index_name,
+            "latency_seconds": 0.01,
+        },
+    )
+    write_results_to_csv(
+        [build, search], dataset, str(tmp_path), count=2, batch_size=2
+    )
+
+    result_root = tmp_path / dataset / "result"
+    exported_files = tuple(result_root.rglob("*.csv"))
+    original_contents = {path: path.read_bytes() for path in exported_files}
+    dry_build = BuildResult(
+        index_path=index_name,
+        build_time_seconds=0.0,
+        index_size_bytes=0,
+        algorithm=algorithm,
+        build_params={},
+        metadata={"group": "base", "dry_run": True},
+    )
+    failed_build = BuildResult(
+        index_path=index_name,
+        build_time_seconds=0.0,
+        index_size_bytes=0,
+        algorithm=algorithm,
+        build_params={},
+        metadata={"group": "base"},
+        success=False,
+        error_message="build failed",
+    )
+    dry_search = SearchResult(
+        neighbors=np.empty((0, 2), dtype=np.int64),
+        distances=np.empty((0, 2), dtype=np.float32),
+        search_time_ms=0.0,
+        queries_per_second=0.0,
+        recall=0.0,
+        algorithm=algorithm,
+        search_params=[{}],
+        metadata={
+            "group": "base",
+            "index_name": index_name,
+            "dry_run": True,
+        },
+    )
+    failed_search = SearchResult(
+        neighbors=np.empty((0, 2), dtype=np.int64),
+        distances=np.empty((0, 2), dtype=np.float32),
+        search_time_ms=0.0,
+        queries_per_second=0.0,
+        recall=0.0,
+        algorithm=algorithm,
+        search_params=[{}],
+        metadata={"group": "base", "index_name": index_name},
+        success=False,
+        error_message="search failed",
+    )
+    skipped_search = SearchResult(
+        neighbors=np.empty((0, 2), dtype=np.int64),
+        distances=np.empty((0, 2), dtype=np.float32),
+        search_time_ms=0.0,
+        queries_per_second=0.0,
+        recall=0.0,
+        algorithm=algorithm,
+        search_params=[{}],
+        metadata={
+            "group": "base",
+            "index_name": index_name,
+            "skipped": True,
+        },
+    )
+
+    write_results_to_csv(
+        [
+            dry_build,
+            failed_build,
+            dry_search,
+            failed_search,
+            skipped_search,
+        ],
+        dataset,
+        str(tmp_path),
+        count=2,
+        batch_size=2,
+    )
+
+    assert {path: path.read_bytes() for path in exported_files} == (
+        original_contents
+    )
+
+
+@pytest.mark.parametrize(
+    "incomplete_outcome",
+    ["failed", "skipped"],
+)
+def test_partial_search_run_replaces_only_completed_measurements(
+    tmp_path, incomplete_outcome
+):
+    dataset = "test-dataset"
+    algorithm = "test-backend-algorithm"
+    index_name = "test-index"
+    retained_index_name = "retained-index"
+
+    write_results_to_csv(
+        [
+            _search_result(
+                algorithm,
+                index_name,
+                {"ef_search": 50, "search_width": 16},
+                0.5,
+            ),
+            _search_result(
+                algorithm,
+                index_name,
+                {"ef_search": 100, "search_width": 32},
+                1.0,
+            ),
+            _search_result(
+                algorithm,
+                retained_index_name,
+                {"ef_search": 50, "search_width": 16},
+                0.6,
+            ),
+        ],
+        dataset,
+        str(tmp_path),
+        count=2,
+        batch_size=2,
+    )
+    write_results_to_csv(
+        [
+            _search_result(
+                algorithm,
+                index_name,
+                {"search_width": 16, "ef_search": 50},
+                0.75,
+            ),
+            _search_result(
+                algorithm,
+                index_name,
+                {"search_width": 32, "ef_search": 100},
+                0.0,
+                outcome=incomplete_outcome,
+            ),
+        ],
+        dataset,
+        str(tmp_path),
+        count=2,
+        batch_size=2,
+    )
+
+    raw_file = (
+        tmp_path
+        / dataset
+        / "result"
+        / "search"
+        / f"{algorithm},base,k2,bs2,raw.csv"
+    )
+    measurements = pd.read_csv(raw_file)
+    assert len(measurements) == 3
+    assert not measurements.duplicated(
+        subset=["index_name", "ef_search"]
+    ).any()
+    measurements_by_identity = measurements.set_index(
+        ["index_name", "ef_search"]
+    )["recall"].to_dict()
+    assert measurements_by_identity == {
+        (index_name, 50): 0.75,
+        (index_name, 100): 1.0,
+        (retained_index_name, 50): 0.6,
+    }
+
+
+def test_failed_search_with_new_parameter_preserves_existing_results(
+    tmp_path,
+):
+    dataset = "test-dataset"
+    algorithm = "test-backend-algorithm"
+    index_name = "test-index"
+
+    write_results_to_csv(
+        [_search_result(algorithm, index_name, {}, 0.5)],
+        dataset,
+        str(tmp_path),
+        count=2,
+        batch_size=2,
+    )
+    write_results_to_csv(
+        [
+            _search_result(algorithm, index_name, {}, 0.75),
+            _search_result(
+                algorithm,
+                index_name,
+                {"ef_search": 100},
+                0.0,
+                outcome="failed",
+            ),
+        ],
+        dataset,
+        str(tmp_path),
+        count=2,
+        batch_size=2,
+    )
+
+    raw_file = (
+        tmp_path
+        / dataset
+        / "result"
+        / "search"
+        / f"{algorithm},base,k2,bs2,raw.csv"
+    )
+    measurements = pd.read_csv(raw_file)
+    assert measurements["recall"].tolist() == [0.75]
+    assert "ef_search" not in measurements
+
+
+@pytest.mark.parametrize(
+    "legacy_csv", [False, True], ids=["current", "legacy"]
+)
+@pytest.mark.parametrize(
+    "completed_index_name",
+    ["historical-index", "new-index"],
+    ids=["same-index", "different-index"],
+)
+def test_partial_search_run_preserves_unmatched_parameter_plans(
+    tmp_path, legacy_csv, completed_index_name
+):
+    dataset = "test-dataset"
+    algorithm = "test-backend-algorithm"
+    historical_index_name = "historical-index"
+
+    write_results_to_csv(
+        [
+            _search_result(
+                algorithm,
+                historical_index_name,
+                {"ef_search": 50},
+                0.5,
+            ),
+            _search_result(
+                algorithm,
+                historical_index_name,
+                {"ef_search": 100},
+                1.0,
+            ),
+        ],
+        dataset,
+        str(tmp_path),
+        count=2,
+        batch_size=2,
+    )
+    raw_file = (
+        tmp_path
+        / dataset
+        / "result"
+        / "search"
+        / f"{algorithm},base,k2,bs2,raw.csv"
+    )
+    if legacy_csv:
+        legacy_measurements = pd.read_csv(raw_file).drop(
+            columns=[_SEARCH_PARAMS_IDENTITY_COLUMN]
+        )
+        legacy_measurements.to_csv(raw_file, index=False)
+
+    write_results_to_csv(
+        [
+            _search_result(
+                algorithm, completed_index_name, {}, 0.75
+            ),
+            _search_result(
+                algorithm,
+                "failed-index",
+                {},
+                0.0,
+                outcome="failed",
+            ),
+        ],
+        dataset,
+        str(tmp_path),
+        count=2,
+        batch_size=2,
+    )
+
+    measurements = pd.read_csv(raw_file)
+    historical_measurements = measurements.loc[
+        measurements["ef_search"].notna()
+    ]
+    assert historical_measurements.set_index("ef_search")[
+        "recall"
+    ].to_dict() == {50: 0.5, 100: 1.0}
+    completed_measurements = measurements.loc[
+        (measurements["index_name"] == completed_index_name)
+        & measurements["ef_search"].isna()
+    ]
+    assert completed_measurements["recall"].tolist() == [0.75]
+    assert len(measurements) == 3
+
+    latency_frontier = raw_file.with_name(
+        raw_file.name.replace(",raw.csv", ",latency.csv")
+    )
+    assert _SEARCH_PARAMS_IDENTITY_COLUMN not in pd.read_csv(
+        latency_frontier
+    ).columns
 
 
 def test_tune_trial_retains_build_and_search_results():

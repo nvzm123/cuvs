@@ -52,11 +52,15 @@ metrics = {
     },
 }
 
+_SEARCH_PARAMS_IDENTITY_COLUMN = "_search_params_identity"
+
 
 def write_results_to_csv(results, dataset, dataset_path, count, batch_size):
     """Write Python-backend results using the existing plotting CSV schema."""
     grouped = defaultdict(list)
     for result in results:
+        if result.metadata.get("dry_run"):
+            continue
         group = result.metadata.get("group")
         index_name = result.metadata.get("index_name")
         if group is None or (
@@ -84,13 +88,15 @@ def write_results_to_csv(results, dataset, dataset_path, count, batch_size):
 
 
 def _write_build_results(results, algorithm, group, dataset, dataset_path):
-    output_dir = os.path.join(dataset_path, dataset, "result", "build")
-    os.makedirs(output_dir, exist_ok=True)
     algo_name = algorithm if group == "base" else f"{algorithm}_{group}"
 
     rows = []
     for result in results:
-        if not result.success or result.metadata.get("skipped"):
+        if (
+            not result.success
+            or result.metadata.get("skipped")
+            or result.metadata.get("dry_run")
+        ):
             continue
         metadata = _scalar_metadata(result.metadata)
         rows.append(
@@ -98,11 +104,19 @@ def _write_build_results(results, algorithm, group, dataset, dataset_path):
                 **result.build_params,
                 **metadata,
                 "algo_name": algo_name,
-                "index_name": result.index_path,
+                "index_name": result.metadata.get(
+                    "index_name", result.index_path
+                ),
                 "time": result.build_time_seconds,
             }
         )
 
+    if not rows:
+        # A failed, skipped, or dry run must not replace prior measurements.
+        return
+
+    output_dir = os.path.join(dataset_path, dataset, "result", "build")
+    os.makedirs(output_dir, exist_ok=True)
     columns = ["algo_name", "index_name", "time"]
     dataframe = pd.DataFrame(rows)
     build_file = os.path.join(output_dir, f"{algorithm},{group}.csv")
@@ -110,6 +124,7 @@ def _write_build_results(results, algorithm, group, dataset, dataset_path):
     complete_run = all(
         result.success and not result.metadata.get("skipped")
         for result in results
+        if not result.metadata.get("dry_run")
     )
     if not complete_run and os.path.exists(build_file):
         dataframe = pd.concat(
@@ -117,11 +132,6 @@ def _write_build_results(results, algorithm, group, dataset, dataset_path):
             ignore_index=True,
             sort=False,
         )
-
-    if dataframe.empty:
-        # Do not replace an existing measurement with a skipped or failed
-        # build, and do not create an empty result file.
-        return
 
     dataframe = dataframe.drop_duplicates(subset=["index_name"], keep="last")
     dataframe = dataframe[
@@ -133,13 +143,15 @@ def _write_build_results(results, algorithm, group, dataset, dataset_path):
 def _write_search_results(
     results, algorithm, group, dataset, dataset_path, count, batch_size
 ):
-    output_dir = os.path.join(dataset_path, dataset, "result", "search")
-    os.makedirs(output_dir, exist_ok=True)
     algo_name = algorithm if group == "base" else f"{algorithm}_{group}"
 
     rows = []
     for result in results:
-        if not result.success:
+        if (
+            not result.success
+            or result.metadata.get("skipped")
+            or result.metadata.get("dry_run")
+        ):
             continue
         metadata = _scalar_metadata(result.metadata)
         search_params = (
@@ -156,9 +168,18 @@ def _write_search_results(
                 "latency": result.metadata.get(
                     "latency_seconds", result.search_time_ms / 1000.0
                 ),
+                _SEARCH_PARAMS_IDENTITY_COLUMN: _search_params_identity(
+                    result.search_params
+                ),
             }
         )
 
+    if not rows:
+        # Preserve prior evidence when every attempted search failed or was dry.
+        return
+
+    output_dir = os.path.join(dataset_path, dataset, "result", "search")
+    os.makedirs(output_dir, exist_ok=True)
     columns = [
         "algo_name",
         "index_name",
@@ -167,12 +188,9 @@ def _write_search_results(
         "latency",
     ]
     dataframe = pd.DataFrame(rows)
-    if dataframe.empty:
-        dataframe = pd.DataFrame(columns=columns)
-    else:
-        dataframe = dataframe[
-            columns + [name for name in dataframe if name not in columns]
-        ]
+    dataframe = dataframe[
+        columns + [name for name in dataframe if name not in columns]
+    ]
 
     build_file = os.path.join(
         dataset_path,
@@ -196,10 +214,53 @@ def _write_search_results(
 
     stem = f"{algorithm},{group},k{count},bs{batch_size}"
     raw_file = os.path.join(output_dir, f"{stem},raw.csv")
+    complete_run = all(
+        result.success and not result.metadata.get("skipped")
+        for result in results
+    )
+    if not complete_run and os.path.exists(raw_file):
+        existing = _with_legacy_search_param_identities(
+            pd.read_csv(raw_file)
+        )
+        identity_columns = ["index_name", _SEARCH_PARAMS_IDENTITY_COLUMN]
+        dataframe = dataframe.drop_duplicates(
+            subset=identity_columns, keep="last"
+        )
+        existing_identities = pd.MultiIndex.from_frame(
+            existing[identity_columns]
+        )
+        replacement_identities = pd.MultiIndex.from_frame(
+            dataframe[identity_columns]
+        )
+        existing = existing.loc[
+            ~existing_identities.isin(replacement_identities)
+        ]
+        dataframe = pd.concat(
+            [existing, dataframe], ignore_index=True, sort=False
+        )
     dataframe.to_csv(raw_file, index=False)
     frontier_file = os.path.join(output_dir, f"{stem}.json")
-    write_frontier(frontier_file, dataframe, "throughput")
-    write_frontier(frontier_file, dataframe, "latency")
+    frontier_data = dataframe.drop(columns=[_SEARCH_PARAMS_IDENTITY_COLUMN])
+    write_frontier(frontier_file, frontier_data, "throughput")
+    write_frontier(frontier_file, frontier_data, "latency")
+
+
+def _search_params_identity(search_params):
+    """Return a stable key for the parameter plans represented by one row."""
+    return json.dumps(search_params, sort_keys=True, separators=(",", ":"))
+
+
+def _with_legacy_search_param_identities(dataframe):
+    """Give legacy rows opaque keys so a partial run cannot erase them."""
+    if _SEARCH_PARAMS_IDENTITY_COLUMN not in dataframe:
+        dataframe[_SEARCH_PARAMS_IDENTITY_COLUMN] = pd.NA
+
+    missing_identity = dataframe[_SEARCH_PARAMS_IDENTITY_COLUMN].isna()
+    dataframe.loc[missing_identity, _SEARCH_PARAMS_IDENTITY_COLUMN] = [
+        f"legacy:{row_number}"
+        for row_number in dataframe.index[missing_identity]
+    ]
+    return dataframe
 
 
 def _scalar_metadata(metadata):
