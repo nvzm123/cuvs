@@ -22,6 +22,6 @@ A provider that creates instances of FilterCuVSProvider.
 
 Initialize and return an CuVSProvider provided by this provider.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/FilterCuVSServiceProvider.java:19`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/FilterCuVSServiceProvider.java:21`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/FilterCuVSServiceProvider.java:15`_

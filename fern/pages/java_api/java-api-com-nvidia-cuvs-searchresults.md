@@ -30,7 +30,7 @@ Creates a mapping function from a list lookup of custom user IDs
 
 a function that maps the input ordinal to a custom user IDs, using the input as an index in the list
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/SearchResults.java:22`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/SearchResults.java:23`_
 
 ### getResults
 
@@ -44,6 +44,6 @@ Gets a list results as a map of neighbor IDs to distances.
 
 a list of results for each query as a map of neighbor IDs to distance
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/SearchResults.java:31`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/SearchResults.java:32`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/SearchResults.java:11`_

@@ -37,6 +37,6 @@ public static final FilterBitsetCacheConfig DEFAULT = new FilterBitsetCacheConfi
 
 Default configuration used by SPI-created codecs and vector formats.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/FilterBitsetCacheConfig.java:27`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/FilterBitsetCacheConfig.java:28`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/FilterBitsetCacheConfig.java:22`_

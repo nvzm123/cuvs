@@ -51,7 +51,7 @@ otherwise touch its device allocation) must hold a reference for the duration of
 
 `true` if a reference was acquired; `false` if the handle has already been fully released, in which case no reference is acquired and it must not be used
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:46`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:47`_
 
 ### decRef
 
@@ -68,7 +68,7 @@ reference is released, the shared device allocation is freed.
 | --- | --- |
 | `IllegalStateException` | if called without a matching `#tryIncRef()` |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:54`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:55`_
 
 ### create
 
@@ -85,7 +85,7 @@ In a multi-partition search each partition supplies its own handle.
 | --- | --- |
 | `combinedLongs` | packed bitset words for a single partition |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:62`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:63`_
 
 ### close
 
@@ -98,6 +98,6 @@ of the owner's reference; the device allocation is freed once this and every ref
 via `#tryIncRef()` has been released. Idempotent — releasing the initial reference more
 than once has no effect.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:72`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:74`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/FilterBitsetHandle.java:37`_

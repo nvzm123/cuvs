@@ -24,7 +24,7 @@ to interact with it.
 Invokes the native destroy_brute_force_index function to de-allocate
 BRUTEFORCE index
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:25`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:27`_
 
 ### search
 
@@ -45,7 +45,7 @@ a BRUTEFORCE index.
 
 an instance of `SearchResults` containing the results
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:36`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:37`_
 
 ### serialize
 
@@ -62,7 +62,7 @@ A method to persist a BRUTEFORCE index using an instance of
 | --- | --- |
 | `outputStream` | an instance of `OutputStream` to write the index bytes into |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:45`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:46`_
 
 ### serialize
 
@@ -80,7 +80,7 @@ A method to persist a BRUTEFORCE index using an instance of
 | `outputStream` | an instance of `OutputStream` to write the index bytes to |
 | `tempFile` | an intermediate `Path` where BRUTEFORCE index is written temporarily |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:56`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:57`_
 
 ### newBuilder
 
@@ -102,7 +102,7 @@ Creates a new Builder with an instance of `CuVSResources`.
 | --- | --- |
 | `UnsupportedOperationException` | if the provider does not cuvs |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:64`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:65`_
 
 ### withIndexParams
 
@@ -123,7 +123,7 @@ Builder.
 
 An instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:81`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:82`_
 
 ### from
 
@@ -144,7 +144,7 @@ needed.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:90`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:91`_
 
 ### withDataset
 
@@ -164,7 +164,7 @@ Sets the dataset vectors for building the `BruteForceIndex`.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:98`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:99`_
 
 ### withDataset
 
@@ -184,7 +184,7 @@ Sets the dataset for building the `BruteForceIndex`.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:106`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:107`_
 
 ### build
 
@@ -198,6 +198,6 @@ Builds and returns an instance of `BruteForceIndex`.
 
 an instance of `BruteForceIndex`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:113`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:114`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndex.java:20`_

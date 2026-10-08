@@ -31,7 +31,7 @@ Gets the dimensionality of the vectors in this index.
 
 the number of dimensions
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:30`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:31`_
 
 ### serialize
 
@@ -50,7 +50,7 @@ This writes two files, `filePrefix` holding the graph and
 | --- | --- |
 | `filePrefix` | the prefix that output file names are derived from |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:40`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:41`_
 
 ### serialize
 
@@ -74,7 +74,7 @@ The argument is a prefix and not a complete file name, matching the native
 | `filePrefix` | the prefix that output file names are derived from |
 | `includeDataset` | whether to write the dataset alongside the graph |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:57`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:58`_
 
 ### getCuVSResources
 
@@ -88,7 +88,7 @@ Gets an instance of `CuVSResources`
 
 an instance of `CuVSResources`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:64`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:65`_
 
 ### newBuilder
 
@@ -110,7 +110,7 @@ Creates a new Builder with an instance of `CuVSResources`.
 | --- | --- |
 | `UnsupportedOperationException` | if the provider does not support cuvs |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:72`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:73`_
 
 ### withDataset
 
@@ -130,7 +130,7 @@ Sets the dataset for building the `VamanaIndex`.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:88`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:89`_
 
 ### withDataset
 
@@ -161,7 +161,7 @@ a `float[][]` is created and closed by the index instead.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:107`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:108`_
 
 ### withIndexParams
 
@@ -182,7 +182,7 @@ Builder.
 
 An instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:116`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:117`_
 
 ### build
 
@@ -196,6 +196,6 @@ Builds and returns an instance of `VamanaIndex`.
 
 an instance of `VamanaIndex`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:123`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:124`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndex.java:21`_

@@ -23,7 +23,7 @@ with it.
 
 Invokes the native destroy_hnsw_index to de-allocate the HNSW index
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:21`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:23`_
 
 ### search
 
@@ -44,7 +44,7 @@ index.
 
 an instance of `SearchResults` containing the results
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:32`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:33`_
 
 ### newBuilder
 
@@ -66,7 +66,7 @@ Creates a new Builder with an instance of `CuVSResources`.
 | --- | --- |
 | `UnsupportedOperationException` | if the provider does not cuvs |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:40`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:41`_
 
 ### fromCagra
 
@@ -93,7 +93,7 @@ A new HNSW index
 | --- | --- |
 | `Throwable` | if an error occurs during conversion |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:53`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:54`_
 
 ### build
 
@@ -123,7 +123,7 @@ A new HNSW index ready for search
 | --- | --- |
 | `Throwable` | if an error occurs during building |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:70`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:71`_
 
 ### from
 
@@ -144,7 +144,7 @@ needed.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:90`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:91`_
 
 ### withIndexParams
 
@@ -165,7 +165,7 @@ Builder.
 
 An instance of this Builder.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:99`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:100`_
 
 ### build
 
@@ -179,6 +179,6 @@ Builds and returns an instance of CagraIndex.
 
 an instance of CagraIndex
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:106`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:107`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndex.java:17`_

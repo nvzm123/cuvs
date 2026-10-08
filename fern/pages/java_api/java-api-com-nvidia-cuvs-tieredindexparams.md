@@ -23,7 +23,7 @@ L2, /** Inner product (cosine similarity) distance metric */ INNER_PRODUCT } pri
 
 L2 (Euclidean) distance metric
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:20`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:21`_
 
 ### getMetric
 
@@ -37,7 +37,7 @@ Returns the distance metric used for similarity computation.
 
 The `Metric` (L2 or Inner Product)
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:47`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:48`_
 
 ### getMinAnnRows
 
@@ -51,7 +51,7 @@ Returns the minimum number of rows required to use the ANN algorithm.
 
 The minimum row count threshold for ANN algorithm usage
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:56`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:57`_
 
 ### isCreateAnnIndexOnExtend
 
@@ -65,7 +65,7 @@ Returns whether to create an ANN index when extending the dataset.
 
 true if ANN index should be created on extend, false otherwise
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:65`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:66`_
 
 ### getCagraParams
 
@@ -79,7 +79,7 @@ Returns the CAGRA-specific parameters for the ANN algorithm.
 
 The `CagraIndexParams` configuration, or null if not using CAGRA
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:75`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:76`_
 
 ### newBuilder
 
@@ -93,7 +93,7 @@ Creates a new Builder for constructing TieredIndexParams.
 
 A new Builder instance
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:84`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:85`_
 
 ### metric
 
@@ -119,7 +119,7 @@ This Builder instance for method chaining
 | --- | --- |
 | `NullPointerException` | if metric is null |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:104`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:105`_
 
 ### minAnnRows
 
@@ -145,7 +145,7 @@ This Builder instance for method chaining
 | --- | --- |
 | `IllegalArgumentException` | if minAnnRows is not positive |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:116`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:117`_
 
 ### createAnnIndexOnExtend
 
@@ -165,7 +165,7 @@ Sets whether to create an ANN index when extending the dataset.
 
 This Builder instance for method chaining
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:130`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:131`_
 
 ### withCagraParams
 
@@ -191,7 +191,7 @@ This Builder instance for method chaining
 | --- | --- |
 | `NullPointerException` | if params is null |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:143`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:144`_
 
 ### build
 
@@ -212,6 +212,6 @@ A new TieredIndexParams instance
 | --- | --- |
 | `IllegalStateException` | if CAGRA params are required but not provided |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:156`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:157`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexParams.java:14`_

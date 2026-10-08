@@ -31,7 +31,7 @@ Gets the instance of HnswSearchParams.
 
 the instance of `HnswSearchParams`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:56`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:57`_
 
 ### getQueryVectors
 
@@ -45,7 +45,7 @@ Gets the query vector 2D float array.
 
 2D float array
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:65`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:66`_
 
 ### getMapping
 
@@ -55,7 +55,7 @@ public LongToIntFunction getMapping()
 
 Gets the function mapping ordinals (neighbor IDs) to custom user IDs
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:72`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:73`_
 
 ### getTopK
 
@@ -69,7 +69,7 @@ Gets the topK value.
 
 an integer
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:81`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:82`_
 
 ### getResources
 
@@ -83,7 +83,7 @@ Gets the CuVSResources instance for this query.
 
 the CuVSResources instance
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:90`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:91`_
 
 ### Builder
 
@@ -103,7 +103,7 @@ CuVSResources instance to avoid memory allocation conflicts and potential JVM cr
 | --- | --- |
 | `resources` | the CuVSResources instance to use for this query (must not be shared between threads) |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:125`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:126`_
 
 ### withSearchParams
 
@@ -123,7 +123,7 @@ Sets the instance of configured HnswSearchParams to be passed for search.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:136`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:137`_
 
 ### withQueryVectors
 
@@ -143,7 +143,7 @@ Registers the query vectors to be passed in the search call.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:147`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:148`_
 
 ### withMapping
 
@@ -163,7 +163,7 @@ Sets the function used to map ordinals (neighbor IDs) to custom user IDs
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:158`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:159`_
 
 ### withTopK
 
@@ -183,7 +183,7 @@ Registers the topK value.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:169`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:170`_
 
 ### build
 
@@ -197,6 +197,6 @@ Builds an instance of `HnswQuery`
 
 an instance of `HnswQuery`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:179`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:180`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswQuery.java:21`_

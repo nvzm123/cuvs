@@ -18,7 +18,7 @@ public class CuVSIvfPqParams
 public CuVSIvfPqIndexParams getIndexParams()
 ```
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:29`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:30`_
 
 ### getSearchParams
 
@@ -26,7 +26,7 @@ _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:29`_
 public CuVSIvfPqSearchParams getSearchParams()
 ```
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:37`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:38`_
 
 ### getRefinementRate
 
@@ -34,7 +34,7 @@ _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:37`_
 public float getRefinementRate()
 ```
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:45`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:46`_
 
 ### withCuVSIvfPqIndexParams
 
@@ -54,7 +54,7 @@ Sets the CuVS IVF_PQ index parameters.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:83`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:84`_
 
 ### withCuVSIvfPqSearchParams
 
@@ -74,7 +74,7 @@ Sets the CuVS IVF_PQ search parameters.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:94`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:95`_
 
 ### withRefinementRate
 
@@ -94,7 +94,7 @@ Sets the refinement rate, default 2.0.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:105`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:106`_
 
 ### build
 
@@ -108,6 +108,6 @@ Builds an instance of `CuVSIvfPqParams`.
 
 an instance of `CuVSIvfPqParams`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:115`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:116`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqParams.java:7`_

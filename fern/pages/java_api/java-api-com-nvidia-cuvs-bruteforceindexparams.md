@@ -22,7 +22,7 @@ public int getNumWriterThreads()
 
 Gets the number of threads used to build the index.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndexParams.java:27`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndexParams.java:28`_
 
 ### withNumWriterThreads
 
@@ -42,7 +42,7 @@ Sets the number of writer threads to use for indexing.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndexParams.java:44`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndexParams.java:45`_
 
 ### build
 
@@ -56,6 +56,6 @@ Builds an instance of `BruteForceIndexParams`.
 
 an instance of `BruteForceIndexParams`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndexParams.java:54`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndexParams.java:55`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceIndexParams.java:12`_

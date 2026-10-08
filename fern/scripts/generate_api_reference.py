@@ -4711,7 +4711,8 @@ def python_slug(module: str) -> str:
 
 
 def java_signature_at(text: str, start: int) -> tuple[str, int]:
-    line = text.count("\n", 0, start) + 1
+    declaration_start = java_declaration_start(text, start)
+    line = text.count("\n", 0, declaration_start) + 1
     idx = start
     depth = {"(": 0, "[": 0, "{": 0, "<": 0}
     while idx < len(text):
@@ -4724,6 +4725,76 @@ def java_signature_at(text: str, start: int) -> tuple[str, int]:
         idx += 1
     signature = text[start:].splitlines()[0].strip()
     return re.sub(r"\s+", " ", signature), line
+
+
+def java_declaration_start(text: str, start: int) -> int:
+    """Locate a declaration after supported leading Java annotations."""
+    idx = java_trivia_end(text, start)
+    while idx < len(text):
+        if idx >= len(text) or text[idx] != "@":
+            return idx
+
+        idx = java_trivia_end(text, idx + 1)
+        while idx < len(text):
+            name_start = idx
+            while idx < len(text) and (
+                text[idx].isalnum() or text[idx] in "_$"
+            ):
+                idx += 1
+            if idx == name_start:
+                break
+            idx = java_trivia_end(text, idx)
+            if idx >= len(text) or text[idx] != ".":
+                break
+            idx = java_trivia_end(text, idx + 1)
+        if idx >= len(text) or text[idx] != "(":
+            continue
+
+        depth = 0
+        quote = ""
+        escaped = False
+        while idx < len(text):
+            if not quote:
+                trivia_end = java_trivia_end(text, idx)
+                if trivia_end != idx:
+                    idx = trivia_end
+                    continue
+            char = text[idx]
+            idx += 1
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+            elif char in "\"'":
+                quote = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+        idx = java_trivia_end(text, idx)
+    return idx
+
+
+def java_trivia_end(text: str, start: int) -> int:
+    """Return the first offset after Java whitespace and comments."""
+    idx = start
+    while idx < len(text):
+        if text[idx].isspace():
+            idx += 1
+        elif text.startswith("//", idx):
+            newline = text.find("\n", idx + 2)
+            idx = len(text) if newline < 0 else newline + 1
+        elif text.startswith("/*", idx):
+            close = text.find("*/", idx + 2)
+            idx = len(text) if close < 0 else close + 2
+        else:
+            return idx
+    return idx
 
 
 def comment_before(text: str, start: int) -> str:

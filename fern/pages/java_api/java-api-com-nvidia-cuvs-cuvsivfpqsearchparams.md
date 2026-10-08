@@ -24,7 +24,7 @@ Gets the number of clusters to search
 
 the number of clusters to search
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:71`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:72`_
 
 ### getLutDtype
 
@@ -38,7 +38,7 @@ Gets the data type of look up table to be created dynamically at search time
 
 the data type of look up table to be created dynamically at search time
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:81`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:82`_
 
 ### getInternalDistanceDtype
 
@@ -52,7 +52,7 @@ Gets the storage data type for distance/similarity computed at search time
 
 the storage data type for distance/similarity computed at search time
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:90`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:91`_
 
 ### getPreferredShmemCarveout
 
@@ -67,7 +67,7 @@ shared memory
 
 the preferred fraction of SM's unified memory / L1 cache to be used as shared memory
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:101`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:102`_
 
 ### withNProbes
 
@@ -87,7 +87,7 @@ Sets the number of clusters to search.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:175`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:176`_
 
 ### withLutDtype
 
@@ -108,7 +108,7 @@ time.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:188`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:189`_
 
 ### withInternalDistanceDtype
 
@@ -128,7 +128,7 @@ Sets the storage data type for distance/similarity computed at search time.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:200`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:201`_
 
 ### withPreferredShmemCarveout
 
@@ -149,7 +149,7 @@ shared memory.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:213`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:214`_
 
 ### build
 
@@ -163,6 +163,6 @@ Builds an instance of `CuVSIvfPqSearchParams`.
 
 an instance of `CuVSIvfPqSearchParams`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:223`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:224`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqSearchParams.java:9`_

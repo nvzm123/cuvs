@@ -31,7 +31,7 @@ public int count()
 
 Number of valid results (may be less than k if fewer candidates exist).
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:36`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:37`_
 
 ### getPartitionIndex
 
@@ -41,7 +41,7 @@ public int getPartitionIndex(int i)
 
 Index into the original partition list for result `i`.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:41`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:42`_
 
 ### getOrdinal
 
@@ -51,7 +51,7 @@ public int getOrdinal(int i)
 
 Local vector ordinal within the partition for result `i`.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:46`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:47`_
 
 ### getDistance
 
@@ -61,6 +61,6 @@ public float getDistance(int i)
 
 Post-processed distance for result `i` (scaled + metric-transformed).
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:51`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:52`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionSearchResults.java:21`_

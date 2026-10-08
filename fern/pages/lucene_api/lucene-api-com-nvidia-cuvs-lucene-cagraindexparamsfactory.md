@@ -38,7 +38,7 @@ chosen strategy in the `GPUSearchParams`.
 
 an instance of `CagraIndexParams`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CagraIndexParamsFactory.java:29`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CagraIndexParamsFactory.java:30`_
 
 ### create
 
@@ -61,6 +61,6 @@ chosen strategy in the `AcceleratedHNSWParams`.
 
 an instance of `CagraIndexParams`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CagraIndexParamsFactory.java:73`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CagraIndexParamsFactory.java:74`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/CagraIndexParamsFactory.java:17`_
