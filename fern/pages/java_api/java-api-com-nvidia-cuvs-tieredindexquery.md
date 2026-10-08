@@ -31,7 +31,7 @@ Gets the index type for this query.
 
 the TieredIndexType
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:57`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:58`_
 
 ### getCagraSearchParameters
 
@@ -45,7 +45,7 @@ Gets the instance of CagraSearchParams initially set.
 
 an instance CagraSearchParams
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:66`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:67`_
 
 ### getQueryVectors
 
@@ -59,7 +59,7 @@ Gets the query vector 2D float array.
 
 2D float array
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:75`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:76`_
 
 ### getMapping
 
@@ -73,7 +73,7 @@ Gets the passed map instance.
 
 a map of ID mappings
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:84`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:85`_
 
 ### getTopK
 
@@ -87,7 +87,7 @@ Gets the topK value.
 
 the topK value
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:93`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:94`_
 
 ### getPrefilter
 
@@ -101,7 +101,7 @@ Gets the prefilter BitSet.
 
 a BitSet object representing the prefilter
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:102`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:103`_
 
 ### getNumDocs
 
@@ -115,7 +115,7 @@ Gets the number of documents in this index, as used for prefilter.
 
 number of documents as an integer
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:111`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:112`_
 
 ### getResources
 
@@ -129,7 +129,7 @@ Gets the CuVSResources instance for this query.
 
 the CuVSResources instance
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:120`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:121`_
 
 ### newBuilder
 
@@ -149,7 +149,7 @@ Creates a new Builder instance.
 
 a new Builder instance
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:145`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:146`_
 
 ### Builder
 
@@ -169,7 +169,7 @@ CuVSResources instance to avoid memory allocation conflicts and potential JVM cr
 | --- | --- |
 | `resources` | the CuVSResources instance to use for this query (must not be shared between threads) |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:171`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:172`_
 
 ### withIndexType
 
@@ -189,7 +189,7 @@ Sets the index type for this query.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:181`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:182`_
 
 ### withSearchParams
 
@@ -209,7 +209,7 @@ Sets the instance of configured CagraSearchParams to be passed for search.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:193`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:194`_
 
 ### withQueryVectors
 
@@ -229,7 +229,7 @@ Registers the query vectors to be passed in the search call.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:204`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:205`_
 
 ### withMapping
 
@@ -249,7 +249,7 @@ Sets the instance of mapping to be used for ID mapping.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:215`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:216`_
 
 ### withTopK
 
@@ -269,7 +269,7 @@ Registers the topK value.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:226`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:227`_
 
 ### withPrefilter
 
@@ -290,7 +290,7 @@ Sets a BitSet to use as prefilter while searching.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:239`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:240`_
 
 ### build
 
@@ -310,6 +310,6 @@ an instance of TieredIndexQuery
 | --- | --- |
 | `IllegalStateException` | if required parameters are missing |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:251`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:252`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndexQuery.java:23`_

@@ -26,7 +26,7 @@ Gets the opaque CuVSResources handle, to be used whenever we need to pass a cuvs
 
 the CuVSResources handle
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:26`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:27`_
 
 ### access
 
@@ -40,7 +40,7 @@ concurrently the same native resources. Calling this method from multiple thread
 returned `ScopedAccess` object must be closed before calling `access()` again from a
 different thread.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:39`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:40`_
 
 ### deviceId
 
@@ -52,7 +52,7 @@ Get the logical id of the device associated with this resources object.
 Information about the device id is immutable, so it is safe to expose it without getting `ScopedAccess`
 to the enclosing resources.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:46`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:47`_
 
 ### close
 
@@ -62,7 +62,7 @@ _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:46`_
 
 Closes this CuVSResources object and releases any resources associated with it.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:51`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:53`_
 
 ### tempDirectory
 
@@ -73,7 +73,7 @@ Path tempDirectory()
 The temporary directory to use for intermediate operations.
 Defaults to \{@systemProperty java.io.tmpdir\}.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:58`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:59`_
 
 ### setWorkspacePool
 
@@ -105,7 +105,7 @@ object; calling it again replaces the pool.
 | --- | --- |
 | `IllegalArgumentException` | if `initialSizeBytes` is not greater than 0 |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:78`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:79`_
 
 ### create
 
@@ -119,7 +119,7 @@ Equivalent to
 create(CuVSProvider.tempDirectory())
 \}
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:87`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:88`_
 
 ### create
 
@@ -142,7 +142,7 @@ Creates a new resources.
 | `UnsupportedOperationException` | if the provider does not cuvs |
 | `LibraryException` | if the native library cannot be loaded |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:98`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:99`_
 
 ### create
 
@@ -176,6 +176,6 @@ global memory resources are restored when the handle is closed.
 | `UnsupportedOperationException` | if the provider does not support cuvs |
 | `LibraryException` | if the native library cannot be loaded |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:123`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:124`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSResources.java:16`_

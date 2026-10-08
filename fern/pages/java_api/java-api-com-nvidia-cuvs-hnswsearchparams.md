@@ -30,7 +30,7 @@ public Builder()
 
 Constructs this Builder with an instance of Arena.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:39`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:40`_
 
 ### withEF
 
@@ -50,7 +50,7 @@ Sets the ef value
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:47`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:48`_
 
 ### withNumThreads
 
@@ -70,7 +70,7 @@ Sets the number of threads
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:58`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:59`_
 
 ### build
 
@@ -84,6 +84,6 @@ Builds an instance of `HnswSearchParams` with passed search parameters.
 
 an instance of HnswSearchParams
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:68`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:69`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswSearchParams.java:15`_

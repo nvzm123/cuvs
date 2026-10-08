@@ -32,7 +32,7 @@ Initializes an instance of `GPUIndex`
 | `maxDocs` | the maximum documents |
 | `bruteforceIndex` | reference to the BruteForceIndex |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:35`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:36`_
 
 ### GPUIndex
 
@@ -49,7 +49,7 @@ Initializes an instance of `GPUIndex`
 | `cagraIndex` | reference to the CagraIndex instance |
 | `bruteforceIndex` | reference to the BruteForceIndex instance |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:57`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:58`_
 
 ### getCagraIndex
 
@@ -63,7 +63,7 @@ Gets the reference to the CAGRA index
 
 an instance of CagraIndex
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:67`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:68`_
 
 ### getBruteforceIndex
 
@@ -77,7 +77,7 @@ Gets the reference to the Bruteforce index
 
 an instance of BruteForceIndex
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:77`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:78`_
 
 ### getFieldName
 
@@ -91,7 +91,7 @@ Gets the field name
 
 field name
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:87`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:88`_
 
 ### getSegmentName
 
@@ -105,7 +105,7 @@ Gets the segment name
 
 segment name
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:96`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:97`_
 
 ### getMaxDocs
 
@@ -119,7 +119,7 @@ Gets the max docs
 
 the max docs
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:105`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:106`_
 
 ### close
 
@@ -129,6 +129,6 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:10
 
 Closes this stream and releases any resources associated with it.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:121`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:123`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUIndex.java:18`_

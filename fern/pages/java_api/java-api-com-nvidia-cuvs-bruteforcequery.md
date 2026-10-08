@@ -38,7 +38,7 @@ mapping, and topK.
 | `numDocs` | Maximum of bits in each prefilter, representing number of documents in this index. Used only when prefilter(s) is/are passed. |
 | `resources` | CuVSResources instance to use for this query |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:42`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:43`_
 
 ### getQueryVectors
 
@@ -52,7 +52,7 @@ Gets the query vector 2D float array.
 
 2D float array
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:62`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:63`_
 
 ### getMapping
 
@@ -62,7 +62,7 @@ public LongToIntFunction getMapping()
 
 Gets the function mapping ordinals (neighbor IDs) to custom user IDs
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:69`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:70`_
 
 ### getTopK
 
@@ -76,7 +76,7 @@ Gets the topK value.
 
 an integer
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:78`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:79`_
 
 ### getPrefilters
 
@@ -90,7 +90,7 @@ Gets the prefilter long array
 
 an array of bitsets
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:87`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:88`_
 
 ### getNumDocs
 
@@ -104,7 +104,7 @@ Gets the number of documents supposed to be in this index, as used for prefilter
 
 number of documents as an integer
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:96`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:97`_
 
 ### getResources
 
@@ -118,7 +118,7 @@ Gets the CuVSResources instance for this query.
 
 the CuVSResources instance
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:105`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:106`_
 
 ### Builder
 
@@ -138,7 +138,7 @@ CuVSResources instance to avoid memory allocation conflicts and potential JVM cr
 | --- | --- |
 | `resources` | the CuVSResources instance to use for this query (must not be shared between threads) |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:143`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:144`_
 
 ### withQueryVectors
 
@@ -158,7 +158,7 @@ Registers the query vectors to be passed in the search call.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:153`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:154`_
 
 ### withMapping
 
@@ -178,7 +178,7 @@ Sets the function used to map ordinals (neighbor IDs) to custom user IDs
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:164`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:165`_
 
 ### withTopK
 
@@ -198,7 +198,7 @@ Registers the topK value.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:175`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:176`_
 
 ### withPrefilters
 
@@ -218,7 +218,7 @@ Sets the prefilters data for building the `BruteForceQuery`.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:187`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:188`_
 
 ### build
 
@@ -232,6 +232,6 @@ Builds an instance of `BruteForceQuery`
 
 an instance of `BruteForceQuery`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:198`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:199`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/BruteForceQuery.java:21`_

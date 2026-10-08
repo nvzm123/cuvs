@@ -37,7 +37,7 @@ Searches multiple CAGRA index partitions for the global top-k nearest neighbors.
 | `query` | a single `CagraQuery` whose query matrix is searched against every partition; its search parameters are shared across all partitions |
 | `k` | number of global nearest neighbors to return per query |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionCagraSearch.java:33`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionCagraSearch.java:34`_
 
 ### search
 
@@ -57,6 +57,6 @@ Searches multiple CAGRA index partitions with optional per-partition device-side
 | `k` | number of global nearest neighbors to return per query |
 | `filters` | one filter per partition, in the same order as `indices`, or `null`/empty for a fully unfiltered search. When non-null, its size must equal `indices.size()`; a `null` entry means no filter for that partition. Each handle must be obtained from `FilterBitsetHandle#create(long[])` for that partition's packed bitset; handles from other sources are not supported. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionCagraSearch.java:53`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionCagraSearch.java:54`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/MultiPartitionCagraSearch.java:21`_

@@ -24,7 +24,7 @@ Gets the distance type.
 
 the distance type
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:143`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:144`_
 
 ### getCodebookKind
 
@@ -38,7 +38,7 @@ Gets how PQ codebooks are created
 
 how PQ codebooks are created
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:152`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:153`_
 
 ### getMetricArg
 
@@ -52,7 +52,7 @@ Gets the argument used by some distance metrics
 
 the argument used by some distance metrics
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:161`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:162`_
 
 ### getKmeansTrainsetFraction
 
@@ -66,7 +66,7 @@ Gets the fraction of data to use during iterative kmeans building
 
 the fraction of data to use during iterative kmeans building
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:170`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:171`_
 
 ### getnLists
 
@@ -80,7 +80,7 @@ Gets the number of inverted lists (clusters)
 
 the number of inverted lists (clusters)
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:179`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:180`_
 
 ### getKmeansNIters
 
@@ -94,7 +94,7 @@ Gets the number of iterations searching for kmeans centers
 
 the number of iterations searching for kmeans centers
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:188`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:189`_
 
 ### getPqBits
 
@@ -108,7 +108,7 @@ Gets the bit length of the vector element after compression by PQ
 
 the bit length of the vector element after compression by PQ
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:197`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:198`_
 
 ### getPqDim
 
@@ -122,7 +122,7 @@ Gets the dimensionality of the vector after compression by PQ
 
 the dimensionality of the vector after compression by PQ
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:206`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:207`_
 
 ### isAddDataOnBuild
 
@@ -136,7 +136,7 @@ Gets whether the dataset content is added to the index
 
 whether the dataset content is added to the index
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:215`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:216`_
 
 ### isForceRandomRotation
 
@@ -150,7 +150,7 @@ Gets the random rotation matrix on the input data and queries
 
 the random rotation matrix on the input data and queries
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:224`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:225`_
 
 ### isConservativeMemoryAllocation
 
@@ -164,7 +164,7 @@ Gets if conservative allocation behavior is set
 
 if conservative allocation behavior is set
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:233`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:234`_
 
 ### getMaxTrainPointsPerPqCode
 
@@ -179,7 +179,7 @@ training is set
 
 whether max number of data points to use per PQ code during PQ codebook training is set
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:244`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:245`_
 
 ### withMetric
 
@@ -199,7 +199,7 @@ Sets the distance type.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:389`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:390`_
 
 ### withMetricArg
 
@@ -219,7 +219,7 @@ Sets the argument used by some distance metrics.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:400`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:401`_
 
 ### withAddDataOnBuild
 
@@ -239,7 +239,7 @@ Sets whether to add the dataset content to the index.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:411`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:412`_
 
 ### withNLists
 
@@ -259,7 +259,7 @@ Sets the number of inverted lists (clusters)
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:422`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:423`_
 
 ### withKmeansNIters
 
@@ -279,7 +279,7 @@ Sets the number of iterations searching for kmeans centers
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:433`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:434`_
 
 ### withKmeansTrainsetFraction
 
@@ -299,7 +299,7 @@ Sets the fraction of data to use during iterative kmeans building.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:445`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:446`_
 
 ### withPqBits
 
@@ -319,7 +319,7 @@ Sets the bit length of the vector element after compression by PQ.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:456`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:457`_
 
 ### withPqDim
 
@@ -339,7 +339,7 @@ Sets the dimensionality of the vector after compression by PQ.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:467`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:468`_
 
 ### withCodebookKind
 
@@ -359,7 +359,7 @@ Sets how PQ codebooks are created.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:478`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:479`_
 
 ### withForceRandomRotation
 
@@ -379,7 +379,7 @@ Sets the random rotation matrix on the input data and queries.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:490`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:491`_
 
 ### withConservativeMemoryAllocation
 
@@ -399,7 +399,7 @@ Sets the conservative allocation behavior
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:501`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:502`_
 
 ### withMaxTrainPointsPerPqCode
 
@@ -420,7 +420,7 @@ training
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:514`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:515`_
 
 ### build
 
@@ -434,6 +434,6 @@ Builds an instance of `CuVSIvfPqIndexParams`.
 
 an instance of `CuVSIvfPqIndexParams`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:524`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:525`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSIvfPqIndexParams.java:10`_

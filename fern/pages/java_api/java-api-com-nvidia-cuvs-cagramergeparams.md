@@ -24,7 +24,7 @@ Gets the index parameters for the output index.
 
 Index parameters to use for the output index
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:27`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:28`_
 
 ### getStrategy
 
@@ -38,7 +38,7 @@ Gets the merge strategy to use.
 
 The merge strategy
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:36`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:37`_
 
 ### withOutputIndexParams
 
@@ -58,7 +58,7 @@ Sets the index parameters for the output index.
 
 This builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:68`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:69`_
 
 ### withStrategy
 
@@ -78,7 +78,7 @@ Sets the merge strategy.
 
 This builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:79`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:80`_
 
 ### build
 
@@ -92,6 +92,6 @@ Builds the `CagraMergeParams` object.
 
 The built parameters
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:89`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:90`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraMergeParams.java:7`_

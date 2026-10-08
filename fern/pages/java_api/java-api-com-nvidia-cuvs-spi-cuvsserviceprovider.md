@@ -32,6 +32,6 @@ Initialize and return an `CuVSProvider` provided by this provider.
 
 the CuVSProvider provided by this provider
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/spi/CuVSServiceProvider.java:22`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/spi/CuVSServiceProvider.java:23`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/spi/CuVSServiceProvider.java:16`_

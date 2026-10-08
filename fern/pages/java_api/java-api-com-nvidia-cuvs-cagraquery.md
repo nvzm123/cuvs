@@ -31,7 +31,7 @@ Gets the instance of CagraSearchParams initially set.
 
 an instance CagraSearchParams
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:66`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:67`_
 
 ### getQueryVectors
 
@@ -41,7 +41,7 @@ public CuVSMatrix getQueryVectors()
 
 Gets the query vector matrix.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:73`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:74`_
 
 ### getMapping
 
@@ -51,7 +51,7 @@ public LongToIntFunction getMapping()
 
 Gets the function mapping ordinals (neighbor IDs) to custom user IDs
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:80`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:81`_
 
 ### getTopK
 
@@ -65,7 +65,7 @@ Gets the topK value.
 
 the topK value
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:89`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:90`_
 
 ### getPrefilter
 
@@ -79,7 +79,7 @@ Gets the prefilter BitSet.
 
 a BitSet object representing the prefilter
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:98`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:99`_
 
 ### getNumDocs
 
@@ -93,7 +93,7 @@ Gets the number of documents in this index, as used for prefilter
 
 number of documents as an integer
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:107`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:108`_
 
 ### getResources
 
@@ -107,7 +107,7 @@ Gets the CuVSResources instance for this query.
 
 the CuVSResources instance
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:116`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:117`_
 
 ### Builder
 
@@ -127,7 +127,7 @@ CuVSResources instance to avoid memory allocation conflicts and potential JVM cr
 | --- | --- |
 | `resources` | the CuVSResources instance to use for this query (must not be shared between threads) |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:155`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:156`_
 
 ### withSearchParams
 
@@ -147,7 +147,7 @@ Sets the instance of configured CagraSearchParams to be passed for search.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:166`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:167`_
 
 ### withQueryVectors
 
@@ -167,7 +167,7 @@ Registers the query vectors to be passed in the search call.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:177`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:178`_
 
 ### withMapping
 
@@ -187,7 +187,7 @@ Sets the function used to map ordinals (neighbor IDs) to custom user IDs
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:188`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:189`_
 
 ### withTopK
 
@@ -207,7 +207,7 @@ Registers the topK value.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:199`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:200`_
 
 ### withPrefilter
 
@@ -231,7 +231,7 @@ corresponding dataset vector; `0` excludes it.
 
 this `Builder` instance
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:214`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:215`_
 
 ### build
 
@@ -245,6 +245,6 @@ Builds an instance of CuVSQuery.
 
 an instance of CuVSQuery
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:225`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:226`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CagraQuery.java:21`_

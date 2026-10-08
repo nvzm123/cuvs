@@ -26,7 +26,7 @@ Gets an instance of CuVSResources for the accessing thread.
 
 an instance of CuVSResources
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:30`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:31`_
 
 ### setCuVSResourcesInstance
 
@@ -42,7 +42,7 @@ Sets the instance of CuVSResources
 | --- | --- |
 | `resources` | the instance of CuVSResources to set |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:39`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:40`_
 
 ### resolveWorkspacePoolBytes
 
@@ -54,7 +54,7 @@ Resolves a raw workspace-pool property value to a 256-byte-aligned size. Zero or
 value disables the per-resources pool. Invalid, negative, or unalignable values warn and also
 disable it.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:80`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:81`_
 
 ### closeCuVSResourcesInstance
 
@@ -64,7 +64,7 @@ public static void closeCuVSResourcesInstance()
 
 Attempts to close the thread's `CuVSResources` instance.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:122`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:123`_
 
 ### assertIsSupported
 
@@ -80,7 +80,7 @@ Checks if cuVS is supported and throws `UnsupportedOperationException` otherwise
 | --- | --- |
 | `UnsupportedOperationException` |  |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:135`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:136`_
 
 ### isSupported
 
@@ -94,6 +94,6 @@ Checks if cuVS is supported.
 
 true if cuVS is supported else false
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:146`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:147`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/ThreadLocalCuVSResourcesProvider.java:16`_

@@ -29,7 +29,7 @@ Returns the graph degrees the native Vamana builder supports.
 
 a copy of the supported graph degrees, in ascending order
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:30`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:31`_
 
 ### L2Expanded
 
@@ -39,7 +39,7 @@ L2Expanded(0), /** * Euclidean, the square root of
 
 Squared L2.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:45`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:46`_
 
 ### L2SqrtExpanded
 
@@ -49,7 +49,7 @@ L2SqrtExpanded(1)
 
 Euclidean, the square root of `#L2Expanded`.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:50`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:51`_
 
 ### getGraphDegree
 
@@ -60,7 +60,7 @@ public int getGraphDegree()
 Gets the maximum degree of the output graph, the R parameter in the Vamana
 literature.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:97`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:98`_
 
 ### getVisitedSize
 
@@ -71,7 +71,7 @@ public int getVisitedSize()
 Gets the maximum number of visited nodes per search, the L parameter in the
 Vamana literature.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:105`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:106`_
 
 ### getVamanaIters
 
@@ -81,7 +81,7 @@ public float getVamanaIters()
 
 Gets the number of Vamana vector insertion iterations.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:112`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:113`_
 
 ### getAlpha
 
@@ -91,7 +91,7 @@ public float getAlpha()
 
 Gets the alpha pruning parameter.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:119`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:120`_
 
 ### getMaxFraction
 
@@ -101,7 +101,7 @@ public float getMaxFraction()
 
 Gets the maximum fraction of the dataset inserted per batch.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:126`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:127`_
 
 ### getBatchBase
 
@@ -111,7 +111,7 @@ public float getBatchBase()
 
 Gets the growth rate base for batch sizes.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:133`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:134`_
 
 ### getQueueSize
 
@@ -121,7 +121,7 @@ public int getQueueSize()
 
 Gets the candidate queue size.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:140`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:141`_
 
 ### getReverseBatchSize
 
@@ -131,7 +131,7 @@ public int getReverseBatchSize()
 
 Gets the maximum batch size of reverse edge processing.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:147`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:148`_
 
 ### getMetric
 
@@ -141,7 +141,7 @@ public CuvsDistanceType getMetric()
 
 Gets the distance metric.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:154`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:155`_
 
 ### withGraphDegree
 
@@ -161,7 +161,7 @@ Sets the maximum degree of the output graph.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:205`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:206`_
 
 ### withVisitedSize
 
@@ -183,7 +183,7 @@ The native builder requires this to be greater than the graph degree.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:218`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:219`_
 
 ### withVamanaIters
 
@@ -203,7 +203,7 @@ Sets the number of Vamana vector insertion iterations.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:229`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:230`_
 
 ### withAlpha
 
@@ -223,7 +223,7 @@ Sets the alpha pruning parameter.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:240`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:241`_
 
 ### withMaxFraction
 
@@ -244,7 +244,7 @@ batch decreases graph quality but improves build speed.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:252`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:253`_
 
 ### withBatchBase
 
@@ -264,7 +264,7 @@ Sets the growth rate base for batch sizes.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:263`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:264`_
 
 ### withQueueSize
 
@@ -285,7 +285,7 @@ form `(2^x) - 1`.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:275`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:276`_
 
 ### withReverseBatchSize
 
@@ -306,7 +306,7 @@ memory footprint of that stage.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:287`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:288`_
 
 ### withMetric
 
@@ -326,7 +326,7 @@ Sets the distance metric.
 
 an instance of this Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:298`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:299`_
 
 ### build
 
@@ -340,6 +340,6 @@ Builds an instance of `VamanaIndexParams`.
 
 an instance of `VamanaIndexParams`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:308`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:309`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/VamanaIndexParams.java:18`_

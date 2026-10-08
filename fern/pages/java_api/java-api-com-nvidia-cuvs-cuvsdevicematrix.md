@@ -24,6 +24,6 @@ Returns a new host matrix with data from this device matrix.
 The returned host matrix will need to be managed by the caller, which will be
 responsible to call `CuVSMatrix#close()` to free its resources when done.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSDeviceMatrix.java:16`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSDeviceMatrix.java:17`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSDeviceMatrix.java:10`_

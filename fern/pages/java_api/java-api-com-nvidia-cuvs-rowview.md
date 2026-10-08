@@ -30,7 +30,7 @@ data type of the dataset on top of which this view is instantiates is
 | --- | --- |
 | `index` | the element index |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:22`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:23`_
 
 ### getAsFloat
 
@@ -48,7 +48,7 @@ data type of the dataset on top of which this view is instantiates is
 | --- | --- |
 | `index` | the element index |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:31`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:32`_
 
 ### getAsByte
 
@@ -66,7 +66,7 @@ data type of the dataset on top of which this view is instantiates is
 | --- | --- |
 | `index` | the element index |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:40`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:41`_
 
 ### toArray
 
@@ -82,7 +82,7 @@ Copies the content of this row to an on-heap Java array.
 | --- | --- |
 | `array` | the destination array. Must be of length `RowView#size()` or bigger. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:47`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:48`_
 
 ### toArray
 
@@ -98,7 +98,7 @@ Copies the content of this row to an on-heap Java array.
 | --- | --- |
 | `array` | the destination array. Must be of length `RowView#size()` or bigger. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:54`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:55`_
 
 ### toArray
 
@@ -114,6 +114,6 @@ Copies the content of this row to an on-heap Java array.
 | --- | --- |
 | `array` | the destination array. Must be of length `RowView#size()` or bigger. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:61`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:62`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/RowView.java:12`_

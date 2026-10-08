@@ -30,7 +30,7 @@ Default constructor for `Lucene101AcceleratedHNSWCodec`.
 | --- | --- |
 | `Exception` |  |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:31`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:32`_
 
 ### Lucene101AcceleratedHNSWCodec
 
@@ -47,7 +47,7 @@ Constructor for `Lucene101AcceleratedHNSWCodec`.
 | `name` | the codec's name |
 | `delegate` | the delegate codec to filter |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:41`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:42`_
 
 ### Lucene101AcceleratedHNSWCodec
 
@@ -69,7 +69,7 @@ Constructor for `Lucene101AcceleratedHNSWCodec`.
 | --- | --- |
 | `Exception` | exception |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:52`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:53`_
 
 ### knnVectorsFormat
 
@@ -83,7 +83,7 @@ Get the configured `KnnVectorsFormat`.
 
 the instance of the `KnnVectorsFormat`
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:87`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:89`_
 
 ### setKnnFormat
 
@@ -99,6 +99,6 @@ Set the `KnnVectorsFormat`.
 | --- | --- |
 | `format` | the `KnnVectorsFormat` to set |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:97`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:98`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/Lucene101AcceleratedHNSWCodec.java:21`_

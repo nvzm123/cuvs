@@ -30,7 +30,7 @@ resources.
 | --- | --- |
 | `Exception` | if an error occurs during index destruction |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:22`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:24`_
 
 ### search
 
@@ -56,7 +56,7 @@ An instance of `SearchResults` containing the k-nearest neighbors and their dist
 | --- | --- |
 | `Throwable` | if an error occurs during the search operation |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:34`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:35`_
 
 ### getIndexType
 
@@ -70,7 +70,7 @@ Returns the algorithm type backing this TieredIndex.
 
 The `TieredIndexType` indicating the underlying algorithm (e.g., CAGRA)
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:42`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:43`_
 
 ### getCuVSResources
 
@@ -84,7 +84,7 @@ Returns the resources handle associated with this TieredIndex.
 
 The `CuVSResources` instance used by this index
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:49`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:50`_
 
 ### newBuilder
 
@@ -110,7 +110,7 @@ A new `Builder` instance for constructing a TieredIndex
 | --- | --- |
 | `NullPointerException` | if cuvsResources is null |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:58`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:59`_
 
 ### extend
 
@@ -124,7 +124,7 @@ Returns an ExtendBuilder to add new data to the existing index.
 
 An `ExtendBuilder` instance for extending the index
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:68`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:69`_
 
 ### from
 
@@ -148,7 +148,7 @@ This Builder instance for method chaining
 | --- | --- |
 | `UnsupportedOperationException` | as deserialization is not yet supported |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:82`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:83`_
 
 ### withDataset
 
@@ -168,7 +168,7 @@ Sets the dataset vectors for building the TieredIndex.
 
 This Builder instance for method chaining
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:91`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:92`_
 
 ### withDataset
 
@@ -188,7 +188,7 @@ Sets the dataset for building the TieredIndex.
 
 This Builder instance for method chaining
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:99`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:100`_
 
 ### withIndexParams
 
@@ -208,7 +208,7 @@ Registers TieredIndex parameters with this Builder.
 
 This Builder instance for method chaining
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:108`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:109`_
 
 ### withIndexType
 
@@ -228,7 +228,7 @@ Sets the index type for the TieredIndex.
 
 This Builder instance for method chaining
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:117`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:118`_
 
 ### build
 
@@ -250,7 +250,7 @@ A new `TieredIndex` instance
 | `Throwable` | if an error occurs during index construction |
 | `IllegalArgumentException` | if both vectors and dataset are provided, or if required parameters are missing |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:129`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:130`_
 
 ### withDataset
 
@@ -270,7 +270,7 @@ Sets the vectors to add to the existing index.
 
 This ExtendBuilder instance for method chaining
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:152`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:153`_
 
 ### withDataset
 
@@ -290,7 +290,7 @@ Sets the dataset to add to the existing index.
 
 This ExtendBuilder instance for method chaining
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:161`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:162`_
 
 ### execute
 
@@ -307,6 +307,6 @@ Executes the extend operation, adding the specified data to the index.
 | `Throwable` | if an error occurs during the extend operation |
 | `IllegalArgumentException` | if both vectors and dataset are provided, or if no data is provided |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:171`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:172`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/TieredIndex.java:15`_

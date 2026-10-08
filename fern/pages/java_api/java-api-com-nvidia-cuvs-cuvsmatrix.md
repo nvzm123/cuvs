@@ -26,7 +26,7 @@ static CuVSMatrix ofArray(float[][] vectors)
 Creates a dataset from an on-heap array of vectors.
 This method will allocate an additional MemorySegment to hold the graph data.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:47`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:48`_
 
 ### ofArray
 
@@ -37,7 +37,7 @@ static CuVSMatrix ofArray(int[][] vectors)
 Creates a dataset from an on-heap array of vectors.
 This method will allocate an additional MemorySegment to hold the graph data.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:57`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:58`_
 
 ### ofArray
 
@@ -48,7 +48,7 @@ static CuVSMatrix ofArray(byte[][] vectors)
 Creates a dataset from an on-heap array of vectors.
 This method will allocate an additional MemorySegment to hold the graph data.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:67`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:68`_
 
 ### addVector
 
@@ -64,7 +64,7 @@ Adds a single vector to the matrix.
 | --- | --- |
 | `vector` | A float array of as many elements as the dimensions |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:81`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:82`_
 
 ### addVector
 
@@ -80,7 +80,7 @@ Adds a single vector to the matrix.
 | --- | --- |
 | `vector` | A byte array of as many elements as the dimensions |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:88`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:89`_
 
 ### addVector
 
@@ -96,7 +96,7 @@ Adds a single vector to the matrix.
 | --- | --- |
 | `vector` | An int array of as many elements as the dimensions |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:95`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:96`_
 
 ### addVector
 
@@ -112,7 +112,7 @@ Adds a single vector to the matrix. Each element is a raw float16 bit pattern st
 | --- | --- |
 | `vector` | A short array of as many elements as the dimensions |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:102`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:103`_
 
 ### build
 
@@ -126,7 +126,7 @@ If this method fails, callers should close the builder. Built-in builders then r
 matrix storage allocated during builder construction; providers that inherit the default
 no-op `#close()` implementation do not.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:111`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:112`_
 
 ### close
 
@@ -141,7 +141,7 @@ The default implementation preserves compatibility with providers compiled befor
 builders became closeable. Builders that allocate storage before `#build()` should
 override this method.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:121`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:123`_
 
 ### hostBuilder
 
@@ -163,7 +163,7 @@ Returns a builder to create a new instance of a host-memory matrix
 
 a builder for creating a `CuVSHostMatrix`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:133`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:134`_
 
 ### hostBuilder
 
@@ -187,7 +187,7 @@ Returns a builder to create a new instance of a host-memory matrix
 
 a builder for creating a `CuVSDeviceMatrix`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:147`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:148`_
 
 ### deviceBuilder
 
@@ -210,7 +210,7 @@ Returns a builder to create a new instance of a dataset
 
 a builder for creating a `CuVSDeviceMatrix`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:162`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:163`_
 
 ### deviceBuilder
 
@@ -235,7 +235,7 @@ Returns a builder to create a new instance of a dataset
 
 a builder for creating a `CuVSDeviceMatrix`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:178`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:179`_
 
 ### size
 
@@ -249,7 +249,7 @@ Gets the size of the dataset
 
 Size of the dataset
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:194`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:195`_
 
 ### columns
 
@@ -264,7 +264,7 @@ or the graph degree for the graph represented as a list of neighbours
 
 Dimensions of the vectors in the dataset
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:202`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:203`_
 
 ### dataType
 
@@ -278,7 +278,7 @@ Gets the element type
 
 a `DataType` describing the matrix element type
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:209`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:210`_
 
 ### getRow
 
@@ -294,7 +294,7 @@ Get a view (0-copy) of the row data, as a list of integers (32 bit)
 | --- | --- |
 | `row` | the row for which to return the data |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:216`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:217`_
 
 ### toArray
 
@@ -310,7 +310,7 @@ Copies the content of this dataset to an on-heap Java matrix (array of arrays).
 | --- | --- |
 | `array` | the destination array. Must be of length `CuVSMatrix#size()` or bigger, and each element must be of length `CuVSMatrix#columns()` or bigger. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:224`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:225`_
 
 ### toArray
 
@@ -326,7 +326,7 @@ Copies the content of this dataset to an on-heap Java matrix (array of arrays).
 | --- | --- |
 | `array` | the destination array. Must be of length `CuVSMatrix#size()` or bigger, and each element must be of length `CuVSMatrix#columns()` or bigger. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:232`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:233`_
 
 ### toArray
 
@@ -342,7 +342,7 @@ Copies the content of this dataset to an on-heap Java matrix (array of arrays).
 | --- | --- |
 | `array` | the destination array. Must be of length `CuVSMatrix#size()` or bigger, and each element must be of length `CuVSMatrix#columns()` or bigger. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:240`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:241`_
 
 ### toHost
 
@@ -360,7 +360,7 @@ same element type and dimension.
 | --- | --- |
 | `hostMatrix` | the host-memory-backed matrix to fill. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:249`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:250`_
 
 ### toHost
 
@@ -374,7 +374,7 @@ the device matrix.
 The returned host matrix will need to be managed by the caller, which will be
 responsible to call `CuVSMatrix#close()` to free its resources when done.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:258`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:259`_
 
 ### toDevice
 
@@ -392,7 +392,7 @@ same element type and dimension.
 | --- | --- |
 | `deviceMatrix` | the device-memory-backed matrix to fill. |
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:267`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:268`_
 
 ### toDevice
 
@@ -406,6 +406,6 @@ the host matrix.
 The returned device matrix will need to be managed by the caller, which will be
 responsible to call `CuVSMatrix#close()` to free its resources when done.
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:276`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:277`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/CuVSMatrix.java:17`_

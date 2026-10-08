@@ -24,7 +24,7 @@ Gets all the available GPUs
 
 a list of `GPUInfo` objects with GPU details
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/GPUInfoProvider.java:20`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/GPUInfoProvider.java:21`_
 
 ### compatibleGPUs
 
@@ -39,7 +39,7 @@ memory &gt;= 8GB
 
 a list of compatible GPUs. See `GPUInfo`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/GPUInfoProvider.java:28`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/GPUInfoProvider.java:29`_
 
 ### getCurrentInfo
 
@@ -59,6 +59,6 @@ Gets memory information relative to a `CuVSResources`
 
 a `CuVSResourcesInfo` record containing the memory information
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/GPUInfoProvider.java:35`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/GPUInfoProvider.java:36`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/GPUInfoProvider.java:9`_
