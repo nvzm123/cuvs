@@ -39,6 +39,11 @@ public class TestCuVSVectorsFormat extends BaseKnnVectorsFormatTestCase {
     return TestUtil.alwaysKnnVectorsFormat(new CuVS2510GPUVectorsFormat());
   }
 
+  @Override
+  protected boolean supportsFloatVectorFallback() {
+    return false;
+  }
+
   public void testMergeTwoSegsWithASingleDocPerSeg() throws Exception {
     float[][] f = new float[][] {randomVector(384), randomVector(384)};
     try (Directory dir = newDirectory();

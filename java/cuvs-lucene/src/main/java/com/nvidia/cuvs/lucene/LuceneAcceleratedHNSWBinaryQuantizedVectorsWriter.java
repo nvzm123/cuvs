@@ -45,6 +45,7 @@ import org.apache.lucene.index.Sorter;
 import org.apache.lucene.index.Sorter.DocMap;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.store.IndexOutput;
+import org.apache.lucene.util.IORunnable;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.InfoStream;
 
@@ -197,7 +198,8 @@ public class LuceneAcceleratedHNSWBinaryQuantizedVectorsWriter extends KnnVector
               QuantizationType.BINARY);
 
       long vectorIndexOffset = hnswVectorIndex.getFilePointer();
-      int[][] graphLevelNodeOffsets = writeGraph(hnswGraph, hnswVectorIndex);
+      int[][] graphLevelNodeOffsets =
+          writeGraph(hnswGraph, hnswVectorIndex, Lucene99HnswVectorsFormat.VERSION_CURRENT);
       long vectorIndexLength = hnswVectorIndex.getFilePointer() - vectorIndexOffset;
       writeMeta(
           hnswVectorIndex,
@@ -291,7 +293,8 @@ public class LuceneAcceleratedHNSWBinaryQuantizedVectorsWriter extends KnnVector
       long vectorIndexOffset = hnswVectorIndex.getFilePointer();
 
       // Write the graph to the vector index
-      int[][] graphLevelNodeOffsets = writeGraph(hnswGraph, hnswVectorIndex);
+      int[][] graphLevelNodeOffsets =
+          writeGraph(hnswGraph, hnswVectorIndex, Lucene99HnswVectorsFormat.VERSION_CURRENT);
 
       long vectorIndexLength = hnswVectorIndex.getFilePointer() - vectorIndexOffset;
 
@@ -315,9 +318,9 @@ public class LuceneAcceleratedHNSWBinaryQuantizedVectorsWriter extends KnnVector
    * Write field for merging.
    */
   @Override
-  public void mergeOneField(FieldInfo fieldInfo, MergeState mergeState) throws IOException {
-    flatVectorsWriter.mergeOneField(fieldInfo, mergeState);
-    vectorBasedMerge(fieldInfo, mergeState);
+  public IORunnable mergeOneField(FieldInfo fieldInfo, MergeState mergeState) throws IOException {
+    flatVectorsWriter.mergeOneFlatVectorField(fieldInfo, mergeState);
+    return () -> vectorBasedMerge(fieldInfo, mergeState);
   }
 
   /**

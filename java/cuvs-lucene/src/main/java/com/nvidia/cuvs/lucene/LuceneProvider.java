@@ -31,6 +31,7 @@ import org.apache.lucene.search.TaskExecutor;
 public class LuceneProvider {
 
   static final Logger log = Logger.getLogger(LuceneProvider.class.getName());
+  static final String WRITABLE_CODEC_VERSION = "104";
 
   private static final String BASE = "org.apache.lucene.";
   private static String codecs = "codecs.lucene<version>.";
@@ -201,6 +202,7 @@ public class LuceneProvider {
       SegmentWriteState state,
       int maxConn,
       int beamWidth,
+      FlatVectorsFormat format,
       FlatVectorsWriter writer,
       int numMergeWorkers,
       TaskExecutor executor)
@@ -211,12 +213,13 @@ public class LuceneProvider {
               SegmentWriteState.class,
               Integer.TYPE,
               Integer.TYPE,
+              FlatVectorsFormat.class,
               FlatVectorsWriter.class,
               Integer.TYPE,
               TaskExecutor.class);
       return (KnnVectorsWriter)
           luceneHnswVectorsWriterConstructor.newInstance(
-              state, maxConn, beamWidth, writer, numMergeWorkers, executor);
+              state, maxConn, beamWidth, format, writer, numMergeWorkers, executor);
     } catch (Exception e) {
       log.log(Level.SEVERE, "Unable to initialize LuceneHnswVectorsWriter: " + e.getMessage());
       throw e;

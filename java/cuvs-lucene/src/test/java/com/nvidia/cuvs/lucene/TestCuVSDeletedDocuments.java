@@ -28,6 +28,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.search.AcceptDocs;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.search.Query;
@@ -431,7 +432,11 @@ public class TestCuVSDeletedDocuments extends LuceneTestCase {
           TopKnnCollector collector = new TopKnnCollector(topK, Integer.MAX_VALUE);
           ctx.reader()
               .searchNearestVectors(
-                  "vector", queryVector, collector, new Bits.MatchNoBits(ctx.reader().maxDoc()));
+                  "vector",
+                  queryVector,
+                  collector,
+                  AcceptDocs.fromLiveDocs(
+                      new Bits.MatchNoBits(ctx.reader().maxDoc()), ctx.reader().maxDoc()));
           assertEquals(
               "An empty accepted-ordinal set should collect nothing",
               0,

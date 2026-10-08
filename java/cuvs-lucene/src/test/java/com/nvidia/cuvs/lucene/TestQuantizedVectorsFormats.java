@@ -66,6 +66,11 @@ public class TestQuantizedVectorsFormats extends BaseKnnVectorsFormatTestCase {
     return TestUtil.alwaysKnnVectorsFormat(knnVectorsFormat);
   }
 
+  @Override
+  protected boolean supportsFloatVectorFallback() {
+    return false;
+  }
+
   public void testMergeTwoSegsWithASingleDocPerSeg() throws Exception {
     final int R = 2, D = 128;
     float[][] f = new float[R][D];

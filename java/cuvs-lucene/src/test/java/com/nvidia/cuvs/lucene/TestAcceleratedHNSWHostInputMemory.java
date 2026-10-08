@@ -32,6 +32,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.tests.util.TestUtil;
 import org.apache.lucene.util.IOConsumer;
+import org.apache.lucene.util.IORunnable;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.InfoStream;
 
@@ -245,8 +246,9 @@ public class TestAcceleratedHNSWHostInputMemory extends LuceneTestCase {
     }
 
     @Override
-    public void mergeOneField(FieldInfo info, MergeState state) throws IOException {
-      observe(writer -> writer.mergeOneField(info, state));
+    public IORunnable mergeOneField(FieldInfo info, MergeState state) throws IOException {
+      IORunnable deferred = delegate.mergeOneField(info, state);
+      return deferred == null ? null : () -> observe(writer -> deferred.run());
     }
 
     @Override
