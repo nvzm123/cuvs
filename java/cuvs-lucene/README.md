@@ -125,6 +125,24 @@ The filtered per-segment path can request up to `k + 10` candidates internally, 
 optional over-fetch at 512 for `SINGLE_CTA`. A change in filter cardinality therefore does not
 turn a valid query into a parameter error.
 
+### Parallel filter construction
+
+`GPUKnnFloatVectorQuery` constructs per-leaf acceptance masks serially by default. To opt in to
+parallel CPU construction, set `-Dcom.nvidia.cuvs.lucene.filterBuildThreads=8` before the first query
+that needs a filter. The setting is read once; `1` retains the serial path and `2` through `8` select
+the number of dedicated builder threads. Other values are rejected.
+
+The builder pool is shared across queries, separate from query and GPU executors, and has a bounded
+queue of 4096 tasks. Under queue pressure, the submitting query thread runs the task itself; the
+configured count therefore bounds dedicated builder threads, not all concurrently executing filter
+tasks. Idle daemon workers retire after 60 seconds. Accepted tasks finish before a failed or
+interrupted query unwinds, and interruption is restored after resource cleanup.
+
+Only the scheduling of per-leaf filter acquisition changes. Filter evaluation, live-document
+intersection, ordinal packing, cache keys, cache single-flight behavior and GPU search parameters
+remain unchanged. Choose the thread count for the application's CPU capacity and concurrent-query
+load; this setting does not imply a latency improvement for every workload.
+
 ## Contributing
 
 If you are interested in contributing to cuvs-lucene, please read the cuVS [Contributing guide](https://docs.nvidia.com/cuvs/developer-guide/contributing).

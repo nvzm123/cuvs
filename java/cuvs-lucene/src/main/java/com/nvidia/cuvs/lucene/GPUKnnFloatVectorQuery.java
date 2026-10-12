@@ -22,6 +22,8 @@ import java.util.Comparator;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executor;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.index.CodecReader;
@@ -465,6 +467,26 @@ public class GPUKnnFloatVectorQuery extends KnnFloatVectorQuery {
       entry.getKey().onSearchWorkingSet(entry.getValue());
     }
 
+    Executor filterExecutor = ParallelFilterBitsetBuilder.executor();
+    if (filterExecutor != null) {
+      List<Callable<CachedFilterBitset>> jobs = new ArrayList<>(n);
+      for (int i = 0; i < n; i++) {
+        final int leaf = i;
+        jobs.add(
+            needsFilter[i]
+                ? () ->
+                    acquireSegmentFilterBitset(
+                        sharedFilterWeight,
+                        leaves.get(leaf),
+                        fvvs[leaf],
+                        caches[leaf],
+                        entryBytes[leaf])
+                : null);
+      }
+      return ParallelFilterBitsetBuilder.runOrdered(
+          filterExecutor, jobs, cached -> cached.handle().decRef());
+    }
+
     List<CachedFilterBitset> bitsets = new ArrayList<>(n);
     try {
       for (int i = 0; i < n; i++) {
@@ -472,25 +494,9 @@ public class GPUKnnFloatVectorQuery extends KnnFloatVectorQuery {
           bitsets.add(null);
           continue;
         }
-        LeafReaderContext ctx = leaves.get(i);
-        FloatVectorValues fvv = fvvs[i];
-        FilterBitsetCache cache = caches[i];
-        // When caching is disabled, route every segment through the uncached, caller-owned path.
-        var helper = cache.isEnabled() ? ctx.reader().getReaderCacheHelper() : null;
-        if (helper == null) {
-          // This reader can't be cached; build an uncached handle owned outright by the caller.
-          bitsets.add(buildSegmentFilterBitset(sharedFilterWeight, ctx, fvv));
-        } else {
-          // Evict entries when this segment reader closes (merge/reopen), not just on LRU.
-          cache.ensureCloseListener(helper);
-          bitsets.add(
-              cache.acquire(
-                  filter,
-                  helper.getKey(),
-                  field,
-                  entryBytes[i],
-                  () -> buildSegmentFilterBitset(sharedFilterWeight, ctx, fvv)));
-        }
+        bitsets.add(
+            acquireSegmentFilterBitset(
+                sharedFilterWeight, leaves.get(i), fvvs[i], caches[i], entryBytes[i]));
       }
       return bitsets;
     } catch (IOException | RuntimeException | Error e) {
@@ -501,6 +507,28 @@ public class GPUKnnFloatVectorQuery extends KnnFloatVectorQuery {
       }
       throw e;
     }
+  }
+
+  private CachedFilterBitset acquireSegmentFilterBitset(
+      Weight filterWeight,
+      LeafReaderContext ctx,
+      FloatVectorValues fvv,
+      FilterBitsetCache cache,
+      long entryBytes)
+      throws IOException {
+    // When caching is disabled, retain the uncached, caller-owned path.
+    var helper = cache.isEnabled() ? ctx.reader().getReaderCacheHelper() : null;
+    if (helper == null) {
+      return buildSegmentFilterBitset(filterWeight, ctx, fvv);
+    }
+    // Cache keys, reader invalidation and single-flight acquisition are shared by both paths.
+    cache.ensureCloseListener(helper);
+    return cache.acquire(
+        filter,
+        helper.getKey(),
+        field,
+        entryBytes,
+        () -> buildSegmentFilterBitset(filterWeight, ctx, fvv));
   }
 
   /**
