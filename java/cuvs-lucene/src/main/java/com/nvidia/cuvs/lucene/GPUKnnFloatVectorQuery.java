@@ -517,11 +517,9 @@ public class GPUKnnFloatVectorQuery extends KnnFloatVectorQuery {
     // itself
     // be null to mean "all docs accepted" in this segment).
     Bits acceptDocs = (filterWeight != null) ? evalFilter(filterWeight, ctx, liveDocs) : liveDocs;
-    Bits acceptedOrds = fvv.getAcceptOrds(acceptDocs);
-    int numOrds = fvv.size();
-    long[] segLongs = new long[(int) (((long) numOrds + 63) / 64)];
-    int cardinality = packOrdsToLongs(acceptedOrds, numOrds, segLongs, 0);
-    return new CachedFilterBitset(FilterBitsetHandle.create(segLongs), cardinality);
+    FilterBitsetPacking.PackedBits packed =
+        FilterBitsetPacking.pack(fvv, acceptDocs, ctx.reader().maxDoc());
+    return new CachedFilterBitset(FilterBitsetHandle.create(packed.words()), packed.cardinality());
   }
 
   /**
@@ -559,33 +557,6 @@ public class GPUKnnFloatVectorQuery extends KnnFloatVectorQuery {
         return maxDoc;
       }
     };
-  }
-
-  /**
-   * Packs {@code numOrds} ordinal bits from {@code bits} into {@code dest} starting at long index
-   * {@code destLongOffset}. {@code bits == null} means all ordinals accepted (Lucene convention).
-   *
-   * @return the number of ordinals accepted, i.e. the bits set
-   */
-  private static int packOrdsToLongs(Bits bits, int numOrds, long[] dest, int destLongOffset) {
-    if (bits == null) {
-      // All ordinals accepted: fill with all-ones, masking the last partial word.
-      int numLongs = (numOrds + 63) / 64;
-      Arrays.fill(dest, destLongOffset, destLongOffset + numLongs, -1L);
-      int tail = numOrds % 64;
-      if (tail != 0) {
-        dest[destLongOffset + numLongs - 1] = (1L << tail) - 1L;
-      }
-      return numOrds;
-    }
-    int cardinality = 0;
-    for (int i = 0; i < numOrds; i++) {
-      if (bits.get(i)) {
-        dest[destLongOffset + i / 64] |= (1L << (i % 64));
-        cardinality++;
-      }
-    }
-    return cardinality;
   }
 
   // -------------------------------------------------------------------------
