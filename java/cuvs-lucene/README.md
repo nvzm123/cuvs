@@ -125,6 +125,45 @@ The filtered per-segment path can request up to `k + 10` candidates internally, 
 optional over-fetch at 512 for `SINGLE_CTA`. A change in filter cardinality therefore does not
 turn a valid query into a parameter error.
 
+### Filter cache controls
+
+Lucene's CPU query cache stores matching document sets, not vector search results. It is separate
+from cuVS-Lucene's filter-bitset cache. For an application-owned `IndexSearcher`, CPU query caching
+can be disabled before starting searches:
+
+```java
+searcher.setQueryCache(null);
+```
+
+This disables only Lucene's matching-document-set caching. It does not remove the filter, disable the
+cuVS-Lucene filter-bitset cache, or change GPU vector search into CPU vector search. Apply this
+setting to each searcher that should opt out.
+
+Frequently reused predicates may benefit from CPU query caching. For many rotating predicates,
+constructing and retaining cache entries can add work without enough reuse to repay it, especially
+when the working set exceeds the cache's capacity. Measure the application's filter mix and query
+concurrency before choosing a policy; disabling the cache is not a general performance recommendation.
+
+Alternatively, an application can keep CPU caching with explicit limits:
+
+```java
+import org.apache.lucene.search.LRUQueryCache;
+
+// Illustrative limits: at most 256 query keys and 64 MiB of accounted cache memory.
+searcher.setQueryCache(new LRUQueryCache(256, 64L * 1024 * 1024));
+```
+
+The query-count and byte limits are independent; choose them for the workload. This example
+configures that searcher, not the cuVS-Lucene filter-bitset cache.
+
+The separate cuVS-Lucene cache is configured by `FilterBitsetCacheConfig`. Its `DEFAULT` remains
+enabled with a 128 MiB retention budget per vectors-format instance. It retains packed host
+acceptance masks and their handles; device-side copies are allocated lazily when used by GPU search.
+The budget is not a preallocation or an absolute host/device memory limit: object overhead,
+temporary construction and in-flight handles can consume additional memory. Applications that
+construct vectors formats directly can supply this configuration through
+`CuVS2510GPUVectorsFormat(GPUSearchParams, FilterBitsetCacheConfig)`.
+
 ## Contributing
 
 If you are interested in contributing to cuvs-lucene, please read the cuVS [Contributing guide](https://docs.nvidia.com/cuvs/developer-guide/contributing).
