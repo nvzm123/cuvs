@@ -87,6 +87,7 @@ public class Lucene99AcceleratedHNSWVectorsFormat extends KnnVectorsFormat {
             state,
             acceleratedHNSWParams.getMaxConn(),
             acceleratedHNSWParams.getBeamWidth(),
+            FLAT_VECTORS_FORMAT,
             flatWriter,
             acceleratedHNSWParams.getNumMergeWorkers(),
             new TaskExecutor(acceleratedHNSWParams.getMergeExec()));

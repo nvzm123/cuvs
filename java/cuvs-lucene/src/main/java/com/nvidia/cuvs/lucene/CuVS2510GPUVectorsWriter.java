@@ -48,6 +48,7 @@ import org.apache.lucene.index.Sorter.DocMap;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.IORunnable;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.InfoStream;
 
@@ -684,11 +685,13 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
    * Write field for merging.
    */
   @Override
-  public void mergeOneField(FieldInfo fieldInfo, MergeState mergeState) throws IOException {
-    flatVectorsWriter.mergeOneField(fieldInfo, mergeState);
-    if (mergeCagraIndexes(fieldInfo, mergeState) == false) {
-      vectorBasedMerge(fieldInfo, mergeState);
-    }
+  public IORunnable mergeOneField(FieldInfo fieldInfo, MergeState mergeState) throws IOException {
+    flatVectorsWriter.mergeOneFlatVectorField(fieldInfo, mergeState);
+    return () -> {
+      if (mergeCagraIndexes(fieldInfo, mergeState) == false) {
+        vectorBasedMerge(fieldInfo, mergeState);
+      }
+    };
   }
 
   /**
