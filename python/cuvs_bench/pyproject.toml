@@ -69,6 +69,7 @@ lucene = "cuvs_bench.backends.lucene:register"
 [tool.pytest.ini_options]
 markers = [
     "lucene_e2e: live tests; all require PyLucene/Java, and GPU-intended cases also require cuVS/CUDA/GPU",
+    "lucene_large_segment_e2e: resource-intensive Lucene tests that build a segment from more than 2 GiB of vectors",
     "opensearch: tests that require a live OpenSearch node (run with '-m opensearch')",
 ]
 

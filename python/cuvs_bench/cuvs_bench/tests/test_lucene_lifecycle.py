@@ -22,6 +22,7 @@ from _lucene_test_support import (
 from cuvs_bench.backends._lucene_runtime import CPU_HNSW_CODEC
 from cuvs_bench.backends.base import Dataset
 from cuvs_bench.backends.lucene import (
+    ACCELERATED_HNSW_ALGORITHM,
     CAGRA_ALGORITHM,
     CPU_HNSW_ALGORITHM,
     LuceneBackend,
@@ -29,6 +30,9 @@ from cuvs_bench.backends.lucene import (
     _source_identity,
 )
 from cuvs_bench.orchestrator.config_loaders import IndexConfig
+
+
+_MISSING_RAM_LIMIT_APPLICATION = object()
 
 
 def test_index_prewarm_reads_every_regular_file(tmp_path: Path) -> None:
@@ -173,6 +177,126 @@ def test_failed_force_rebuild_preserves_the_previous_valid_index(
     assert (path / ".cuvs-bench-lucene.json").read_bytes() == original_manifest
     assert (path / "segments.fake").read_bytes() == original_payload
     assert list(path.parent.glob(f".{path.name}.build-*")) == []
+
+
+def test_failed_build_reports_staging_that_cleanup_could_not_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    assert backend.build(_dataset(), [index]).success
+    destination = Path(index.file)
+    original_manifest = (destination / ".cuvs-bench-lucene.json").read_bytes()
+    original_payload = (destination / "segments.fake").read_bytes()
+
+    def fail_after_writing_partial_index(
+        index_path: Path, *_args, **_kwargs
+    ) -> None:
+        (index_path / "partial-segment").write_text(
+            "incomplete", encoding="utf-8"
+        )
+        raise RuntimeError("replacement build failed")
+
+    orphaned_paths: list[Path] = []
+
+    def fail_cleanup(path: Path) -> None:
+        orphaned_paths.append(path)
+        raise OSError("cleanup denied")
+
+    monkeypatch.setattr(
+        runtime, "build_index", fail_after_writing_partial_index
+    )
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree", fail_cleanup
+    )
+
+    replacement = backend.build(_dataset(offset=0.25), [index], force=True)
+
+    assert not replacement.success
+    assert replacement.error_message.startswith(
+        "RuntimeError: replacement build failed"
+    )
+    assert "Failed to discard the incomplete staged index" in (
+        replacement.error_message
+    )
+    assert "cleanup denied" in replacement.error_message
+    [orphaned] = orphaned_paths
+    assert str(orphaned) in replacement.error_message
+    assert (orphaned / "partial-segment").read_text(encoding="utf-8") == (
+        "incomplete"
+    )
+    assert (destination / ".cuvs-bench-lucene.json").read_bytes() == (
+        original_manifest
+    )
+    assert (destination / "segments.fake").read_bytes() == original_payload
+
+
+def test_missing_failed_staging_is_already_discarded(tmp_path: Path) -> None:
+    build_error = RuntimeError("build failed")
+
+    LuceneBackend._discard_failed_staging(
+        tmp_path / "already-renamed-staging", build_error
+    )
+
+    assert not hasattr(build_error, "__notes__")
+
+
+def test_descendant_cleanup_race_does_not_hide_remaining_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    build_error = RuntimeError("build failed")
+
+    def fail_for_missing_descendant(_path: Path) -> None:
+        raise FileNotFoundError("a staged child disappeared")
+
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree",
+        fail_for_missing_descendant,
+    )
+
+    LuceneBackend._discard_failed_staging(staged, build_error)
+
+    [note] = build_error.__notes__
+    assert "Failed to discard the incomplete staged index" in note
+    assert str(staged) in note
+    assert "a staged child disappeared" in note
+
+
+@pytest.mark.parametrize("control_error", (KeyboardInterrupt, SystemExit))
+def test_staging_cleanup_process_control_takes_precedence_over_build_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_error: type[BaseException],
+) -> None:
+    runtime = RecordingRuntime()
+    runtime.build_error = RuntimeError("build failed")
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    orphaned_paths: list[Path] = []
+
+    def interrupt_cleanup(path: Path) -> None:
+        orphaned_paths.append(path)
+        raise control_error("cleanup interrupted")
+
+    monkeypatch.setattr(
+        "cuvs_bench.backends.lucene.shutil.rmtree", interrupt_cleanup
+    )
+
+    with pytest.raises(control_error, match="cleanup interrupted") as failure:
+        backend.build(_dataset(), [index])
+
+    [orphaned] = orphaned_paths
+    [note] = failure.value.__notes__
+    assert (
+        "Index construction first failed: RuntimeError: build failed" in note
+    )
+    assert str(orphaned) in note
+    assert orphaned.is_dir()
 
 
 def test_backup_cleanup_failure_does_not_report_a_published_index_as_failed(
@@ -528,7 +652,161 @@ def test_search_rejects_malformed_build_runtime_provenance(
     assert runtime.search_calls == []
 
 
-def test_search_requests_rebuild_for_the_legacy_stored_id_schema(
+def test_manifest_build_parameters_must_match_the_requested_index(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 1,
+            "ram_per_thread_hard_limit_mb": 1945,
+        }
+    )
+    assert backend.build(dataset, [index]).success
+
+    index.build_param["premerge_segment_count"] = 5
+    reuse = backend.build(dataset, [index])
+    [search] = backend.search(dataset, [index], k=2)
+
+    assert not reuse.success
+    assert not search.success
+    assert "does not match this dataset and configuration" in (
+        reuse.error_message
+    )
+    assert "does not match this dataset and configuration" in (
+        search.error_message
+    )
+    assert len(runtime.build_calls) == 1
+    assert runtime.search_calls == []
+
+
+def test_reuse_rejects_runtime_topology_evidence_that_conflicts_with_request(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1945,
+        }
+    )
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_build_topology"]["observed_premerge_segment_count"] = 3
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    reuse = backend.build(dataset, [index])
+    [search] = backend.search(dataset, [index], k=2)
+
+    assert not reuse.success
+    assert not search.success
+    assert "invalid runtime build topology" in reuse.error_message
+    assert "invalid runtime build topology" in search.error_message
+    assert len(runtime.build_calls) == 1
+    assert runtime.search_calls == []
+
+
+@pytest.mark.parametrize(
+    ("hard_limit", "recorded_mode"),
+    (
+        pytest.param(
+            1945, "unsupported_field_override", id="wrong-supported-mode"
+        ),
+        pytest.param(6144, "public_setter", id="wrong-unsupported-mode"),
+        pytest.param(1945, "unrecognized_mode", id="unknown-mode"),
+        pytest.param(1945, [], id="non-string-mode"),
+        pytest.param(1945, _MISSING_RAM_LIMIT_APPLICATION, id="missing-mode"),
+    ),
+)
+def test_reuse_rejects_incorrect_ram_limit_application_evidence(
+    tmp_path: Path, hard_limit: int, recorded_mode: object
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": hard_limit,
+        }
+    )
+    if hard_limit >= 2048:
+        index.build_param["allow_unsupported_lucene_ram_limit"] = True
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if recorded_mode is _MISSING_RAM_LIMIT_APPLICATION:
+        manifest["runtime_build_topology"].pop(
+            "ram_per_thread_hard_limit_application"
+        )
+    else:
+        manifest["runtime_build_topology"][
+            "ram_per_thread_hard_limit_application"
+        ] = recorded_mode
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    reuse = backend.build(dataset, [index])
+    [search] = backend.search(dataset, [index], k=2)
+
+    assert not reuse.success
+    assert not search.success
+    assert "invalid runtime build topology" in reuse.error_message
+    assert "invalid runtime build topology" in search.error_message
+    assert len(runtime.build_calls) == 1
+    assert runtime.search_calls == []
+
+
+def test_search_rejects_noncanonical_manifest_build_parameters(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 1,
+            "ram_per_thread_hard_limit_mb": 1945,
+        }
+    )
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["build_parameters"].pop("ram_per_thread_hard_limit_mb")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    [result] = backend.search(dataset, [index], k=2)
+
+    assert not result.success
+    assert "invalid build parameters" in result.error_message
+    assert runtime.search_calls == []
+
+
+def test_search_requests_rebuild_for_the_previous_manifest_schema(
     tmp_path: Path,
 ) -> None:
     runtime = RecordingRuntime()
@@ -539,7 +817,7 @@ def test_search_requests_rebuild_for_the_legacy_stored_id_schema(
     assert backend.build(dataset, [index]).success
     manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["schema_version"] = 1
+    manifest["schema_version"] = 3
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     result = backend.search(dataset, [index], k=2)[0]

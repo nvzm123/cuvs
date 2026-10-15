@@ -57,7 +57,10 @@ def test_successful_build_reports_the_verified_persisted_index_kind(
 
     assert result.success, result.error_message
     assert result.algorithm == algorithm
-    assert result.build_params == {"codec": codec}
+    expected_build_parameters = {"codec": codec}
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        expected_build_parameters.update({"m": 32, "beam_width": 32})
+    assert result.build_params == expected_build_parameters
     assert result.metadata["codec"] == codec
     expected_persisted_kind = {
         CPU_HNSW_ALGORITHM: "cpu_hnsw",
@@ -78,6 +81,18 @@ def test_successful_build_reports_the_verified_persisted_index_kind(
     assert result.index_size_bytes > 0
     assert len(factory.calls) == 1
     assert [call[2] for call in runtime.build_calls] == [codec]
+    assert [call[3] for call in runtime.build_calls] == [
+        expected_build_parameters
+    ]
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        assert result.metadata["hnsw_m"] == 32
+        assert result.metadata["hnsw_beam_width"] == 32
+        assert result.metadata["hnsw_heuristic"] == "SAME_GRAPH_FOOTPRINT"
+        assert result.metadata["graph_degree_source"] == (
+            "requested_hnsw_same_graph_footprint_derivation"
+        )
+        assert result.metadata["graph_degree"] == 64
+        assert result.metadata["intermediate_graph_degree"] == 96
     if algorithm == CAGRA_ALGORITHM:
         [(verified_path, vector_count, dimensions)] = (
             runtime.cagra_verifier.calls
@@ -89,6 +104,292 @@ def test_successful_build_reports_the_verified_persisted_index_kind(
         assert (vector_count, dimensions) == (4, 2)
     else:
         assert runtime.cagra_verifier.calls == []
+
+
+def test_accelerated_build_propagates_and_persists_requested_parameters(
+    tmp_path: Path,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": 1,
+            "ram_per_thread_hard_limit_mb": 1945,
+        }
+    )
+
+    result = backend.build(_dataset(), [index])
+
+    expected = {
+        "codec": index.build_param["codec"],
+        "m": 16,
+        "beam_width": 80,
+        "premerge_segment_count": 4,
+        "force_merge_segment_count": 1,
+        "ram_per_thread_hard_limit_mb": 1945,
+    }
+    assert result.success, result.error_message
+    assert result.build_params == expected
+    assert runtime.build_calls[0][3] == expected
+    assert result.metadata["graph_degree"] == 32
+    assert result.metadata["intermediate_graph_degree"] == 48
+    assert result.metadata["graph_degree_source"] == (
+        "requested_hnsw_same_graph_footprint_derivation"
+    )
+    assert result.metadata["requested_premerge_segment_count"] == 4
+    assert result.metadata["requested_force_merge_segment_count"] == 1
+    assert result.metadata["ram_per_thread_hard_limit_mb"] == 1945
+    assert result.metadata["premerge_segment_vector_counts"] == "[1,1,1,1]"
+    manifest = json.loads(
+        (Path(index.file) / ".cuvs-bench-lucene.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["schema_version"] == 4
+    assert manifest["build_parameters"] == expected
+
+
+@pytest.mark.parametrize(
+    ("premerge_segment_count", "expected_segment_count"),
+    ((1, 1), (4, 4)),
+)
+def test_accelerated_build_preserves_no_force_merge_topology(
+    tmp_path: Path,
+    premerge_segment_count: int,
+    expected_segment_count: int,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": premerge_segment_count,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1945,
+        }
+    )
+
+    result = backend.build(_dataset(), [index])
+
+    assert result.success, result.error_message
+    assert result.metadata["segment_count"] == expected_segment_count
+    assert result.metadata["requested_force_merge_segment_count"] == 0
+    assert result.metadata["final_merge_policy"] is None
+    expected_counts = (
+        "["
+        + ",".join([str(4 // premerge_segment_count)] * premerge_segment_count)
+        + "]"
+    )
+    assert result.metadata["premerge_segment_vector_counts"] == expected_counts
+    manifest = json.loads(
+        (Path(index.file) / ".cuvs-bench-lucene.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["segment_count"] == expected_segment_count
+    assert manifest["build_parameters"]["force_merge_segment_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("premerge_segment_count", "expected_segment_count"),
+    ((1, 1), (4, 4)),
+)
+def test_cagra_build_preserves_direct_segment_topology(
+    tmp_path: Path,
+    premerge_segment_count: int,
+    expected_segment_count: int,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CAGRA_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "premerge_segment_count": premerge_segment_count,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 1945,
+        }
+    )
+
+    result = backend.build(_dataset(), [index])
+
+    assert result.success, result.error_message
+    assert result.metadata["segment_count"] == expected_segment_count
+    assert result.metadata["requested_premerge_segment_count"] == (
+        premerge_segment_count
+    )
+    assert result.metadata["requested_force_merge_segment_count"] == 0
+    assert result.metadata["ram_per_thread_hard_limit_application"] == (
+        "public_setter"
+    )
+    assert result.metadata["final_merge_policy"] is None
+    manifest = json.loads(
+        (Path(index.file) / ".cuvs-bench-lucene.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["segment_count"] == expected_segment_count
+    assert (
+        manifest["runtime_build_topology"]["observed_premerge_segment_count"]
+        == premerge_segment_count
+    )
+    assert (
+        manifest["runtime_build_topology"][
+            "ram_per_thread_hard_limit_application"
+        ]
+        == "public_setter"
+    )
+
+
+@pytest.mark.parametrize(
+    "algorithm",
+    (
+        pytest.param(ACCELERATED_HNSW_ALGORITHM, id="gpu-cagra-built-hnsw"),
+        pytest.param(CAGRA_ALGORITHM, id="gpu-cagra-search"),
+    ),
+)
+def test_explicit_unsupported_ram_limit_is_persisted_and_reusable(
+    tmp_path: Path, algorithm: str
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(tmp_path, algorithm, runtime)
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        index.build_param.update({"m": 16, "beam_width": 80})
+    index.build_param.update(
+        {
+            "premerge_segment_count": 1,
+            "force_merge_segment_count": 0,
+            "ram_per_thread_hard_limit_mb": 6144,
+            "allow_unsupported_lucene_ram_limit": True,
+        }
+    )
+
+    built = backend.build(_dataset(), [index])
+    reused = backend.build(_dataset(), [index])
+    [searched] = backend.search(_dataset(), [index], k=2)
+
+    assert built.success, built.error_message
+    assert built.build_params == runtime.build_calls[0][3]
+    assert built.metadata["applied_ram_per_thread_hard_limit_mb"] == 6144
+    assert built.metadata["ram_per_thread_hard_limit_application"] == (
+        "unsupported_field_override"
+    )
+    assert built.metadata["runtime_force_merge_seconds"] == 0.0
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"] is True
+    assert searched.success, searched.error_message
+    for metadata in (reused.metadata, searched.metadata):
+        assert metadata["ram_per_thread_hard_limit_application"] == (
+            "unsupported_field_override"
+        )
+        assert metadata["applied_ram_per_thread_hard_limit_mb"] == 6144
+    manifest = json.loads(
+        (Path(index.file) / ".cuvs-bench-lucene.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        manifest["build_parameters"]["allow_unsupported_lucene_ram_limit"]
+        is True
+    )
+    assert (
+        manifest["runtime_build_topology"][
+            "ram_per_thread_hard_limit_application"
+        ]
+        == "unsupported_field_override"
+    )
+    assert len(runtime.build_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("force_merge_segment_count", "expected_segment_count"),
+    ((0, 4), (1, 1)),
+)
+def test_accelerated_build_persists_observed_topology_for_reuse(
+    tmp_path: Path,
+    force_merge_segment_count: int,
+    expected_segment_count: int,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, runtime
+    )
+    index.build_param.update(
+        {
+            "m": 16,
+            "beam_width": 80,
+            "premerge_segment_count": 4,
+            "force_merge_segment_count": force_merge_segment_count,
+            "ram_per_thread_hard_limit_mb": 1945,
+        }
+    )
+
+    result = backend.build(_dataset(), [index])
+
+    expected = {
+        "codec": index.build_param["codec"],
+        "m": 16,
+        "beam_width": 80,
+        "premerge_segment_count": 4,
+        "force_merge_segment_count": force_merge_segment_count,
+        "ram_per_thread_hard_limit_mb": 1945,
+    }
+    assert result.success, result.error_message
+    assert result.build_params == expected
+    assert runtime.build_calls[0][3] == expected
+    assert result.metadata["segment_count"] == expected_segment_count
+    assert result.metadata["requested_premerge_segment_count"] == 4
+    assert result.metadata["observed_premerge_segment_count"] == 4
+    assert result.metadata["requested_force_merge_segment_count"] == (
+        force_merge_segment_count
+    )
+    assert result.metadata["max_buffered_docs"] == 2
+    assert result.metadata["premerge_segment_vector_counts"] == "[1,1,1,1]"
+    manifest = json.loads(
+        (Path(index.file) / ".cuvs-bench-lucene.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["schema_version"] == 4
+    assert manifest["build_parameters"] == expected
+    assert manifest["runtime_build_topology"] == {
+        "requested_premerge_segment_count": 4,
+        "observed_premerge_segment_count": 4,
+        "requested_force_merge_segment_count": force_merge_segment_count,
+        "premerge_segment_vector_counts": [1, 1, 1, 1],
+        "max_buffered_docs": 2,
+        "applied_ram_per_thread_hard_limit_mb": 1945,
+        "ram_per_thread_hard_limit_application": "public_setter",
+        "ingest_merge_policy": "NoMergePolicy",
+        "final_merge_policy": (
+            "TieredMergePolicy" if force_merge_segment_count == 1 else None
+        ),
+    }
+
+    reused = backend.build(_dataset(), [index])
+    [search] = backend.search(_dataset(), [index], k=2)
+
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"] is True
+    assert search.success, search.error_message
+    for reused_metadata in (reused.metadata, search.metadata):
+        assert reused_metadata["requested_premerge_segment_count"] == 4
+        assert reused_metadata["observed_premerge_segment_count"] == 4
+        assert reused_metadata["premerge_segment_vector_counts"] == (
+            "[1,1,1,1]"
+        )
+    assert result.metadata["runtime_force_merge_seconds"] == (
+        0.00035 if force_merge_segment_count else 0.0
+    )
+    assert len(runtime.build_calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -475,6 +776,7 @@ def test_build_timing_rejects_phases_longer_than_the_enclosing_wall() -> None:
         directory_open_ns=1,
         writer_setup_ns=2,
         document_ingest_ns=3,
+        force_merge_ns=1,
         writer_commit_close_ns=4,
         post_build_reader_ns=5,
         directory_close_ns=6,
@@ -799,19 +1101,28 @@ def test_dry_runs_do_not_resolve_or_start_the_runtime(
     search_result = backend.search(_dataset(), [index], k=2, dry_run=True)[0]
 
     assert build_result.success
-    assert build_result.metadata == {
+    expected_metadata = {
         "dry_run": True,
         "codec": codec,
         "group": "test",
         "index_name": algorithm,
     }
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        expected_metadata.update(
+            {
+                "hnsw_m": 32,
+                "hnsw_beam_width": 32,
+                "hnsw_heuristic": "SAME_GRAPH_FOOTPRINT",
+                "graph_degree_source": (
+                    "requested_hnsw_same_graph_footprint_derivation"
+                ),
+                "graph_degree": 64,
+                "intermediate_graph_degree": 96,
+            }
+        )
+    assert build_result.metadata == expected_metadata
     assert search_result.success
-    assert search_result.metadata == {
-        "dry_run": True,
-        "codec": codec,
-        "group": "test",
-        "index_name": algorithm,
-    }
+    assert search_result.metadata == expected_metadata
     assert factory.calls == []
     assert not index_root.exists()
 
