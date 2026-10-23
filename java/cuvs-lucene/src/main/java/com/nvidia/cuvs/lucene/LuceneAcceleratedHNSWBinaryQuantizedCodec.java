@@ -7,7 +7,8 @@ package com.nvidia.cuvs.lucene;
 import org.apache.lucene.codecs.Codec;
 
 /**
- * CuVS based codec for GPU based vector search
+ * cuVS based codec for GPU graph construction and CPU HNSW search. Binary quantization is used
+ * only while building the graph; persisted vectors and CPU scoring remain full precision.
  *
  * <p>This codec, named {@code Lucene101AcceleratedHNSWBinaryQuantizedCodec}, wraps {@code
  * Lucene101Codec}, the default codec of Lucene 10.2. {@link CuVSCodecs#acceleratedHNSWBinaryQuantized} returns the codec of

@@ -6,7 +6,6 @@ package com.nvidia.cuvs.lucene;
 
 import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.isSupported;
 
-import com.nvidia.cuvs.LibraryException;
 import java.io.IOException;
 import java.util.logging.Logger;
 import org.apache.lucene.codecs.KnnVectorsFormat;
@@ -20,7 +19,9 @@ import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.search.TaskExecutor;
 
 /**
- * cuVS based Scalar Quantized KnnVectorsFormat for indexing on GPU and searching on the CPU.
+ * cuVS based KnnVectorsFormat for building the graph on the GPU and searching on the CPU with
+ * scalar-quantized approximate scoring. Lucene retains both scalar-quantized and full-precision
+ * vectors in the index.
  *
  * @since 26.02
  */
@@ -36,8 +37,6 @@ public class LuceneAcceleratedHNSWScalarQuantizedVectorsFormat extends KnnVector
 
   /**
    * Initializes {@link LuceneAcceleratedHNSWScalarQuantizedVectorsFormat} with default values.
-   *
-   * @throws LibraryException if the native library fails to load
    */
   public LuceneAcceleratedHNSWScalarQuantizedVectorsFormat() {
     this(new AcceleratedHNSWParams.Builder().build());
@@ -55,7 +54,7 @@ public class LuceneAcceleratedHNSWScalarQuantizedVectorsFormat extends KnnVector
   }
 
   /**
-   * Returns a KnnVectorsWriter to write the scalar quantized vectors to the index.
+   * Returns a KnnVectorsWriter to write scalar-quantized and full-precision vectors to the index.
    */
   @Override
   public KnnVectorsWriter fieldsWriter(SegmentWriteState state) throws IOException {
@@ -81,7 +80,8 @@ public class LuceneAcceleratedHNSWScalarQuantizedVectorsFormat extends KnnVector
   }
 
   /**
-   * Returns a KnnVectorsReader to read the scalar quantized vectors from the index.
+   * Returns a KnnVectorsReader that uses scalar-quantized approximate scoring while retaining
+   * access to full-precision vectors.
    */
   @Override
   public KnnVectorsReader fieldsReader(SegmentReadState state) throws IOException {
@@ -90,7 +90,8 @@ public class LuceneAcceleratedHNSWScalarQuantizedVectorsFormat extends KnnVector
   }
 
   /**
-   * Returns the format that stores the quantized vectors, creating it on first use.
+   * Returns the format that stores scalar-quantized and full-precision vectors, creating it on
+   * first use.
    *
    * <p>Not created when this format is: Lucene's service loader creates every registered format
    * eagerly, and on a Lucene release that moved {@code Lucene99ScalarQuantizedVectorsFormat} to its

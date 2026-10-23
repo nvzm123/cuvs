@@ -7,7 +7,8 @@ package com.nvidia.cuvs.lucene;
 import org.apache.lucene.codecs.Codec;
 
 /**
- * CuVS based codec for GPU based vector search
+ * cuVS based codec for GPU graph construction and CPU HNSW search with scalar-quantized
+ * approximate scoring.
  *
  * <p>This codec, named {@code Lucene101AcceleratedHNSWScalarQuantizedCodec}, wraps {@code
  * Lucene101Codec}, the default codec of Lucene 10.2. {@link CuVSCodecs#acceleratedHNSWScalarQuantized} returns the codec of

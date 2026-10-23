@@ -6,7 +6,6 @@ package com.nvidia.cuvs.lucene;
 
 import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.isSupported;
 
-import com.nvidia.cuvs.LibraryException;
 import java.io.IOException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -50,8 +49,6 @@ public class Lucene99AcceleratedHNSWVectorsFormat extends KnnVectorsFormat {
   /**
    * Initializes {@link Lucene99AcceleratedHNSWVectorsFormat} with an instance
    * of {@link AcceleratedHNSWParams} with default parameter values.
-   *
-   * @throws LibraryException if the native library fails to load
    */
   public Lucene99AcceleratedHNSWVectorsFormat() {
     this(new AcceleratedHNSWParams.Builder().build());
