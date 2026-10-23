@@ -23,8 +23,8 @@ Four codecs are available, created through [`CuVSCodecs`](/api-reference/lucene-
 | Codec | Search | On-disk format | Use when |
 | --- | --- | --- | --- |
 | `CuVSCodecs.acceleratedHNSW` | CPU | Standard Lucene HNSW | You want faster index builds without changing the search path or index format. |
-| `CuVSCodecs.acceleratedHNSWScalarQuantized` | CPU | Standard Lucene HNSW, scalar-quantized | As above, with a smaller index footprint and some loss of precision. |
-| `CuVSCodecs.acceleratedHNSWBinaryQuantized` | CPU | Standard Lucene HNSW, full-precision vectors | As above, with the graph built over binary-quantized vectors. The vectors themselves are stored and scored in full precision. |
+| `CuVSCodecs.acceleratedHNSWScalarQuantized` | CPU | Standard Lucene HNSW, full-precision and scalar-quantized vectors | You want scalar-quantized approximate scoring and a smaller hot search working set. Full-precision vectors are retained, so disk usage is not reduced. |
+| `CuVSCodecs.acceleratedHNSWBinaryQuantized` | CPU | Standard Lucene HNSW, full-precision vectors | You want GPU graph construction over transient binary-quantized vectors while storing and scoring vectors in full precision. |
 | `CuVSCodecs.gpuSearch` | GPU | cuVS format | Search throughput matters and GPUs are available on the query path. |
 
 The three accelerated HNSW codecs write the stock Lucene HNSW vector format and read it back through the standard Lucene reader. GPU acceleration therefore applies to index build only: the query API and the read path are unchanged, and the read path touches neither a GPU nor the native cuVS library. The graph itself is built by CAGRA rather than Lucene's HNSW builder, so benchmark recall if you are migrating an existing index.

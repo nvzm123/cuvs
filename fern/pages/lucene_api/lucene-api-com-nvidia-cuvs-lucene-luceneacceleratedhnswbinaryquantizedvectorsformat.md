@@ -10,7 +10,8 @@ _Java package: `com.nvidia.cuvs.lucene`_
 public class LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat extends KnnVectorsFormat
 ```
 
-cuVS based Binary Quantized KnnVectorsFormat for indexing on GPU and searching on the CPU.
+cuVS based KnnVectorsFormat that uses binary quantization to build the graph on the GPU and
+stores and scores full-precision vectors on the CPU.
 
 ## Public Members
 
@@ -22,13 +23,7 @@ public LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat()
 
 Initializes `LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat` with default values.
 
-**Throws**
-
-| Type | Description |
-| --- | --- |
-| `LibraryException` | if the native library fails to load |
-
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:44`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:42`_
 
 ### LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat
 
@@ -44,7 +39,7 @@ Initializes `LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat` with the given t
 | --- | --- |
 | `acceleratedHNSWParams` | An instance of `AcceleratedHNSWParams` |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:53`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:51`_
 
 ### fieldsWriter
 
@@ -52,9 +47,10 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAccelerate
 @Override public KnnVectorsWriter fieldsWriter(SegmentWriteState state) throws IOException
 ```
 
-Returns a KnnVectorsWriter to write the binary quantized vectors to the index.
+Returns a KnnVectorsWriter that transiently binary-quantizes vectors for GPU graph
+construction and writes full-precision vectors to the index.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:62`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:61`_
 
 ### fieldsReader
 
@@ -62,9 +58,9 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAccelerate
 @Override public KnnVectorsReader fieldsReader(SegmentReadState state) throws IOException
 ```
 
-Returns a KnnVectorsReader to read the binary quantized vectors from the index.
+Returns a KnnVectorsReader to read and score the full-precision vectors from the index.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:92`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:91`_
 
 ### getMaxDimensions
 
@@ -74,6 +70,6 @@ _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAccelerate
 
 Returns the maximum number of vector dimensions supported by this codec for the given field name.
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:101`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:100`_
 
 _Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat.java:30`_

@@ -140,8 +140,10 @@ public class LuceneAcceleratedHNSWBinaryQuantizedVectorsWriter extends KnnVector
   }
 
   /**
-   * Builds the intermediate CAGRA index and builds and writes the HNSW index for binary quantized vectors.
-   * Binary quantized vectors are stored as packed bits (1 bit per dimension, 8 dimensions per byte).
+   * Builds the intermediate CAGRA index and writes the HNSW graph using transient binary-quantized
+   * vectors. The flat vectors writer separately persists the original full-precision vectors;
+   * packed bits (1 bit per dimension, 8 dimensions per byte) are used only as CAGRA graph-build
+   * input.
    *
    * @param fieldInfo instance of FieldInfo that has the field description
    * @param vectors binary quantized vectors (packed bits as bytes)

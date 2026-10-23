@@ -84,8 +84,8 @@ public final class CuVSCodecs {
   }
 
   /**
-   * Returns the codec that builds HNSW graphs on the GPU over scalar-quantized vectors, with
-   * default parameters.
+   * Returns the scalar-quantized accelerated HNSW codec with default build parameters. See {@link
+   * #acceleratedHNSWScalarQuantized(AcceleratedHNSWParams)} for its storage and search behavior.
    *
    * @return the codec
    */
@@ -94,7 +94,9 @@ public final class CuVSCodecs {
   }
 
   /**
-   * Returns the codec that builds HNSW graphs on the GPU over scalar-quantized vectors.
+   * Returns a codec that builds HNSW graphs on the GPU and searches them on the CPU with
+   * scalar-quantized approximate scoring. The index retains both scalar-quantized and
+   * full-precision vectors.
    *
    * @param params the index build parameters
    * @return the codec
@@ -128,8 +130,8 @@ public final class CuVSCodecs {
   }
 
   /**
-   * Returns the codec that builds HNSW graphs on the GPU over binary-quantized vectors, with
-   * default parameters.
+   * Returns the binary-quantized accelerated HNSW codec with default build parameters. See {@link
+   * #acceleratedHNSWBinaryQuantized(AcceleratedHNSWParams)} for its storage and search behavior.
    *
    * @return the codec
    */
@@ -138,7 +140,8 @@ public final class CuVSCodecs {
   }
 
   /**
-   * Returns the codec that builds HNSW graphs on the GPU over binary-quantized vectors.
+   * Returns a codec that builds HNSW graphs on the GPU over transient binary-quantized vectors
+   * and searches them on the CPU using persisted full-precision vectors.
    *
    * @param params the index build parameters
    * @return the codec

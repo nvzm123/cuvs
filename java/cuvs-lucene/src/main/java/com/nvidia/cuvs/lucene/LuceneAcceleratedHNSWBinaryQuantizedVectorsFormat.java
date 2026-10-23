@@ -6,7 +6,6 @@ package com.nvidia.cuvs.lucene;
 
 import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.isSupported;
 
-import com.nvidia.cuvs.LibraryException;
 import java.io.IOException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -23,7 +22,8 @@ import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.search.TaskExecutor;
 
 /**
- * cuVS based Binary Quantized KnnVectorsFormat for indexing on GPU and searching on the CPU.
+ * cuVS based KnnVectorsFormat that uses binary quantization to build the graph on the GPU and
+ * stores and scores full-precision vectors on the CPU.
  *
  * @since 26.02
  */
@@ -39,8 +39,6 @@ public class LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat extends KnnVector
 
   /**
    * Initializes {@link LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat} with default values.
-   *
-   * @throws LibraryException if the native library fails to load
    */
   public LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat() {
     this(new AcceleratedHNSWParams.Builder().build());
@@ -58,7 +56,8 @@ public class LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat extends KnnVector
   }
 
   /**
-   * Returns a KnnVectorsWriter to write the binary quantized vectors to the index.
+   * Returns a KnnVectorsWriter that transiently binary-quantizes vectors for GPU graph
+   * construction and writes full-precision vectors to the index.
    */
   @Override
   public KnnVectorsWriter fieldsWriter(SegmentWriteState state) throws IOException {
@@ -88,7 +87,7 @@ public class LuceneAcceleratedHNSWBinaryQuantizedVectorsFormat extends KnnVector
   }
 
   /**
-   * Returns a KnnVectorsReader to read the binary quantized vectors from the index.
+   * Returns a KnnVectorsReader to read and score the full-precision vectors from the index.
    */
   @Override
   public KnnVectorsReader fieldsReader(SegmentReadState state) throws IOException {

@@ -6,7 +6,6 @@ package com.nvidia.cuvs.lucene;
 
 import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.assertIsSupported;
 
-import com.nvidia.cuvs.LibraryException;
 import java.io.IOException;
 import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsReader;
@@ -41,8 +40,6 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
 
   /**
    * Initializes the {@link CuVS2510GPUVectorsFormat} with default parameter values.
-   *
-   * @throws LibraryException if the native library fails to load
    */
   public CuVS2510GPUVectorsFormat() {
     this(new GPUSearchParams.Builder().build(), FilterBitsetCacheConfig.DEFAULT);
@@ -52,7 +49,6 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
    * Initializes the {@link CuVS2510GPUVectorsFormat} with an instance of {@link GPUSearchParams}.
    *
    * @param gpuSearchParams An instance of {@link GPUSearchParams}
-   * @throws LibraryException if the native library fails to load
    */
   public CuVS2510GPUVectorsFormat(GPUSearchParams gpuSearchParams) {
     this(gpuSearchParams, FilterBitsetCacheConfig.DEFAULT);
@@ -63,7 +59,6 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
    *
    * @param gpuSearchParams GPU index and search parameters
    * @param filterCacheConfig filter-bitset-cache configuration
-   * @throws LibraryException if the native library fails to load
    */
   public CuVS2510GPUVectorsFormat(
       GPUSearchParams gpuSearchParams, FilterBitsetCacheConfig filterCacheConfig) {
@@ -73,7 +68,7 @@ public class CuVS2510GPUVectorsFormat extends KnnVectorsFormat {
   }
 
   /**
-   * Returns a KnnVectorsReader instance to write the vectors to the index.
+   * Returns a KnnVectorsWriter instance to write the vectors to the index.
    */
   @Override
   public KnnVectorsWriter fieldsWriter(SegmentWriteState state) throws IOException {

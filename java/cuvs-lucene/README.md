@@ -18,8 +18,8 @@ This is a project for using [cuVS](https://github.com/NVIDIA/cuvs), NVIDIA's GPU
 Four codecs are currently provided, created through `CuVSCodecs`:
 
 - `CuVSCodecs.acceleratedHNSW()` — GPU-accelerated HNSW build with CPU HNSW search. The on-disk format is standard Lucene HNSW, so indexes built on the GPU are read back through the standard Lucene reader and searching them needs no GPU. Lucene still resolves the codec by name, so search nodes need the `cuvs-lucene` and `cuvs-java` jars on their classpath. Falls back to building the graph on the CPU when no GPU is present.
-  - `CuVSCodecs.acceleratedHNSWScalarQuantized()` — scalar-quantized vectors for a smaller index footprint.
-  - `CuVSCodecs.acceleratedHNSWBinaryQuantized()` — graph built over binary-quantized vectors.
+  - `CuVSCodecs.acceleratedHNSWScalarQuantized()` — scalar-quantized approximate scoring with full-precision vectors retained; this reduces the hot search working set, not disk usage.
+  - `CuVSCodecs.acceleratedHNSWBinaryQuantized()` — graph built over transient binary-quantized vectors; persisted vectors and CPU scoring remain full precision.
 - `CuVSCodecs.gpuSearch()` — GPU-accelerated build and GPU search. Requires a GPU.
 
 Each codec wraps the default codec of one Lucene release, for example `Lucene101AcceleratedHNSWCodec` wraps
