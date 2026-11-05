@@ -59,7 +59,7 @@ _FAKE_ARTIFACT_PROVENANCE = {
     "cuvs_java_jar_path": "/artifacts/cuvs-java.jar",
     "cuvs_java_jar_sha256": "a" * 64,
     "cuvs_lucene_coordinates": (
-        f"com.nvidia.cuvs.lucene:cuvs-lucene:{_ARTIFACT_VERSION}"
+        f"com.nvidia.cuvs.lucene:cuvs-lucene-10.2:{_ARTIFACT_VERSION}"
     ),
     "cuvs_lucene_jar_path": "/artifacts/cuvs-lucene.jar",
     "cuvs_lucene_jar_sha256": "b" * 64,

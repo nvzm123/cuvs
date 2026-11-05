@@ -53,6 +53,8 @@ PyLucene ${PYLUCENE_SCAFFOLD_VERSION} and Lucene ${PYLUCENE_VERSION} source arch
 PATH must be a stable absolute path because JCC records native-library paths
 in the generated extension. A full build requires Linux, CPython 3.11-3.14,
 and JDK 22. --prepare-only only downloads, verifies, and patches the sources.
+Current cuVS Bench requires Python 3.12 or newer, even though this standalone
+PyLucene builder also supports Python 3.11.
 EOF
 }
 

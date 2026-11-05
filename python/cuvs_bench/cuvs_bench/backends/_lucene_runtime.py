@@ -19,7 +19,10 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from ._lucene_runtime_config import maven_artifact_version
+from ._lucene_runtime_config import (
+    CUVS_LUCENE_ARTIFACT_ID,
+    maven_artifact_version,
+)
 
 CPU_HNSW_CODEC = "Lucene101"
 ACCELERATED_HNSW_CODEC = "Lucene101AcceleratedHNSWCodec"
@@ -53,7 +56,7 @@ _CUVS_JAVA_MAVEN_PROPERTIES = (
 )
 _CUVS_LUCENE_MAVEN_PROPERTIES = (
     f"{_MAVEN_METADATA_DIRECTORY}/{_CUVS_LUCENE_PACKAGE}/"
-    "cuvs-lucene/pom.properties"
+    f"{CUVS_LUCENE_ARTIFACT_ID}/pom.properties"
 )
 _CODEC_SERVICE_DESCRIPTOR = "META-INF/services/org.apache.lucene.codecs.Codec"
 _INDEX_SEARCHER_TIMING_BRIDGE = (
@@ -348,7 +351,7 @@ def _validate_artifacts(
         )
     if lucene_coordinates[:2] != (
         _CUVS_LUCENE_PACKAGE,
-        "cuvs-lucene",
+        CUVS_LUCENE_ARTIFACT_ID,
     ):
         raise RuntimeError(
             f"Unexpected cuvs-lucene coordinates: {lucene_coordinates[:2]}"
