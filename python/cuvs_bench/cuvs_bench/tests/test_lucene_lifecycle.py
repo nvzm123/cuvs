@@ -572,6 +572,66 @@ def test_search_rejects_malformed_build_runtime_provenance(
     assert runtime.search_calls == []
 
 
+@pytest.mark.parametrize("artifact", ("cuvs-lucene", "cuvs-lucene-10.2"))
+def test_saved_build_coordinates_allow_index_reuse_and_search(
+    tmp_path: Path, artifact: str
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CAGRA_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["build_runtime_artifacts"]["cuvs_lucene_coordinates"] = (
+        f"com.nvidia.cuvs.lucene:{artifact}:26.12.0"
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    original_manifest = manifest_path.read_bytes()
+
+    reused = backend.build(dataset, [index])
+    searched = backend.search(dataset, [index], k=2)[0]
+
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"]
+    assert searched.success, searched.error_message
+    assert len(runtime.build_calls) == 1
+    assert manifest_path.read_bytes() == original_manifest
+
+
+@pytest.mark.parametrize(
+    "coordinates",
+    (
+        "com.nvidia.cuvs.lucene:cuvs-lucene-10.3:26.12.0",
+        "com.nvidia.cuvs.lucene:cuvs-lucene-10.2:",
+        "com.nvidia.cuvs.lucene:cuvs-lucene:",
+        None,
+    ),
+)
+def test_search_rejects_incompatible_or_incomplete_build_coordinates(
+    tmp_path: Path, coordinates: str | None
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CAGRA_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["build_runtime_artifacts"]["cuvs_lucene_coordinates"] = (
+        coordinates
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = backend.search(dataset, [index], k=2)[0]
+
+    assert not result.success
+    assert "invalid cuvs_lucene_coordinates" in result.error_message
+    assert runtime.search_calls == []
+
+
 def test_search_requests_rebuild_for_the_legacy_stored_id_schema(
     tmp_path: Path,
 ) -> None:

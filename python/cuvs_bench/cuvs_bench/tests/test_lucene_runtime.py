@@ -40,6 +40,7 @@ def _write_artifacts(
     *,
     java_version: str = _ARTIFACT_VERSION,
     lucene_version: str = _ARTIFACT_VERSION,
+    lucene_artifact: str = "cuvs-lucene-10.2",
 ) -> tuple[Path, Path]:
     java_jar = directory / "cuvs-java.jar"
     with zipfile.ZipFile(java_jar, "w") as archive:
@@ -74,9 +75,9 @@ def _write_artifacts(
             "com.nvidia.cuvs.lucene.Lucene101AcceleratedHNSWCodec\n",
         )
         archive.writestr(
-            "META-INF/maven/com.nvidia.cuvs.lucene/cuvs-lucene/pom.properties",
+            f"META-INF/maven/com.nvidia.cuvs.lucene/{lucene_artifact}/pom.properties",
             _properties(
-                "com.nvidia.cuvs.lucene", "cuvs-lucene", lucene_version
+                "com.nvidia.cuvs.lucene", lucene_artifact, lucene_version
             ),
         )
     return java_jar, lucene_jar
@@ -413,7 +414,7 @@ def test_artifact_validation_returns_exact_coordinates_paths_and_hashes(
             java_jar.read_bytes()
         ).hexdigest(),
         "cuvs_lucene_coordinates": (
-            f"com.nvidia.cuvs.lucene:cuvs-lucene:{_ARTIFACT_VERSION}"
+            f"com.nvidia.cuvs.lucene:cuvs-lucene-10.2:{_ARTIFACT_VERSION}"
         ),
         "cuvs_lucene_jar_path": str(lucene_jar),
         "cuvs_lucene_jar_sha256": hashlib.sha256(
@@ -431,6 +432,17 @@ def test_artifact_validation_rejects_mismatched_versions(
     )
 
     with pytest.raises(RuntimeError, match="JAR versions differ"):
+        _validate_artifacts(java_jar, lucene_jar)
+
+
+@pytest.mark.parametrize("artifact", ("cuvs-lucene", "cuvs-lucene-10.3"))
+def test_runtime_requires_the_lucene_10_2_artifact(
+    tmp_path: Path,
+    artifact: str,
+) -> None:
+    java_jar, lucene_jar = _write_artifacts(tmp_path, lucene_artifact=artifact)
+
+    with pytest.raises(RuntimeError, match="cuvs-lucene-10.2/pom.properties"):
         _validate_artifacts(java_jar, lucene_jar)
 
 

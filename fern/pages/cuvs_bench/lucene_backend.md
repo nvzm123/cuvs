@@ -49,7 +49,8 @@ The Lucene backend is opt-in because its runtime is not provisioned by the
 ordinary cuVS Bench installation. Provisioning the required custom PyLucene
 build is currently external to cuVS Bench. Every algorithm requires PyLucene
 10.2.0 and JDK 22. Both cuVS-backed algorithms require matching `cuvs-java`
-and thin `cuvs-lucene` JARs. GPU execution additionally requires compatible
+and thin `cuvs-lucene-10.2` JARs. Select the 10.2 artifact for this PyLucene
+runtime, not `cuvs-lucene-10.3`. GPU execution additionally requires compatible
 native cuVS, CUDA, and a supported NVIDIA GPU. `lucene_cuvs_cagra` fails when
 that GPU path is unavailable. `lucene_accelerated_hnsw` instead retains the
 codec's intentional CPU-writer fallback.
@@ -87,7 +88,7 @@ binary. No real ARM64 build or execution has been performed.
 Start in the normal cuVS source-build environment described in the
 [shared source-build prerequisites](/installation#build-from-source). Also
 install the [Java build prerequisites](/installation/java#build-from-source),
-CPython 3.11-3.14 with development headers and `venv` support, GNU Make, a C/C++
+CPython 3.12-3.14 with development headers and `venv` support, GNU Make, a C/C++
 compiler, `awk`, `curl`, `flock`, `gzip`, `patch`, `tar`, GNU coreutils, and GNU
 findutils. CUDA and a supported NVIDIA GPU are required for the GPU integration
 cases.
@@ -167,9 +168,11 @@ ldd -r "$CUVS_NATIVE_BUILD/c/libcuvs_c.so" \
     | grep -E 'libcuvs|librmm|librapids_logger|undefined symbol'
 ```
 
-The backend discovers the matching JARs under the current checkout; do not
-select the native-classifier `cuvs-java` JAR or the cuVS-Lucene
-`jar-with-dependencies`.
+The backend discovers the base JAR under `java/cuvs-java/target/` and the
+matching thin JAR under `java/cuvs-lucene/lucene-10.2/target/`. It also supports
+the corresponding local Maven artifacts, including
+`com.nvidia.cuvs.lucene:cuvs-lucene-10.2`. Do not select the native-classifier
+`cuvs-java` JAR or the cuVS-Lucene `jar-with-dependencies`.
 
 In each new shell, reactivate the normal cuVS source-build environment before
 sourcing `activate.sh`, then restore the two native-library path variables
