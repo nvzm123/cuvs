@@ -97,6 +97,42 @@ def test_environment_artifact_pair_is_used_when_config_has_no_override(
     assert resolved["java_library_path"] == str(native.resolve())
 
 
+@pytest.mark.parametrize("location", ("source-build", "maven-cache"))
+def test_discovers_the_lucene_10_2_artifact_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, location: str
+) -> None:
+    for variable in _ARTIFACT_ENVIRONMENT:
+        monkeypatch.delenv(variable, raising=False)
+    source_root = tmp_path / "source"
+    maven_root = tmp_path / "maven"
+    monkeypatch.setattr(
+        _lucene_runtime_config, "_REPOSITORY_ROOT", source_root
+    )
+    monkeypatch.setenv("MAVEN_LOCAL_REPO", str(maven_root))
+    version = _lucene_runtime_config.maven_artifact_version()
+    if location == "source-build":
+        java_directory = source_root / "java/cuvs-java/target"
+        lucene_directory = source_root / "java/cuvs-lucene/lucene-10.2/target"
+    else:
+        java_directory = maven_root / "com/nvidia/cuvs/cuvs-java" / version
+        lucene_directory = (
+            maven_root / "com/nvidia/cuvs/lucene/cuvs-lucene-10.2" / version
+        )
+    java_directory.mkdir(parents=True)
+    lucene_directory.mkdir(parents=True)
+    java_jar = java_directory / f"cuvs-java-{version}.jar"
+    lucene_jar = lucene_directory / f"cuvs-lucene-10.2-{version}.jar"
+    java_jar.touch()
+    lucene_jar.touch()
+
+    resolved = resolve_lucene_runtime_config(
+        {"java_library_path": _native_directory(tmp_path)}, requires_cuvs=True
+    )
+
+    assert resolved["cuvs_java_jar"] == str(java_jar)
+    assert resolved["cuvs_lucene_jar"] == str(lucene_jar)
+
+
 @pytest.mark.parametrize("configured_environment", ("neither", "java", "both"))
 def test_cpu_only_resolution_ignores_ambient_cuvs_artifacts(
     tmp_path: Path,
