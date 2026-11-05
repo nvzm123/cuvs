@@ -187,7 +187,7 @@ def _assert_artifact_provenance(metadata: dict, role: str) -> None:
         f"com.nvidia.cuvs:cuvs-java:{_ARTIFACT_VERSION}"
     )
     assert metadata[f"{role}_cuvs_lucene_coordinates"] == (
-        f"com.nvidia.cuvs.lucene:cuvs-lucene:{_ARTIFACT_VERSION}"
+        f"com.nvidia.cuvs.lucene:cuvs-lucene-10.2:{_ARTIFACT_VERSION}"
     )
     for artifact in ("cuvs_java", "cuvs_lucene"):
         assert Path(metadata[f"{role}_{artifact}_jar_path"]).is_file()

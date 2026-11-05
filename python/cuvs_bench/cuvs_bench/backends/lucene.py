@@ -438,8 +438,7 @@ def _search_parameters(
             )
         if k > MAX_CAGRA_TOP_K:
             raise ValueError(
-                f"CAGRA search supports k <= {MAX_CAGRA_TOP_K}; k={k} would "
-                "use the codec's brute-force route"
+                f"CAGRA search supports k <= {MAX_CAGRA_TOP_K}; received k={k}"
             )
         return {"num_candidates": k}
     unsupported = set(parameters) - {"num_candidates"}
@@ -779,9 +778,7 @@ class LuceneConfigLoader(ConfigLoader):
             if config is None:
                 raise ValueError(f"No configuration found for {algorithm!r}")
             selected_groups = list(
-                dict.fromkeys(
-                    [*groups, *requested_pairs.get(algorithm, [])]
-                )
+                dict.fromkeys([*groups, *requested_pairs.get(algorithm, [])])
             )
             for group in selected_groups:
                 try:
@@ -977,18 +974,20 @@ class LuceneBackend(BenchmarkBackend):
                 "artifact provenance"
             )
         if build_runtime_artifacts:
+            # Build provenance describes the saved index, not the active JVM.
+            # Retain legacy coordinates so existing indexes remain reusable.
             expected_coordinates = {
-                "cuvs_java_coordinates": "com.nvidia.cuvs:cuvs-java:",
+                "cuvs_java_coordinates": ("com.nvidia.cuvs:cuvs-java:",),
                 "cuvs_lucene_coordinates": (
-                    "com.nvidia.cuvs.lucene:cuvs-lucene:"
+                    "com.nvidia.cuvs.lucene:cuvs-lucene:",
+                    "com.nvidia.cuvs.lucene:cuvs-lucene-10.2:",
                 ),
             }
-            for key, prefix in expected_coordinates.items():
+            for key, prefixes in expected_coordinates.items():
                 value = build_runtime_artifacts[key]
-                if (
-                    not isinstance(value, str)
-                    or not value.startswith(prefix)
-                    or len(value) == len(prefix)
+                if not isinstance(value, str) or not any(
+                    value.startswith(prefix) and len(value) > len(prefix)
+                    for prefix in prefixes
                 ):
                     raise RuntimeError(
                         f"Lucene index manifest has invalid {key}"

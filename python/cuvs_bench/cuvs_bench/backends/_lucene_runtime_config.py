@@ -16,6 +16,7 @@ from typing import Any, Iterable, Mapping
 _JAVA_JAR_ENV = "CUVS_LUCENE_CUVS_JAVA_JAR"
 _LUCENE_JAR_ENV = "CUVS_LUCENE_JAR"
 _MAVEN_REPOSITORY_ENV = "MAVEN_LOCAL_REPO"
+CUVS_LUCENE_ARTIFACT_ID = "cuvs-lucene-10.2"
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -69,13 +70,14 @@ def _artifact_candidates(kind: str) -> tuple[Path, ...]:
             _REPOSITORY_ROOT
             / "java"
             / "cuvs-lucene"
+            / "lucene-10.2"
             / "target"
-            / f"cuvs-lucene-{version}.jar",
+            / f"{CUVS_LUCENE_ARTIFACT_ID}-{version}.jar",
             repository
             / _CUVS_LUCENE_MAVEN_DIRECTORY
-            / "cuvs-lucene"
+            / CUVS_LUCENE_ARTIFACT_ID
             / version
-            / f"cuvs-lucene-{version}.jar",
+            / f"{CUVS_LUCENE_ARTIFACT_ID}-{version}.jar",
         )
     raise ValueError(f"Unknown Lucene artifact kind: {kind}")
 
@@ -154,7 +156,7 @@ def _required_artifact_pair(
     )
     raise RuntimeError(
         "cuVS-backed Lucene algorithms require matching standard cuvs-java "
-        "and thin cuvs-lucene JARs. Build both artifacts or set "
+        f"and thin {CUVS_LUCENE_ARTIFACT_ID} JARs. Build both artifacts or set "
         f"{_JAVA_JAR_ENV} and {_LUCENE_JAR_ENV}. Searched: {searched}"
     )
 
