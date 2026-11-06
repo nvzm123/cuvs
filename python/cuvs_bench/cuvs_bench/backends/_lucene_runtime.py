@@ -784,17 +784,21 @@ class CagraIndexVerifier:
             payload_end = int(data_input.length()) - int(
                 runtime.CodecUtil.footerLength()
             )
-            expected = payload_start
+            previous_end = payload_start
+            # A failed native merge can leave unreferenced bytes before a
+            # successful vector-based rebuild. Validate the referenced ranges,
+            # not whether they occupy every byte in the data file.
             for field in sorted(fields, key=lambda item: item.cagra_offset):
-                if field.cagra_offset != expected:
+                field_end = field.cagra_offset + field.cagra_length
+                if (
+                    field.cagra_length <= 0
+                    or field.cagra_offset < previous_end
+                    or field_end > payload_end
+                ):
                     raise CagraVerificationError(
-                        f"CAGRA metadata does not exactly cover {data_file!r}"
+                        f"Invalid or overlapping CAGRA range in {data_file!r}"
                     )
-                expected = field.cagra_offset + field.cagra_length
-            if expected != payload_end:
-                raise CagraVerificationError(
-                    f"CAGRA metadata does not exactly cover {data_file!r}"
-                )
+                previous_end = field_end
             runtime.CodecUtil.checksumEntireFile(data_input)
 
     def _segment_directory(self, root: Any, segment: Any) -> tuple[Any, bool]:
