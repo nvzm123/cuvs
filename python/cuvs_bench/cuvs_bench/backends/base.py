@@ -99,12 +99,20 @@ class Dataset:
         self.metadata = metadata or {}
 
     @property
+    def has_loaded_training_vectors(self) -> bool:
+        """Whether nonempty training vectors are already in memory.
+
+        Includes supplied arrays and cached file loads; performs no file I/O.
+        """
+        return self._training_vectors.size != 0
+
+    @property
     def training_vectors(self) -> np.ndarray:
         """Training vectors for index building.
 
         Loaded from base_file on first access if not provided directly.
         """
-        if self._training_vectors.size == 0 and self.base_file:
+        if not self.has_loaded_training_vectors and self.base_file:
             from ._utils import load_vectors
 
             self._training_vectors = load_vectors(

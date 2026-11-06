@@ -504,7 +504,7 @@ def _file_backed_dataset_identity(
     """Stream a file source identity without materializing its vectors."""
     subset_size = _normalize_subset_size(dataset)
     source = _source_identity(dataset)
-    dtype = np.dtype(dtype_from_filename(source["path"]))
+    dtype = np.dtype(dtype_from_filename(dataset.base_file))
     if dtype != np.dtype(np.float32):
         raise TypeError(
             f"training vectors must use float32 values, got {dtype}"
@@ -749,7 +749,13 @@ class LuceneConfigLoader(ConfigLoader):
                 isinstance(config, dict)
                 and config.get("name") in _CODEC_BY_ALGORITHM
             ):
-                configs[config["name"]] = config
+                previous_groups = configs.get(config["name"], {}).get(
+                    "groups", {}
+                )
+                configs[config["name"]] = {
+                    **config,
+                    "groups": {**previous_groups, **config.get("groups", {})},
+                }
 
         algorithms = self._split(kwargs.get("algorithms"))
         groups = self._split(kwargs.get("groups")) or ["base"]
@@ -1047,7 +1053,7 @@ class LuceneBackend(BenchmarkBackend):
         stored_identity = payload.get("dataset")
         if not isinstance(stored_identity, Mapping):
             raise RuntimeError("Lucene index manifest has no dataset identity")
-        if dataset.base_file:
+        if dataset.base_file and not dataset.has_loaded_training_vectors:
             return _file_backed_dataset_identity(
                 dataset,
                 stored_identity,

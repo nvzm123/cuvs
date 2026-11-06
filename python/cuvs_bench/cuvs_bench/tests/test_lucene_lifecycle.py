@@ -362,8 +362,40 @@ def test_reusing_an_index_rejects_a_different_dataset_fingerprint(
     assert len(runtime.build_calls) == 1
 
 
+@pytest.mark.parametrize("operation", ("reuse", "search"))
+def test_resident_vectors_take_precedence_over_an_unchanged_source_file(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    original = _dataset()
+    base_file = tmp_path / "base.fbin"
+    _write_fbin(base_file, original.training_vectors)
+    original.base_file = str(base_file)
+    assert backend.build(original, [index]).success
+    replacement = _dataset(offset=0.25)
+    replacement.base_file = str(base_file)
+
+    if operation == "reuse":
+        result = backend.build(replacement, [index])
+    else:
+        result = backend.search(replacement, [index], k=2)[0]
+
+    assert not result.success
+    assert (
+        "does not match this dataset and configuration" in result.error_message
+    )
+    assert len(runtime.build_calls) == 1
+    assert runtime.search_calls == []
+
+
+@pytest.mark.parametrize("source_filename", ("base.fbin", "downloaded-blob"))
 def test_reusing_a_file_backed_index_does_not_materialize_training_vectors(
     tmp_path: Path,
+    source_filename: str,
 ) -> None:
     class ReuseOnlyDataset(Dataset):
         @property
@@ -376,10 +408,12 @@ def test_reusing_a_file_backed_index_does_not_materialize_training_vectors(
     )
     vectors = _dataset().training_vectors
     base_file = tmp_path / "base.fbin"
-    _write_fbin(base_file, vectors)
+    source_file = tmp_path / source_filename
+    _write_fbin(source_file, vectors)
+    if source_file != base_file:
+        base_file.symlink_to(source_file)
     build_dataset = Dataset(
         name="tiny-l2",
-        training_vectors=vectors,
         query_vectors=vectors[:2].copy(),
         distance_metric="euclidean",
         base_file=str(base_file),
@@ -417,8 +451,10 @@ def test_search_rejects_changed_vectors_with_the_same_dataset_name(
     assert runtime.search_calls == []
 
 
+@pytest.mark.parametrize("source_filename", ("base.fbin", "downloaded-blob"))
 def test_file_backed_search_does_not_materialize_training_vectors(
     tmp_path: Path,
+    source_filename: str,
 ) -> None:
     class SearchOnlyDataset(Dataset):
         @property
@@ -431,10 +467,12 @@ def test_file_backed_search_does_not_materialize_training_vectors(
     )
     vectors = _dataset().training_vectors
     base_file = tmp_path / "base.fbin"
-    _write_fbin(base_file, vectors)
+    source_file = tmp_path / source_filename
+    _write_fbin(source_file, vectors)
+    if source_file != base_file:
+        base_file.symlink_to(source_file)
     build_dataset = Dataset(
         name="tiny-l2",
-        training_vectors=vectors,
         query_vectors=vectors[:2].copy(),
         distance_metric="euclidean",
         base_file=str(base_file),
