@@ -8,6 +8,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 _REPOSITORY_ROOT = Path(__file__).parents[4]
 _RECIPE_DIRECTORY = _REPOSITORY_ROOT / "conda" / "recipes" / "cuvs-bench"
@@ -29,25 +31,39 @@ def test_source_builder_is_self_describing() -> None:
     assert "Build an isolated PyLucene 10.2.0 environment" in completed.stdout
 
 
-def test_source_builder_rejects_unsafe_build_roots(tmp_path: Path) -> None:
-    for unsafe_character in (" ", ":", ";", "$", "`", "&", "#", "|"):
-        build_root = tmp_path / f"unsafe{unsafe_character}root"
-        completed = subprocess.run(
-            [
-                "bash",
-                str(_BUILD_HELPER),
-                "--build-root",
-                str(build_root),
-                "--prepare-only",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+@pytest.mark.parametrize(
+    "unsafe_character",
+    [
+        pytest.param(" ", id="space"),
+        pytest.param(":", id="colon"),
+        pytest.param(";", id="semicolon"),
+        pytest.param("$", id="dollar"),
+        pytest.param("`", id="backtick"),
+        pytest.param("&", id="ampersand"),
+        pytest.param("#", id="hash"),
+        pytest.param("|", id="pipe"),
+    ],
+)
+def test_source_builder_rejects_unsafe_build_roots(
+    tmp_path: Path, unsafe_character: str
+) -> None:
+    build_root = tmp_path / f"unsafe{unsafe_character}root"
+    completed = subprocess.run(
+        [
+            "bash",
+            str(_BUILD_HELPER),
+            "--build-root",
+            str(build_root),
+            "--prepare-only",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
-        assert completed.returncode != 0
-        assert "--build-root may contain only" in completed.stderr
-        assert not build_root.exists()
+    assert completed.returncode != 0
+    assert "--build-root may contain only" in completed.stderr
+    assert not build_root.exists()
 
 
 def test_source_builder_rejects_unsafe_resolved_build_root(

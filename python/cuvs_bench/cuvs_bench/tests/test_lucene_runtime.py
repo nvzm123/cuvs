@@ -588,11 +588,12 @@ def test_reused_jvm_reports_the_initialized_artifact_identity(
         "cuvs_lucene_jar": str(lucene_jar),
     }
 
-    first = initialize_pylucene(config)
-    second = initialize_pylucene(config)
+    _, first_provenance, first_tokens = initialize_pylucene(config)
+    _, reused_provenance, reused_tokens = initialize_pylucene(config)
 
     assert len(fake_lucene.initializations) == 1
-    assert second[1:] == first[1:]
+    assert reused_provenance == first_provenance
+    assert reused_tokens == first_tokens
 
 
 def test_reused_jvm_rejects_a_same_path_artifact_replacement(
