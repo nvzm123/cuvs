@@ -10,16 +10,9 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from cuvs_bench.backends.base import BenchmarkBackend, BuildResult
+from cuvs_bench.backends.cpp_gbench import CppGoogleBenchmarkBackend
 from cuvs_bench.orchestrator import BenchmarkOrchestrator
 from cuvs_bench.run.__main__ import main as run_main
-
-
-class _DefaultBackend:
-    default_algorithm = "cuvs_cagra"
-
-    @classmethod
-    def result_failure_message(cls, results):
-        return None
 
 
 class _PluginBackend:
@@ -52,7 +45,7 @@ def _invoke_run(
 ):
     captured = {}
     backend_classes = {
-        "cpp_gbench": _DefaultBackend,
+        "cpp_gbench": CppGoogleBenchmarkBackend,
         "opensearch": plugin_backend,
         "third_party": plugin_backend,
     }
@@ -104,9 +97,7 @@ def _invoke_run(
 
 
 def test_cli_keeps_the_cpp_backend_and_algorithm_defaults(tmp_path: Path):
-    result, captured, _write_results = _invoke_run(
-        tmp_path, input_text="\n"
-    )
+    result, captured, _write_results = _invoke_run(tmp_path, input_text="\n")
 
     assert result.exit_code == 0, result.output
     assert captured["backend_type"] == "cpp_gbench"

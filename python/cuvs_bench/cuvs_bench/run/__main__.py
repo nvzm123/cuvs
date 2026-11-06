@@ -299,10 +299,10 @@ def main(
     n_trials : Optional[int]
         Number of Optuna trials for tune mode.
     backend_config : Optional[str]
-        Path to YAML config for non-C++ backends. If not provided, defaults
-        to the C++ Google Benchmark backend. The YAML file must contain a
-        'backend' field (e.g., 'opensearch', 'elastic') and any
-        backend-specific connection parameters (host, port, etc.).
+        Path to YAML config for non-C++ backends. If not provided,
+        defaults to the C++ Google Benchmark backend. The YAML file
+        must contain a 'backend' field (e.g., 'opensearch', 'elastic')
+        and any backend-specific connection parameters (host, port, etc.).
 
     """
     if data_export:
