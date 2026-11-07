@@ -50,13 +50,18 @@ from cuvs_bench.orchestrator.config_loaders import IndexConfig
 def test_successful_build_reports_the_verified_persisted_index_kind(
     tmp_path: Path, algorithm: str, codec: str, path: str
 ) -> None:
-    runtime = RecordingRuntime()
+    # A non-default label catches hard-coded version reporting without a JVM.
+    reported_version = "i-am-fake-data"
+    runtime = RecordingRuntime(pylucene_version=reported_version)
     backend, index, factory = _backend_and_index(tmp_path, algorithm, runtime)
+    reported_index_name = "test-index-metadata"
+    index = replace(index, name=reported_index_name)
 
     result = backend.build(_dataset(), [index])
 
     assert result.success, result.error_message
     assert result.algorithm == algorithm
+    assert result.metadata["index_name"] == reported_index_name
     assert result.build_params == {"codec": codec}
     assert result.metadata["codec"] == codec
     expected_persisted_kind = {
@@ -74,7 +79,7 @@ def test_successful_build_reports_the_verified_persisted_index_kind(
         }[algorithm]
     )
     assert result.metadata["segment_count"] == 1
-    assert result.metadata["pylucene_version"] == "10.2.0"
+    assert result.metadata["pylucene_version"] == reported_version
     assert result.index_size_bytes > 0
     assert len(factory.calls) == 1
     assert [call[2] for call in runtime.build_calls] == [codec]
@@ -245,7 +250,9 @@ def test_boolean_subset_size_is_rejected_before_runtime_initialization(
 def test_successful_search_reports_path_parameters_and_distances(
     tmp_path: Path, algorithm: str, codec: str, path: str
 ) -> None:
-    runtime = RecordingRuntime()
+    # This checks metadata forwarding, not support for another Lucene release.
+    reported_version = "i-am-fake-data"
+    runtime = RecordingRuntime(pylucene_version=reported_version)
     search_params = (
         [{"num_candidates": 4}] if algorithm != CAGRA_ALGORITHM else [{}]
     )
@@ -255,6 +262,8 @@ def test_successful_search_reports_path_parameters_and_distances(
         runtime,
         search_params=search_params,
     )
+    reported_index_name = "test-index-metadata"
+    index = replace(index, name=reported_index_name)
     build_result = backend.build(_dataset(), [index])
     assert build_result.success, build_result.error_message
 
@@ -264,7 +273,7 @@ def test_successful_search_reports_path_parameters_and_distances(
     np.testing.assert_array_equal(result.neighbors, [[0, 1], [0, 1]])
     np.testing.assert_allclose(result.distances, [[0.0, 1.0], [0.0, 1.0]])
     assert result.metadata["codec"] == codec
-    assert result.metadata["pylucene_version"] == "10.2.0"
+    assert result.metadata["pylucene_version"] == reported_version
     assert result.metadata["latency_seconds"] == 0.0025
     assert result.metadata["timing_contract_version"] == 1
     assert result.metadata["latency_scope"] == "client_query"
@@ -283,7 +292,7 @@ def test_successful_search_reports_path_parameters_and_distances(
     assert result.metadata["batch_size"] == 1
     assert result.metadata["mode"] == "latency"
     assert result.metadata["group"] == "test"
-    assert result.metadata["index_name"] == algorithm
+    assert result.metadata["index_name"] == reported_index_name
     assert result.metadata["expected_search_route"] == path
     assert (
         result.metadata["persisted_index_kind"]
@@ -489,10 +498,22 @@ def test_build_timing_rejects_phases_longer_than_the_enclosing_wall() -> None:
 
 def test_search_timing_rejects_query_phases_outside_client_wall() -> None:
     result = _runtime_search_result([[SearchHit(0, 1.0), SearchHit(1, 0.5)]])
-    query = replace(result.timing.queries[0], client_query_ns=2_000_000)
+    query = result.timing.queries[0]
+    query_phases_total_ns = (
+        query.query_prepare_ns
+        + query.pylucene_search_dispatch_ns
+        + query.result_materialization_ns
+    )
+    # Make the enclosing duration just shorter than the phases it contains.
+    too_short_client_wall_ns = query_phases_total_ns - 1
     contradictory = replace(
         result,
-        timing=replace(result.timing, queries=(query,)),
+        timing=replace(
+            result.timing,
+            queries=(
+                replace(query, client_query_ns=too_short_client_wall_ns),
+            ),
+        ),
     )
 
     with pytest.raises(RuntimeError, match=r"impossible client_query\[0\]"):
@@ -501,9 +522,16 @@ def test_search_timing_rejects_query_phases_outside_client_wall() -> None:
 
 def test_search_timing_rejects_client_total_longer_than_corpus_wall() -> None:
     result = _runtime_search_result([[SearchHit(0, 1.0), SearchHit(1, 0.5)]])
+    client_queries_total_ns = sum(
+        query.client_query_ns for query in result.timing.queries
+    )
+    # One nanosecond below the total makes the enclosing duration invalid.
+    too_short_corpus_wall_ns = client_queries_total_ns - 1
     contradictory = replace(
         result,
-        timing=replace(result.timing, query_corpus_wall_ns=2_499_999),
+        timing=replace(
+            result.timing, query_corpus_wall_ns=too_short_corpus_wall_ns
+        ),
     )
 
     with pytest.raises(RuntimeError, match="impossible query_corpus_wall"):
@@ -512,9 +540,19 @@ def test_search_timing_rejects_client_total_longer_than_corpus_wall() -> None:
 
 def test_search_timing_rejects_plan_phases_longer_than_plan_wall() -> None:
     result = _runtime_search_result([[SearchHit(0, 1.0), SearchHit(1, 0.5)]])
+    timing = result.timing
+    plan_phases_total_ns = (
+        timing.directory_open_ns
+        + timing.reader_searcher_setup_ns
+        + timing.query_corpus_wall_ns
+        + timing.reader_close_ns
+        + timing.directory_close_ns
+    )
+    # Make the enclosing duration just shorter than the phases it contains.
+    too_short_plan_wall_ns = plan_phases_total_ns - 1
     contradictory = replace(
         result,
-        timing=replace(result.timing, runtime_plan_wall_ns=3_999_999),
+        timing=replace(timing, runtime_plan_wall_ns=too_short_plan_wall_ns),
     )
 
     with pytest.raises(RuntimeError, match="impossible runtime_plan_wall"):
@@ -661,7 +699,7 @@ def test_build_failure_is_actionable_and_removes_partial_index(
     assert not Path(index.file).exists()
 
 
-def test_build_timing_separates_build_validation_and_index_publication(
+def test_build_reports_elapsed_durations_in_seconds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = RecordingRuntime()
@@ -675,17 +713,17 @@ def test_build_timing_separates_build_validation_and_index_publication(
             10,
             11,
             12,
-            13,
-            14,
             15,
+            16,
             20,
-            22,
+            21,
+            23,
+            24,
+            29,
             30,
-            35,
-            40,
-            41,
-            43,
-            50,
+            36,
+            37,
+            44,
             60,
         )
     )
@@ -704,12 +742,12 @@ def test_build_timing_separates_build_validation_and_index_publication(
     assert result.metadata["validation_time_seconds"] == 5.0
     assert result.metadata["install_time_seconds"] == 7.0
     assert result.metadata["dataset_load_validate_seconds"] == 1.0
-    assert result.metadata["runtime_setup_seconds"] == 1.0
-    assert result.metadata["artifact_validation_seconds"] == 1.0
+    assert result.metadata["runtime_setup_seconds"] == 3.0
+    assert result.metadata["artifact_validation_seconds"] == 4.0
     assert result.metadata["index_build_call_seconds"] == 2.0
     assert result.metadata["index_validation_manifest_seconds"] == 5.0
     assert result.metadata["index_install_seconds"] == 7.0
-    assert result.metadata["index_size_measurement_seconds"] == 1.0
+    assert result.metadata["index_size_measurement_seconds"] == 6.0
     assert result.metadata["backend_build_total_seconds"] == 60.0
     assert result.metadata["runtime_document_ingest_seconds"] == 0.0003
     assert runtime.artifact_verification_count == 1
@@ -773,6 +811,7 @@ def test_throughput_mode_fails_instead_of_reporting_serial_search_as_throughput(
 def test_dry_runs_do_not_resolve_or_start_the_runtime(
     tmp_path: Path, algorithm: str, codec: str, _path: str
 ) -> None:
+    reported_index_name = "test-index-metadata"
     runtime = RecordingRuntime()
     factory = RecordingRuntimeFactory(runtime)
     index_root = tmp_path / "indexes"
@@ -788,7 +827,7 @@ def test_dry_runs_do_not_resolve_or_start_the_runtime(
         runtime_factory=factory,
     )
     index = IndexConfig(
-        name=algorithm,
+        name=reported_index_name,
         algo=algorithm,
         build_param={"codec": codec},
         search_params=[{}],
@@ -803,14 +842,14 @@ def test_dry_runs_do_not_resolve_or_start_the_runtime(
         "dry_run": True,
         "codec": codec,
         "group": "test",
-        "index_name": algorithm,
+        "index_name": reported_index_name,
     }
     assert search_result.success
     assert search_result.metadata == {
         "dry_run": True,
         "codec": codec,
         "group": "test",
-        "index_name": algorithm,
+        "index_name": reported_index_name,
     }
     assert factory.calls == []
     assert not index_root.exists()

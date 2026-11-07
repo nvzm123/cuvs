@@ -8,17 +8,20 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from _lucene_test_support import (
+    ALGORITHM_CASES,
     RecordingRuntime,
     _backend_and_index,
     _dataset,
     _write_fbin,
 )
+from cuvs_bench.backends import lucene as lucene_backend
 from cuvs_bench.backends._lucene_runtime import CPU_HNSW_CODEC
 from cuvs_bench.backends.base import Dataset
 from cuvs_bench.backends.lucene import (
@@ -362,8 +365,40 @@ def test_reusing_an_index_rejects_a_different_dataset_fingerprint(
     assert len(runtime.build_calls) == 1
 
 
+@pytest.mark.parametrize("operation", ("reuse", "search"))
+def test_resident_vectors_take_precedence_over_an_unchanged_source_file(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    original = _dataset()
+    base_file = tmp_path / "base.fbin"
+    _write_fbin(base_file, original.training_vectors)
+    original.base_file = str(base_file)
+    assert backend.build(original, [index]).success
+    replacement = _dataset(offset=0.25)
+    replacement.base_file = str(base_file)
+
+    if operation == "reuse":
+        result = backend.build(replacement, [index])
+    else:
+        result = backend.search(replacement, [index], k=2)[0]
+
+    assert not result.success
+    assert (
+        "does not match this dataset and configuration" in result.error_message
+    )
+    assert len(runtime.build_calls) == 1
+    assert runtime.search_calls == []
+
+
+@pytest.mark.parametrize("source_filename", ("base.fbin", "downloaded-blob"))
 def test_reusing_a_file_backed_index_does_not_materialize_training_vectors(
     tmp_path: Path,
+    source_filename: str,
 ) -> None:
     class ReuseOnlyDataset(Dataset):
         @property
@@ -376,10 +411,12 @@ def test_reusing_a_file_backed_index_does_not_materialize_training_vectors(
     )
     vectors = _dataset().training_vectors
     base_file = tmp_path / "base.fbin"
-    _write_fbin(base_file, vectors)
+    source_file = tmp_path / source_filename
+    _write_fbin(source_file, vectors)
+    if source_file != base_file:
+        base_file.symlink_to(source_file)
     build_dataset = Dataset(
         name="tiny-l2",
-        training_vectors=vectors,
         query_vectors=vectors[:2].copy(),
         distance_metric="euclidean",
         base_file=str(base_file),
@@ -417,8 +454,10 @@ def test_search_rejects_changed_vectors_with_the_same_dataset_name(
     assert runtime.search_calls == []
 
 
+@pytest.mark.parametrize("source_filename", ("base.fbin", "downloaded-blob"))
 def test_file_backed_search_does_not_materialize_training_vectors(
     tmp_path: Path,
+    source_filename: str,
 ) -> None:
     class SearchOnlyDataset(Dataset):
         @property
@@ -431,10 +470,12 @@ def test_file_backed_search_does_not_materialize_training_vectors(
     )
     vectors = _dataset().training_vectors
     base_file = tmp_path / "base.fbin"
-    _write_fbin(base_file, vectors)
+    source_file = tmp_path / source_filename
+    _write_fbin(source_file, vectors)
+    if source_file != base_file:
+        base_file.symlink_to(source_file)
     build_dataset = Dataset(
         name="tiny-l2",
-        training_vectors=vectors,
         query_vectors=vectors[:2].copy(),
         distance_metric="euclidean",
         base_file=str(base_file),
@@ -531,7 +572,7 @@ def test_search_rejects_a_file_that_was_not_the_explicit_build_array(
     assert runtime.search_calls == []
 
 
-def test_search_rejects_a_physical_index_that_fails_verification(
+def test_search_reports_verification_failure_without_querying(
     tmp_path: Path,
 ) -> None:
     runtime = RecordingRuntime()
@@ -540,14 +581,13 @@ def test_search_rejects_a_physical_index_that_fails_verification(
     )
     dataset = _dataset()
     assert backend.build(dataset, [index]).success
-    runtime.verification_error = RuntimeError(
-        "Segment '_0' uses CuVS2510GPUSearchCodec, not Lucene101"
-    )
+    verification_message = "i-am-fake-verifier-failure"
+    runtime.verification_error = RuntimeError(verification_message)
 
     result = backend.search(dataset, [index], k=2)[0]
 
     assert not result.success
-    assert "uses CuVS2510GPUSearchCodec, not Lucene101" in result.error_message
+    assert result.error_message == f"RuntimeError: {verification_message}"
     assert runtime.search_calls == []
 
 
@@ -589,6 +629,14 @@ def test_saved_build_coordinates_allow_index_reuse_and_search(
     )
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     original_manifest = manifest_path.read_bytes()
+    saved_provenance = dict(manifest["build_runtime_artifacts"])
+    # An index can outlive its original artifact paths and build installation.
+    runtime.artifact_provenance.update(
+        cuvs_java_jar_path="/new-runtime/cuvs-java.jar",
+        cuvs_java_jar_sha256="c" * 64,
+        cuvs_lucene_jar_path="/new-runtime/cuvs-lucene.jar",
+        cuvs_lucene_jar_sha256="d" * 64,
+    )
 
     reused = backend.build(dataset, [index])
     searched = backend.search(dataset, [index], k=2)[0]
@@ -598,6 +646,109 @@ def test_saved_build_coordinates_allow_index_reuse_and_search(
     assert searched.success, searched.error_message
     assert len(runtime.build_calls) == 1
     assert manifest_path.read_bytes() == original_manifest
+    for key, value in saved_provenance.items():
+        assert reused.metadata[f"build_runtime_{key}"] == value
+        assert searched.metadata[f"build_runtime_{key}"] == value
+        assert (
+            searched.metadata[f"search_runtime_{key}"]
+            == (runtime.artifact_provenance[key])
+        )
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "saved_codec", "_path"), ALGORITHM_CASES
+)
+def test_reuse_and_search_follow_saved_codec_not_new_writer_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str,
+    saved_codec: str,
+    _path: str,
+) -> None:
+    """A test-only writer change proves routing, not cross-version JVM support."""
+    runtime = RecordingRuntime()
+    backend, index, factory = _backend_and_index(tmp_path, algorithm, runtime)
+    dataset = _dataset()
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    original_manifest = manifest_path.read_bytes()
+    runtime.index_verifier.calls.clear()
+    runtime.cagra_verifier.calls.clear()
+
+    new_writer = "TestOnlyNewWriter"
+    monkeypatch.setitem(
+        lucene_backend._CODEC_BY_ALGORITHM, algorithm, new_writer
+    )
+    backend = LuceneBackend(
+        {**backend.config, "codec": new_writer}, runtime_factory=factory
+    )
+    index = replace(index, build_param={"codec": new_writer})
+
+    reused = backend.build(dataset, [index])
+    searched = backend.search(dataset, [index], k=2)[0]
+
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"]
+    assert searched.success, searched.error_message
+    assert (
+        reused.metadata["codec"] == searched.metadata["codec"] == saved_codec
+    )
+    assert [call[1] for call in runtime.index_verifier.calls] == [
+        saved_codec
+    ] * 2
+    assert len(runtime.cagra_verifier.calls) == (
+        2 if algorithm == CAGRA_ALGORITHM else 0
+    )
+    assert len(runtime.build_calls) == 1
+    assert manifest_path.read_bytes() == original_manifest
+
+
+@pytest.mark.parametrize(
+    ("saved_codec", "expected_error"),
+    (
+        pytest.param(
+            "CuVS2510GPUSearchCodec",
+            "does not match this dataset and configuration",
+            id="wrong-algorithm",
+        ),
+        pytest.param(
+            "Lucene103",
+            "does not match this dataset and configuration",
+            id="unsupported-generation",
+        ),
+        pytest.param(
+            "unknown-codec",
+            "does not match this dataset and configuration",
+            id="unknown",
+        ),
+        pytest.param(
+            "", "does not match this dataset and configuration", id="empty"
+        ),
+        pytest.param(None, "invalid identifiers", id="null"),
+        pytest.param([], "invalid identifiers", id="non-string"),
+    ),
+)
+def test_search_rejects_invalid_or_unsupported_manifest_codecs(
+    tmp_path: Path, saved_codec: object, expected_error: str
+) -> None:
+    runtime = RecordingRuntime()
+    backend, index, _factory = _backend_and_index(
+        tmp_path, CPU_HNSW_ALGORITHM, runtime
+    )
+    dataset = _dataset()
+    assert backend.build(dataset, [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["codec"] = saved_codec
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    runtime.index_verifier.calls.clear()
+
+    result = backend.search(dataset, [index], k=2)[0]
+
+    assert not result.success
+    assert expected_error in result.error_message
+    assert runtime.index_verifier.calls == []
+    assert runtime.search_calls == []
 
 
 @pytest.mark.parametrize(

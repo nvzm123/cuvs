@@ -10,16 +10,9 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from cuvs_bench.backends.base import BenchmarkBackend, BuildResult
+from cuvs_bench.backends.cpp_gbench import CppGoogleBenchmarkBackend
 from cuvs_bench.orchestrator import BenchmarkOrchestrator
 from cuvs_bench.run.__main__ import main as run_main
-
-
-class _DefaultBackend:
-    default_algorithm = "cuvs_cagra"
-
-    @classmethod
-    def result_failure_message(cls, results):
-        return None
 
 
 class _PluginBackend:
@@ -52,7 +45,7 @@ def _invoke_run(
 ):
     captured = {}
     backend_classes = {
-        "cpp_gbench": _DefaultBackend,
+        "cpp_gbench": CppGoogleBenchmarkBackend,
         "opensearch": plugin_backend,
         "third_party": plugin_backend,
     }
@@ -104,9 +97,7 @@ def _invoke_run(
 
 
 def test_cli_keeps_the_cpp_backend_and_algorithm_defaults(tmp_path: Path):
-    result, captured, _write_results = _invoke_run(
-        tmp_path, input_text="\n"
-    )
+    result, captured, _write_results = _invoke_run(tmp_path, input_text="\n")
 
     assert result.exit_code == 0, result.output
     assert captured["backend_type"] == "cpp_gbench"
@@ -207,6 +198,7 @@ def test_backend_config_keeps_selecting_the_backend(tmp_path: Path):
 
 
 def test_cli_invokes_export_before_reporting_backend_failure(tmp_path: Path):
+    reported_failure = "i-am-fake-backend-failure"
     failed = BuildResult(
         index_path="",
         build_time_seconds=0.0,
@@ -214,7 +206,7 @@ def test_cli_invokes_export_before_reporting_backend_failure(tmp_path: Path):
         algorithm="plugin_algorithm",
         build_params={},
         success=False,
-        error_message="backend operation failed",
+        error_message=reported_failure,
     )
 
     backend_config = _write_backend_config(tmp_path, "third_party")
@@ -230,7 +222,7 @@ def test_cli_invokes_export_before_reporting_backend_failure(tmp_path: Path):
     )
 
     assert result.exit_code == 1
-    assert "backend operation failed" in result.output
+    assert reported_failure in result.output
     write_results.assert_called_once()
 
 
@@ -249,6 +241,7 @@ def test_backend_failure_policy_is_opt_in():
 
 
 def test_orchestrator_delegates_failure_policy_to_selected_backend():
+    reported_failure = "i-am-fake-backend-failure"
     orchestrator = BenchmarkOrchestrator.__new__(BenchmarkOrchestrator)
     orchestrator.backend_class = _PluginBackend
     failed = BuildResult(
@@ -258,9 +251,7 @@ def test_orchestrator_delegates_failure_policy_to_selected_backend():
         algorithm="plugin_algorithm",
         build_params={},
         success=False,
-        error_message="backend operation failed",
+        error_message=reported_failure,
     )
 
-    assert orchestrator.result_failure_message([failed]) == (
-        "backend operation failed"
-    )
+    assert orchestrator.result_failure_message([failed]) == reported_failure

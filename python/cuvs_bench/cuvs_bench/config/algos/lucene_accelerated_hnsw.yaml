@@ -4,10 +4,8 @@
 name: lucene_accelerated_hnsw
 groups:
   base:
-    build:
-      codec: ["Lucene101AcceleratedHNSWCodec"]
+    build: {}
     search: {}
   test:
-    build:
-      codec: ["Lucene101AcceleratedHNSWCodec"]
+    build: {}
     search: {}

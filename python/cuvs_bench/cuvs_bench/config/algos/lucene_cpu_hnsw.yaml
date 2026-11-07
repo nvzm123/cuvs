@@ -4,10 +4,8 @@
 name: lucene_cpu_hnsw
 groups:
   base:
-    build:
-      codec: ["Lucene101"]
+    build: {}
     search: {}
   test:
-    build:
-      codec: ["Lucene101"]
+    build: {}
     search: {}

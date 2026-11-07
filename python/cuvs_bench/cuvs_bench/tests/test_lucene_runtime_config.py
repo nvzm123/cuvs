@@ -239,15 +239,16 @@ def test_explicit_native_path_must_contain_unversioned_cuvs_c(
     tmp_path: Path,
 ) -> None:
     java_jar, lucene_jar = _empty_jar_pair(tmp_path)
-    empty_native = tmp_path / "empty-native"
-    empty_native.mkdir()
+    versioned_native = tmp_path / "versioned-native"
+    versioned_native.mkdir()
+    (versioned_native / "libcuvs_c.so.26").touch()
 
     with pytest.raises(RuntimeError, match="unversioned libcuvs_c.so"):
         resolve_lucene_runtime_config(
             {
                 "cuvs_java_jar": java_jar,
                 "cuvs_lucene_jar": lucene_jar,
-                "java_library_path": empty_native,
+                "java_library_path": versioned_native,
             },
             requires_cuvs=True,
         )

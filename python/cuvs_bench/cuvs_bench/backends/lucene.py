@@ -30,6 +30,10 @@ from ..orchestrator.config_loaders import (
     ConfigLoader,
     IndexConfig,
 )
+from ._lucene_compat import (
+    PERSISTED_CODEC_KINDS,
+    SAVED_CUVS_LUCENE_ARTIFACT_IDS,
+)
 from ._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
     CAGRA_CODEC,
@@ -57,6 +61,11 @@ _CODEC_BY_ALGORITHM = {
     CPU_HNSW_ALGORITHM: CPU_HNSW_CODEC,
     ACCELERATED_HNSW_ALGORITHM: ACCELERATED_HNSW_CODEC,
     CAGRA_ALGORITHM: CAGRA_CODEC,
+}
+_PERSISTED_KIND_BY_ALGORITHM = {
+    CPU_HNSW_ALGORITHM: "cpu_hnsw",
+    ACCELERATED_HNSW_ALGORITHM: "hnsw",
+    CAGRA_ALGORITHM: "gpu_cagra",
 }
 _MAX_DIMENSIONS_BY_ALGORITHM = {
     CPU_HNSW_ALGORITHM: MAX_CPU_HNSW_DIMENSIONS,
@@ -504,7 +513,7 @@ def _file_backed_dataset_identity(
     """Stream a file source identity without materializing its vectors."""
     subset_size = _normalize_subset_size(dataset)
     source = _source_identity(dataset)
-    dtype = np.dtype(dtype_from_filename(source["path"]))
+    dtype = np.dtype(dtype_from_filename(dataset.base_file))
     if dtype != np.dtype(np.float32):
         raise TypeError(
             f"training vectors must use float32 values, got {dtype}"
@@ -749,7 +758,13 @@ class LuceneConfigLoader(ConfigLoader):
                 isinstance(config, dict)
                 and config.get("name") in _CODEC_BY_ALGORITHM
             ):
-                configs[config["name"]] = config
+                previous_groups = configs.get(config["name"], {}).get(
+                    "groups", {}
+                )
+                configs[config["name"]] = {
+                    **config,
+                    "groups": {**previous_groups, **config.get("groups", {})},
+                }
 
         algorithms = self._split(kwargs.get("algorithms"))
         groups = self._split(kwargs.get("groups")) or ["base"]
@@ -947,7 +962,8 @@ class LuceneBackend(BenchmarkBackend):
 
     def _validate_manifest_identity(
         self, payload: Mapping[str, Any], dataset_identity: Mapping[str, Any]
-    ) -> None:
+    ) -> str:
+        """Validate saved identity independently of the default writing codec."""
         build_runtime_artifacts = payload.get("build_runtime_artifacts")
         if not isinstance(build_runtime_artifacts, Mapping):
             raise RuntimeError(
@@ -978,9 +994,9 @@ class LuceneBackend(BenchmarkBackend):
             # Retain legacy coordinates so existing indexes remain reusable.
             expected_coordinates = {
                 "cuvs_java_coordinates": ("com.nvidia.cuvs:cuvs-java:",),
-                "cuvs_lucene_coordinates": (
-                    "com.nvidia.cuvs.lucene:cuvs-lucene:",
-                    "com.nvidia.cuvs.lucene:cuvs-lucene-10.2:",
+                "cuvs_lucene_coordinates": tuple(
+                    f"com.nvidia.cuvs.lucene:{artifact}:"
+                    for artifact in SAVED_CUVS_LUCENE_ARTIFACT_IDS
                 ),
             }
             for key, prefixes in expected_coordinates.items():
@@ -1010,10 +1026,20 @@ class LuceneBackend(BenchmarkBackend):
                     raise RuntimeError(
                         f"Lucene index manifest has invalid {key}"
                     )
+        saved_codec = payload.get("codec")
+        if (
+            not isinstance(saved_codec, str)
+            or PERSISTED_CODEC_KINDS.get(saved_codec)
+            != _PERSISTED_KIND_BY_ALGORITHM[self.algorithm]
+        ):
+            raise RuntimeError(
+                "Existing Lucene index does not match this dataset and configuration; "
+                "rerun with --force"
+            )
         expected_without_segment_count = {
             "schema_version": _MANIFEST_SCHEMA,
             "algorithm": self.algorithm,
-            "codec": self.codec,
+            "codec": saved_codec,
             "dataset": dict(dataset_identity),
             "build_runtime_artifacts": dict(build_runtime_artifacts),
         }
@@ -1024,6 +1050,7 @@ class LuceneBackend(BenchmarkBackend):
                 "Existing Lucene index does not match this dataset and configuration; "
                 "rerun with --force"
             )
+        return saved_codec
 
     @staticmethod
     def _validate_manifest_segment_count(
@@ -1047,7 +1074,7 @@ class LuceneBackend(BenchmarkBackend):
         stored_identity = payload.get("dataset")
         if not isinstance(stored_identity, Mapping):
             raise RuntimeError("Lucene index manifest has no dataset identity")
-        if dataset.base_file:
+        if dataset.base_file and not dataset.has_loaded_training_vectors:
             return _file_backed_dataset_identity(
                 dataset,
                 stored_identity,
@@ -1071,18 +1098,21 @@ class LuceneBackend(BenchmarkBackend):
         path: Path,
         vector_count: int,
         dimensions: int,
+        *,
+        expected_codec: str,
     ) -> dict[str, Any]:
         verification = runtime.index_verifier.verify(
             path,
-            expected_codec=self.codec,
+            expected_codec=expected_codec,
             expected_vector_count=vector_count,
             expected_dimensions=dimensions,
         )
         metadata = verification.metadata()
+        metadata["codec"] = verification.codec
         metadata["build_route_policy"] = _BUILD_ROUTE_POLICY_BY_ALGORITHM[
             self.algorithm
         ]
-        if self.codec == CAGRA_CODEC:
+        if self.algorithm == CAGRA_ALGORITHM:
             metadata.update(
                 runtime.cagra_verifier.verify(
                     path,
@@ -1163,7 +1193,9 @@ class LuceneBackend(BenchmarkBackend):
                 dataset_identity, vector_count, dimensions = (
                     self._search_dataset_identity(dataset, payload)
                 )
-                self._validate_manifest_identity(payload, dataset_identity)
+                saved_codec = self._validate_manifest_identity(
+                    payload, dataset_identity
+                )
                 runtime = self._get_runtime()
                 runtime.verify_artifacts()
                 metadata = self._verification_metadata(
@@ -1171,6 +1203,7 @@ class LuceneBackend(BenchmarkBackend):
                     path,
                     vector_count,
                     dimensions,
+                    expected_codec=saved_codec,
                 )
                 self._validate_manifest_segment_count(payload, metadata)
                 return BuildResult(
@@ -1233,6 +1266,7 @@ class LuceneBackend(BenchmarkBackend):
                     staged,
                     int(vectors.shape[0]),
                     int(vectors.shape[1]),
+                    expected_codec=self.codec,
                 )
                 observed_segments = int(metadata["segment_count"])
                 if runtime_build.segment_count != observed_segments:
@@ -1506,7 +1540,9 @@ class LuceneBackend(BenchmarkBackend):
             dataset_identity, vector_count, dimensions = (
                 self._search_dataset_identity(dataset, payload)
             )
-            self._validate_manifest_identity(payload, dataset_identity)
+            saved_codec = self._validate_manifest_identity(
+                payload, dataset_identity
+            )
             if int(queries.shape[1]) != dimensions:
                 raise ValueError(
                     "query vector dimensions do not match the indexed dataset: "
@@ -1525,7 +1561,11 @@ class LuceneBackend(BenchmarkBackend):
             )
             index_verification_started = time.perf_counter_ns()
             metadata = self._verification_metadata(
-                runtime, path, vector_count, dimensions
+                runtime,
+                path,
+                vector_count,
+                dimensions,
+                expected_codec=saved_codec,
             )
             self._validate_manifest_segment_count(payload, metadata)
             index_verification_ns = (
