@@ -13,10 +13,12 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from ._lucene_compat import LUCENE_COMPATIBILITY
+
 _JAVA_JAR_ENV = "CUVS_LUCENE_CUVS_JAVA_JAR"
 _LUCENE_JAR_ENV = "CUVS_LUCENE_JAR"
 _MAVEN_REPOSITORY_ENV = "MAVEN_LOCAL_REPO"
-CUVS_LUCENE_ARTIFACT_ID = "cuvs-lucene-10.2"
+CUVS_LUCENE_ARTIFACT_ID = LUCENE_COMPATIBILITY.artifact_id
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -70,7 +72,7 @@ def _artifact_candidates(kind: str) -> tuple[Path, ...]:
             _REPOSITORY_ROOT
             / "java"
             / "cuvs-lucene"
-            / "lucene-10.2"
+            / LUCENE_COMPATIBILITY.module_directory
             / "target"
             / f"{CUVS_LUCENE_ARTIFACT_ID}-{version}.jar",
             repository

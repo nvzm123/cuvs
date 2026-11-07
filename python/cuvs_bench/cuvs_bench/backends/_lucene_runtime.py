@@ -19,16 +19,17 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
+from ._lucene_compat import LUCENE_COMPATIBILITY, PERSISTED_CODEC_KINDS
 from ._lucene_runtime_config import (
     CUVS_LUCENE_ARTIFACT_ID,
     maven_artifact_version,
 )
 
-CPU_HNSW_CODEC = "Lucene101"
-ACCELERATED_HNSW_CODEC = "Lucene101AcceleratedHNSWCodec"
-CAGRA_CODEC = "CuVS2510GPUSearchCodec"
+CPU_HNSW_CODEC = LUCENE_COMPATIBILITY.cpu_hnsw_codec
+ACCELERATED_HNSW_CODEC = LUCENE_COMPATIBILITY.accelerated_hnsw_codec
+CAGRA_CODEC = LUCENE_COMPATIBILITY.cagra_codec
 MAX_CAGRA_TOP_K = 1024
-REQUIRED_PYLUCENE_VERSION = "10.2.0"
+REQUIRED_PYLUCENE_VERSION = LUCENE_COMPATIBILITY.pylucene_version
 
 _ID_FIELD = "id"
 _VECTOR_FIELD = "vector"
@@ -289,10 +290,9 @@ def _validate_artifacts(
     lucene_entries, lucene_contents = _read_jar(lucene_jar, "cuvs_lucene_jar")
     lucene_required = {
         f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/CuVS2510GPUVectorsFormat.class",
-        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/CuVS2510GPUSearchCodec.class",
+        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/{CAGRA_CODEC}.class",
         f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/IndexSearcherTimingBridge.class",
-        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/"
-        "Lucene101AcceleratedHNSWCodec.class",
+        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/{ACCELERATED_HNSW_CODEC}.class",
         _CODEC_SERVICE_DESCRIPTOR,
     }
     missing = sorted(lucene_required - lucene_entries)
@@ -326,17 +326,11 @@ def _validate_artifacts(
         provider_name = line.partition("#")[0].strip()
         if provider_name:
             providers.add(provider_name)
-    if f"{_CUVS_LUCENE_PACKAGE}.CuVS2510GPUSearchCodec" not in providers:
-        raise RuntimeError(
-            "cuvs_lucene_jar does not advertise CuVS2510GPUSearchCodec"
-        )
-    if (
-        f"{_CUVS_LUCENE_PACKAGE}.Lucene101AcceleratedHNSWCodec"
-        not in providers
-    ):
-        raise RuntimeError(
-            "cuvs_lucene_jar does not advertise Lucene101AcceleratedHNSWCodec"
-        )
+    for codec_name in (CAGRA_CODEC, ACCELERATED_HNSW_CODEC):
+        if f"{_CUVS_LUCENE_PACKAGE}.{codec_name}" not in providers:
+            raise RuntimeError(
+                f"cuvs_lucene_jar does not advertise {codec_name}"
+            )
 
     java_coordinates = _maven_coordinates(
         java_contents,
@@ -394,7 +388,8 @@ def _load_pylucene() -> Any:
         return importlib.import_module("lucene")
     except ImportError as error:
         raise ImportError(
-            "The Lucene backend requires the custom PyLucene 10.2.0 runtime, "
+            "The Lucene backend requires the custom PyLucene "
+            f"{REQUIRED_PYLUCENE_VERSION} runtime, "
             "which is not included in cuVS Bench packages. Install and "
             "activate the optional Lucene runtime before selecting this "
             f"backend. PyLucene import failed: {error}"
@@ -537,11 +532,7 @@ class LuceneIndexVerification:
     dimensions: int
 
     def metadata(self) -> dict[str, int | str]:
-        persisted_index_kind = {
-            CPU_HNSW_CODEC: "cpu_hnsw",
-            ACCELERATED_HNSW_CODEC: "hnsw",
-            CAGRA_CODEC: "gpu_cagra",
-        }[self.codec]
+        persisted_index_kind = PERSISTED_CODEC_KINDS[self.codec]
         return {
             "persisted_index_kind": persisted_index_kind,
             "segment_count": self.segment_count,
@@ -836,10 +827,11 @@ class CagraIndexVerifier:
             raise CagraVerificationError(
                 f"CAGRA benchmark index has committed deletions in {segment_name!r}"
             )
-        if str(segment.info.getCodec().getName()) != CAGRA_CODEC:
+        codec_name = str(segment.info.getCodec().getName())
+        if PERSISTED_CODEC_KINDS.get(codec_name) != "gpu_cagra":
             raise CagraVerificationError(
-                f"Segment {segment_name!r} uses {segment.info.getCodec().getName()}, "
-                f"not {CAGRA_CODEC}"
+                f"Segment {segment_name!r} uses {codec_name}, "
+                "not a supported CAGRA codec"
             )
         directory, compound = self._segment_directory(root, segment)
         with _CleanupStack() as cleanups:

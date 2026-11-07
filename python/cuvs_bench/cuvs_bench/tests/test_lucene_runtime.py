@@ -444,11 +444,13 @@ def test_missing_pylucene_reports_the_required_runtime(
     assert "PyLucene import failed: no lucene module" in message
 
 
+@pytest.mark.parametrize("version", ("10.1.0", "10.3.2", "10.4.0", "10.5.0"))
 def test_incompatible_pylucene_version_fails_before_vm_initialization(
     monkeypatch: pytest.MonkeyPatch,
+    version: str,
 ) -> None:
     fake_lucene = _FakeLucene()
-    fake_lucene.VERSION = "10.1.0"
+    fake_lucene.VERSION = version
     _reset_jvm_state(monkeypatch)
     monkeypatch.setattr(_lucene_runtime, "_load_pylucene", lambda: fake_lucene)
 
@@ -456,7 +458,7 @@ def test_incompatible_pylucene_version_fails_before_vm_initialization(
         initialize_pylucene({})
 
     message = str(error.value)
-    assert "expected 10.2.0, found 10.1.0" in message
+    assert f"expected 10.2.0, found {version}" in message
     assert "Install and activate a compatible PyLucene runtime" in message
     assert "http" not in message
     assert ".md" not in message
