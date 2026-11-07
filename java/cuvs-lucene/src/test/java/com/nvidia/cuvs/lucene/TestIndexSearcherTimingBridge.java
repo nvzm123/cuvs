@@ -26,9 +26,13 @@ public class TestIndexSearcherTimingBridge {
 
   @Test
   public void testReturnsTopDocsAndInJvmElapsedTimeThroughStandardTypes() throws Exception {
+    int documentCount = 3;
+    int requestedTopK = 2;
     try (var directory = new ByteBuffersDirectory();
         var writer = new IndexWriter(directory, new IndexWriterConfig())) {
-      writer.addDocument(new Document());
+      for (int document = 0; document < documentCount; document++) {
+        writer.addDocument(new Document());
+      }
       writer.commit();
 
       try (var reader = DirectoryReader.open(directory)) {
@@ -36,14 +40,14 @@ public class TestIndexSearcherTimingBridge {
         Map<String, Object> request = new HashMap<>();
         request.put(IndexSearcherTimingBridge.SEARCHER_KEY, new IndexSearcher(reader));
         request.put(IndexSearcherTimingBridge.QUERY_KEY, new MatchAllDocsQuery());
-        request.put(IndexSearcherTimingBridge.TOP_K_KEY, 1);
+        request.put(IndexSearcherTimingBridge.TOP_K_KEY, requestedTopK);
 
         Map<String, Object> response = bridge.apply(request);
 
         TopDocs topDocs = (TopDocs) response.get(IndexSearcherTimingBridge.TOP_DOCS_KEY);
         Long elapsedNanos = (Long) response.get(IndexSearcherTimingBridge.ELAPSED_NANOS_KEY);
         assertNotNull(topDocs);
-        assertEquals(1, topDocs.scoreDocs.length);
+        assertEquals(requestedTopK, topDocs.scoreDocs.length);
         assertNotNull(elapsedNanos);
         assertTrue(elapsedNanos >= 0L);
       }
