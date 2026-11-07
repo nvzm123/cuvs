@@ -165,28 +165,33 @@ def test_java_search_timer_reports_jcc_adaptation_failure() -> None:
 
 
 def test_float32_vectors_are_converted_to_a_jcc_compatible_sequence() -> None:
-    received = []
+    received_inputs = []
+    fake_converter_output_object = object()
 
-    class RecordingLucene:
+    class FakeLucene:
         @staticmethod
         def JArray(element_type: str):
             assert element_type == "float"
 
-            def record(values):
-                received.append(values)
-                return values
+            def fake_converter(values):
+                received_inputs.append(values)
+                return fake_converter_output_object
 
-            return record
+            return fake_converter
 
+    # Bypass normal runtime initialization and inject the fake JCC interface.
     runtime = object.__new__(LuceneRuntime)
-    runtime.lucene = RecordingLucene()
+    runtime.lucene = FakeLucene()
     vector = np.asarray([1.25, -2.5], dtype=np.float32)
 
+    # Call the actual production function with the fake JCC converter.
     converted = runtime._java_vector(vector)
 
-    assert converted == [1.25, -2.5]
-    assert received == [[1.25, -2.5]]
-    assert all(type(value) is float for value in received[0])
+    # Check the numbers and Python float types passed into the converter.
+    assert received_inputs == [[1.25, -2.5]]
+    assert all(type(value) is float for value in received_inputs[0])
+    # Ensure the production function returns the converter's output object.
+    assert converted is fake_converter_output_object
 
 
 def test_numeric_document_ids_preserve_score_order_across_leaves() -> None:
