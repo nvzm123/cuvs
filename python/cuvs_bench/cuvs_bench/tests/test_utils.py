@@ -528,7 +528,9 @@ class TestDatasetLazyLoading:
         _write_test_bin(path, data)
 
         dataset = Dataset(name="test", base_file=path)
+        assert not dataset.has_loaded_training_vectors
         np.testing.assert_array_equal(dataset.training_vectors, data)
+        assert dataset.has_loaded_training_vectors
 
     def test_lazy_load_query_vectors(self, tmp_path):
         """Test that query vectors are loaded from file on first access."""
@@ -567,8 +569,30 @@ class TestDatasetLazyLoading:
             training_vectors=base,
             query_vectors=query,
         )
+        assert dataset.has_loaded_training_vectors
         np.testing.assert_array_equal(dataset.training_vectors, base)
         np.testing.assert_array_equal(dataset.query_vectors, query)
+
+    @pytest.mark.parametrize(
+        "cleared_vectors",
+        (None, np.empty((0, 0))),
+        ids=("none", "empty-array"),
+    )
+    def test_loaded_training_state_can_be_cleared_without_reading_a_file(
+        self,
+        tmp_path,
+        cleared_vectors,
+    ):
+        dataset = Dataset(
+            name="test", base_file=str(tmp_path / "not-created.fbin")
+        )
+        assert not dataset.has_loaded_training_vectors
+        dataset.training_vectors = np.ones((1, 2), dtype=np.float32)
+        assert dataset.has_loaded_training_vectors
+
+        dataset.training_vectors = cleared_vectors
+
+        assert not dataset.has_loaded_training_vectors
 
     def test_no_file_returns_empty(self):
         """Test that Dataset without files returns empty arrays."""

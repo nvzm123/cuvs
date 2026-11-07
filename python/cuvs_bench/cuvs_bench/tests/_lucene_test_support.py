@@ -13,6 +13,7 @@ from typing import Any, Mapping
 import numpy as np
 import pytest
 
+from cuvs_bench.backends._lucene_compat import LUCENE_COMPATIBILITY
 from cuvs_bench.backends._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
     CAGRA_CODEC,
@@ -52,6 +53,7 @@ ALGORITHM_CASES = (
     pytest.param(CAGRA_ALGORITHM, CAGRA_CODEC, "gpu_cagra", id="cagra"),
 )
 _ARTIFACT_VERSION = maven_artifact_version()
+# Current-runtime fixture; historical coordinates stay explicit in their tests.
 _FAKE_ARTIFACT_PROVENANCE = {
     "cuvs_java_coordinates": (
         f"com.nvidia.cuvs:cuvs-java:{_ARTIFACT_VERSION}"
@@ -59,7 +61,8 @@ _FAKE_ARTIFACT_PROVENANCE = {
     "cuvs_java_jar_path": "/artifacts/cuvs-java.jar",
     "cuvs_java_jar_sha256": "a" * 64,
     "cuvs_lucene_coordinates": (
-        f"com.nvidia.cuvs.lucene:cuvs-lucene-10.2:{_ARTIFACT_VERSION}"
+        f"com.nvidia.cuvs.lucene:{LUCENE_COMPATIBILITY.artifact_id}:"
+        f"{_ARTIFACT_VERSION}"
     ),
     "cuvs_lucene_jar_path": "/artifacts/cuvs-lucene.jar",
     "cuvs_lucene_jar_sha256": "b" * 64,
@@ -125,11 +128,18 @@ class RecordingCagraVerifier:
 
 
 class RecordingRuntime:
-    """Small in-process substitute for the JVM boundary."""
+    """Record JVM-boundary calls without loading PyLucene.
 
-    pylucene_version = "10.2.0"
+    Default to the supported profile. Overrides change reported version metadata,
+    not simulated Lucene behavior or compatibility.
+    """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        pylucene_version: str = LUCENE_COMPATIBILITY.pylucene_version,
+    ) -> None:
+        self.pylucene_version = pylucene_version
         self.artifact_provenance: dict[str, str] = {}
         self.index_verifier = RecordingIndexVerifier(self)
         self.cagra_verifier = RecordingCagraVerifier()

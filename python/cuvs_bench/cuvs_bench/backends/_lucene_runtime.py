@@ -19,16 +19,17 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
+from ._lucene_compat import LUCENE_COMPATIBILITY, PERSISTED_CODEC_KINDS
 from ._lucene_runtime_config import (
     CUVS_LUCENE_ARTIFACT_ID,
     maven_artifact_version,
 )
 
-CPU_HNSW_CODEC = "Lucene101"
-ACCELERATED_HNSW_CODEC = "Lucene101AcceleratedHNSWCodec"
-CAGRA_CODEC = "CuVS2510GPUSearchCodec"
+CPU_HNSW_CODEC = LUCENE_COMPATIBILITY.cpu_hnsw_codec
+ACCELERATED_HNSW_CODEC = LUCENE_COMPATIBILITY.accelerated_hnsw_codec
+CAGRA_CODEC = LUCENE_COMPATIBILITY.cagra_codec
 MAX_CAGRA_TOP_K = 1024
-REQUIRED_PYLUCENE_VERSION = "10.2.0"
+REQUIRED_PYLUCENE_VERSION = LUCENE_COMPATIBILITY.pylucene_version
 
 _ID_FIELD = "id"
 _VECTOR_FIELD = "vector"
@@ -289,10 +290,9 @@ def _validate_artifacts(
     lucene_entries, lucene_contents = _read_jar(lucene_jar, "cuvs_lucene_jar")
     lucene_required = {
         f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/CuVS2510GPUVectorsFormat.class",
-        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/CuVS2510GPUSearchCodec.class",
+        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/{CAGRA_CODEC}.class",
         f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/IndexSearcherTimingBridge.class",
-        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/"
-        "Lucene101AcceleratedHNSWCodec.class",
+        f"{_CUVS_LUCENE_PACKAGE_DIRECTORY}/{ACCELERATED_HNSW_CODEC}.class",
         _CODEC_SERVICE_DESCRIPTOR,
     }
     missing = sorted(lucene_required - lucene_entries)
@@ -318,37 +318,32 @@ def _validate_artifacts(
             "cuvs_lucene_jar bundles Lucene classes; use the dependency-thin "
             f"artifact. First bundled class: {bundled_lucene}"
         )
-    providers = {
-        line.partition("#")[0].strip()
-        for line in lucene_contents[_CODEC_SERVICE_DESCRIPTOR]
-        .decode("utf-8")
-        .splitlines()
-        if line.partition("#")[0].strip()
-    }
-    if f"{_CUVS_LUCENE_PACKAGE}.CuVS2510GPUSearchCodec" not in providers:
-        raise RuntimeError(
-            "cuvs_lucene_jar does not advertise CuVS2510GPUSearchCodec"
-        )
-    if (
-        f"{_CUVS_LUCENE_PACKAGE}.Lucene101AcceleratedHNSWCodec"
-        not in providers
-    ):
-        raise RuntimeError(
-            "cuvs_lucene_jar does not advertise Lucene101AcceleratedHNSWCodec"
-        )
+    providers = set()
+    descriptor_text = lucene_contents[_CODEC_SERVICE_DESCRIPTOR].decode(
+        "utf-8"
+    )
+    for line in descriptor_text.splitlines():
+        provider_name = line.partition("#")[0].strip()
+        if provider_name:
+            providers.add(provider_name)
+    for codec_name in (CAGRA_CODEC, ACCELERATED_HNSW_CODEC):
+        if f"{_CUVS_LUCENE_PACKAGE}.{codec_name}" not in providers:
+            raise RuntimeError(
+                f"cuvs_lucene_jar does not advertise {codec_name}"
+            )
 
     java_coordinates = _maven_coordinates(
         java_contents,
         _CUVS_JAVA_MAVEN_PROPERTIES,
     )
-    lucene_coordinates = _maven_coordinates(
-        lucene_contents,
-        _CUVS_LUCENE_MAVEN_PROPERTIES,
-    )
     if java_coordinates[:2] != (_CUVS_JAVA_PACKAGE, "cuvs-java"):
         raise RuntimeError(
             f"Unexpected cuvs-java coordinates: {java_coordinates[:2]}"
         )
+    lucene_coordinates = _maven_coordinates(
+        lucene_contents,
+        _CUVS_LUCENE_MAVEN_PROPERTIES,
+    )
     if lucene_coordinates[:2] != (
         _CUVS_LUCENE_PACKAGE,
         CUVS_LUCENE_ARTIFACT_ID,
@@ -356,16 +351,18 @@ def _validate_artifacts(
         raise RuntimeError(
             f"Unexpected cuvs-lucene coordinates: {lucene_coordinates[:2]}"
         )
-    expected_version = maven_artifact_version()
-    if java_coordinates[2] != lucene_coordinates[2]:
+    java_artifact_version = java_coordinates[2]
+    lucene_artifact_version = lucene_coordinates[2]
+    if java_artifact_version != lucene_artifact_version:
         raise RuntimeError(
             "cuvs-java and cuvs-lucene JAR versions differ: "
-            f"{java_coordinates[2]} != {lucene_coordinates[2]}"
+            f"{java_artifact_version} != {lucene_artifact_version}"
         )
-    if java_coordinates[2] != expected_version:
+    expected_version = maven_artifact_version()
+    if java_artifact_version != expected_version:
         raise RuntimeError(
             "Java artifacts do not match this cuVS Bench release: expected "
-            f"{expected_version}, found {java_coordinates[2]}"
+            f"{expected_version}, found {java_artifact_version}"
         )
     provenance = {
         "cuvs_java_coordinates": ":".join(java_coordinates),
@@ -391,7 +388,8 @@ def _load_pylucene() -> Any:
         return importlib.import_module("lucene")
     except ImportError as error:
         raise ImportError(
-            "The Lucene backend requires the custom PyLucene 10.2.0 runtime, "
+            "The Lucene backend requires the custom PyLucene "
+            f"{REQUIRED_PYLUCENE_VERSION} runtime, "
             "which is not included in cuVS Bench packages. Install and "
             "activate the optional Lucene runtime before selecting this "
             f"backend. PyLucene import failed: {error}"
@@ -534,11 +532,7 @@ class LuceneIndexVerification:
     dimensions: int
 
     def metadata(self) -> dict[str, int | str]:
-        persisted_index_kind = {
-            CPU_HNSW_CODEC: "cpu_hnsw",
-            ACCELERATED_HNSW_CODEC: "hnsw",
-            CAGRA_CODEC: "gpu_cagra",
-        }[self.codec]
+        persisted_index_kind = PERSISTED_CODEC_KINDS[self.codec]
         return {
             "persisted_index_kind": persisted_index_kind,
             "segment_count": self.segment_count,
@@ -784,17 +778,21 @@ class CagraIndexVerifier:
             payload_end = int(data_input.length()) - int(
                 runtime.CodecUtil.footerLength()
             )
-            expected = payload_start
+            previous_end = payload_start
+            # A failed native merge can leave unreferenced bytes before a
+            # successful vector-based rebuild. Validate the referenced ranges,
+            # not whether they occupy every byte in the data file.
             for field in sorted(fields, key=lambda item: item.cagra_offset):
-                if field.cagra_offset != expected:
+                field_end = field.cagra_offset + field.cagra_length
+                if (
+                    field.cagra_length <= 0
+                    or field.cagra_offset < previous_end
+                    or field_end > payload_end
+                ):
                     raise CagraVerificationError(
-                        f"CAGRA metadata does not exactly cover {data_file!r}"
+                        f"Invalid or overlapping CAGRA range in {data_file!r}"
                     )
-                expected = field.cagra_offset + field.cagra_length
-            if expected != payload_end:
-                raise CagraVerificationError(
-                    f"CAGRA metadata does not exactly cover {data_file!r}"
-                )
+                previous_end = field_end
             runtime.CodecUtil.checksumEntireFile(data_input)
 
     def _segment_directory(self, root: Any, segment: Any) -> tuple[Any, bool]:
@@ -829,10 +827,11 @@ class CagraIndexVerifier:
             raise CagraVerificationError(
                 f"CAGRA benchmark index has committed deletions in {segment_name!r}"
             )
-        if str(segment.info.getCodec().getName()) != CAGRA_CODEC:
+        codec_name = str(segment.info.getCodec().getName())
+        if PERSISTED_CODEC_KINDS.get(codec_name) != "gpu_cagra":
             raise CagraVerificationError(
-                f"Segment {segment_name!r} uses {segment.info.getCodec().getName()}, "
-                f"not {CAGRA_CODEC}"
+                f"Segment {segment_name!r} uses {codec_name}, "
+                "not a supported CAGRA codec"
             )
         directory, compound = self._segment_directory(root, segment)
         with _CleanupStack() as cleanups:
@@ -1217,13 +1216,11 @@ class LuceneRuntime:
 
     @staticmethod
     def _index_dimensions(reader: Any) -> int:
-        dimensions = {
-            int(values.dimension())
-            for leaf in reader.leaves()
-            if (values := leaf.reader().getFloatVectorValues(_VECTOR_FIELD))
-            is not None
-            and values.size() > 0
-        }
+        dimensions = set()
+        for leaf in reader.leaves():
+            values = leaf.reader().getFloatVectorValues(_VECTOR_FIELD)
+            if values is not None and values.size() > 0:
+                dimensions.add(int(values.dimension()))
         if len(dimensions) != 1:
             raise RuntimeError(
                 f"Lucene index has invalid vector dimensions: {sorted(dimensions)}"
@@ -1268,7 +1265,7 @@ class LuceneRuntime:
         reader: Any, score_docs: Sequence[Any]
     ) -> list[SearchHit]:
         """Read each leaf's forward-only IDs, preserving score rank."""
-        ranked_score_docs = sorted(
+        ranked_score_docs_by_doc_id = sorted(
             enumerate(score_docs), key=lambda item: int(item[1].doc)
         )
         hits_by_rank: dict[int, SearchHit] = {}
@@ -1278,8 +1275,9 @@ class LuceneRuntime:
             doc_base = int(leaf.docBase)
             doc_limit = doc_base + int(leaf_reader.maxDoc())
             if (
-                next_hit == len(ranked_score_docs)
-                or int(ranked_score_docs[next_hit][1].doc) >= doc_limit
+                next_hit == len(ranked_score_docs_by_doc_id)
+                or int(ranked_score_docs_by_doc_id[next_hit][1].doc)
+                >= doc_limit
             ):
                 continue
             document_ids = leaf_reader.getNumericDocValues(_ID_FIELD)
@@ -1288,8 +1286,8 @@ class LuceneRuntime:
                     "Lucene index has no numeric dataset IDs; rebuild the "
                     "index with --force"
                 )
-            while next_hit < len(ranked_score_docs):
-                rank, score_doc = ranked_score_docs[next_hit]
+            while next_hit < len(ranked_score_docs_by_doc_id):
+                rank, score_doc = ranked_score_docs_by_doc_id[next_hit]
                 lucene_doc_id = int(score_doc.doc)
                 if lucene_doc_id >= doc_limit:
                     break
@@ -1306,12 +1304,15 @@ class LuceneRuntime:
                     int(document_ids.longValue()), float(score_doc.score)
                 )
                 next_hit += 1
-        if next_hit != len(ranked_score_docs):
-            lucene_doc_id = int(ranked_score_docs[next_hit][1].doc)
+        if next_hit != len(ranked_score_docs_by_doc_id):
+            lucene_doc_id = int(ranked_score_docs_by_doc_id[next_hit][1].doc)
             raise RuntimeError(
                 f"Lucene document {lucene_doc_id} is outside the index"
             )
-        return [hits_by_rank[rank] for rank in range(len(ranked_score_docs))]
+        return [
+            hits_by_rank[rank]
+            for rank in range(len(ranked_score_docs_by_doc_id))
+        ]
 
     def _search_one(
         self,

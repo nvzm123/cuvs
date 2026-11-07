@@ -27,25 +27,24 @@ def test_registration_exposes_the_backend_and_config_loader() -> None:
     assert get_config_loader("lucene") is LuceneConfigLoader
 
 
-def test_algorithm_configs_define_each_supported_codec() -> None:
-    expected_codecs = {
-        "lucene_accelerated_hnsw": "Lucene101AcceleratedHNSWCodec",
-        "lucene_cpu_hnsw": "Lucene101",
-        "lucene_cuvs_cagra": "CuVS2510GPUSearchCodec",
-    }
+def test_algorithm_configs_leave_codec_selection_to_the_runtime_policy() -> (
+    None
+):
+    algorithms = (
+        "lucene_accelerated_hnsw",
+        "lucene_cpu_hnsw",
+        "lucene_cuvs_cagra",
+    )
     algorithm_resources = resources.files("cuvs_bench.config.algos")
 
-    for algorithm, codec in expected_codecs.items():
+    for algorithm in algorithms:
         config = yaml.safe_load(
             algorithm_resources.joinpath(f"{algorithm}.yaml").read_text()
         )
         assert config["name"] == algorithm
         assert set(config["groups"]) == {"base", "test"}
         for group in config["groups"].values():
-            assert group == {
-                "build": {"codec": [codec]},
-                "search": {},
-            }
+            assert group == {"build": {}, "search": {}}
 
 
 def test_failed_results_are_fatal_for_the_lucene_backend() -> None:

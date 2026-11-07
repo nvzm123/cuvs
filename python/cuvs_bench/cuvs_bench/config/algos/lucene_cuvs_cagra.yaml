@@ -4,10 +4,8 @@
 name: lucene_cuvs_cagra
 groups:
   base:
-    build:
-      codec: ["CuVS2510GPUSearchCodec"]
+    build: {}
     search: {}
   test:
-    build:
-      codec: ["CuVS2510GPUSearchCodec"]
+    build: {}
     search: {}

@@ -19,7 +19,6 @@ from _lucene_test_support import (
     _backend_and_index,
 )
 from cuvs_bench.backends._lucene_runtime import (
-    ACCELERATED_HNSW_CODEC,
     CAGRA_CODEC,
     CPU_HNSW_CODEC,
 )
@@ -185,8 +184,10 @@ def test_score_inversion_tolerates_float32_roundoff_above_one() -> None:
     assert _score_to_squared_euclidean(score) == 0.0
 
 
+@pytest.mark.parametrize("group", ("base", "test"))
 def test_config_loader_maps_each_algorithm_to_its_codec_and_requirement(
     tmp_path: Path,
+    group: str,
 ) -> None:
     dataset_configuration = tmp_path / "datasets.yaml"
     dataset_configuration.write_text(
@@ -203,7 +204,7 @@ def test_config_loader_maps_each_algorithm_to_its_codec_and_requirement(
             f"{CPU_HNSW_ALGORITHM},{ACCELERATED_HNSW_ALGORITHM},"
             f"{CAGRA_ALGORITHM}"
         ),
-        groups="test",
+        groups=group,
     )
     by_algorithm = {
         configuration.indexes[0].algo: configuration
@@ -216,13 +217,13 @@ def test_config_loader_maps_each_algorithm_to_its_codec_and_requirement(
         CAGRA_ALGORITHM,
     }
     assert by_algorithm[CPU_HNSW_ALGORITHM].indexes[0].build_param == {
-        "codec": CPU_HNSW_CODEC
+        "codec": "Lucene101"
     }
     assert by_algorithm[CAGRA_ALGORITHM].indexes[0].build_param == {
-        "codec": CAGRA_CODEC
+        "codec": "CuVS2510GPUSearchCodec"
     }
     assert by_algorithm[ACCELERATED_HNSW_ALGORITHM].indexes[0].build_param == {
-        "codec": ACCELERATED_HNSW_CODEC
+        "codec": "Lucene101AcceleratedHNSWCodec"
     }
     assert (
         by_algorithm[CPU_HNSW_ALGORITHM].backend_config["requires_cuvs"]
@@ -245,12 +246,18 @@ def test_config_loader_maps_each_algorithm_to_its_codec_and_requirement(
         is True
     )
     assert by_algorithm[CAGRA_ALGORITHM].backend_config["include_cuvs"] is True
-    assert by_algorithm[CPU_HNSW_ALGORITHM].backend_config["group"] == "test"
+    assert by_algorithm[CPU_HNSW_ALGORITHM].backend_config["group"] == group
     assert (
         by_algorithm[ACCELERATED_HNSW_ALGORITHM].backend_config["group"]
-        == "test"
+        == group
     )
-    assert by_algorithm[CAGRA_ALGORITHM].backend_config["group"] == "test"
+    assert by_algorithm[CAGRA_ALGORITHM].backend_config["group"] == group
+
+
+@pytest.mark.parametrize("codec", ("Lucene103", "unknown-codec", "", None))
+def test_explicit_codec_is_not_silently_replaced(codec: str | None) -> None:
+    with pytest.raises(ValueError, match="requires codec 'Lucene101'"):
+        _codec_for(CPU_HNSW_ALGORITHM, {"codec": codec})
 
 
 @pytest.mark.parametrize(
@@ -271,10 +278,7 @@ def test_config_loader_maps_each_algorithm_to_its_codec_and_requirement(
         ),
         pytest.param(
             "base,test",
-            (
-                f"{CPU_HNSW_ALGORITHM}.test,"
-                f"{CPU_HNSW_ALGORITHM}.base"
-            ),
+            (f"{CPU_HNSW_ALGORITHM}.test,{CPU_HNSW_ALGORITHM}.base"),
             ["base", "test"],
             id="deduplicate",
         ),
@@ -305,6 +309,65 @@ def test_config_loader_adds_algorithm_groups_to_common_groups(
         configuration.backend_config["group"]
         for configuration in configurations
     ] == expected_groups
+
+
+@pytest.mark.parametrize(
+    ("supplemental_group", "expected_groups"),
+    (
+        pytest.param("larger", ["base", "test", "larger"], id="add-group"),
+        pytest.param("base", ["base", "test"], id="replace-group"),
+    ),
+)
+def test_supplemental_configuration_preserves_other_algorithm_groups(
+    tmp_path: Path,
+    supplemental_group: str,
+    expected_groups: list[str],
+) -> None:
+    dataset_configuration = tmp_path / "datasets.yaml"
+    dataset_configuration.write_text(
+        "- name: tiny-l2\n  distance: euclidean\n  dims: 2\n",
+        encoding="utf-8",
+    )
+    algorithm_configuration = tmp_path / "custom.yaml"
+    algorithm_configuration.write_text(
+        f"name: {CPU_HNSW_ALGORITHM}\n"
+        f"groups:\n  {supplemental_group}:\n"
+        "    search:\n      num_candidates: [16]\n",
+        encoding="utf-8",
+    )
+    loader = LuceneConfigLoader()
+
+    _dataset_config, configurations = loader.load(
+        dataset="tiny-l2",
+        dataset_path=str(tmp_path),
+        dataset_configuration=str(dataset_configuration),
+        algorithm_configuration=str(algorithm_configuration),
+        algorithms=CPU_HNSW_ALGORITHM,
+        groups=",".join(expected_groups),
+    )
+
+    assert [
+        configuration.backend_config["group"]
+        for configuration in configurations
+    ] == expected_groups
+    for configuration in configurations:
+        expected_search = (
+            [{"num_candidates": 16}]
+            if configuration.backend_config["group"] == supplemental_group
+            else [{}]
+        )
+        assert configuration.indexes[0].search_params == expected_search
+
+    # Override a whole group: omitted build settings must not leak through.
+    discovered = loader._discover_algo_groups(
+        {},
+        "tiny-l2",
+        str(tmp_path),
+        algorithm_configuration=str(algorithm_configuration),
+        algorithms=CPU_HNSW_ALGORITHM,
+        groups=supplemental_group,
+    )
+    assert discovered[0][2] == {"search": {"num_candidates": [16]}}
 
 
 def test_config_loader_rejects_unknown_algorithm_group(
