@@ -9,6 +9,7 @@ import hashlib
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -20,6 +21,7 @@ from cuvs_bench.backends._lucene_runtime import (
     _rollback_writer,
     _validate_artifacts,
     CagraIndexVerifier,
+    CagraVerificationError,
     initialize_pylucene,
     LuceneRuntime,
 )
@@ -337,7 +339,9 @@ def test_cagra_verifier_selects_only_the_current_noncompound_segment() -> None:
     ) == ["_c.vemc"]
 
 
-def test_cagra_verifier_reads_metadata_inside_a_compound_segment() -> None:
+def test_cagra_verifier_selects_metadata_filenames_from_compound_directory() -> (
+    None
+):
     class CompoundDirectory:
         @staticmethod
         def listAll():
@@ -356,6 +360,67 @@ def test_cagra_verifier_reads_metadata_inside_a_compound_segment() -> None:
     ) == ["_c.vemc"]
 
 
+def _verify_cagra_payload_ranges(ranges: list[tuple[int, int]]) -> None:
+    """Model recorded (offset, length) pairs relative to a 100-byte payload."""
+    header_length, payload_length, footer_length = 32, 100, 16
+    data_input = Mock()
+    data_input.getFilePointer.return_value = header_length
+    data_input.length.return_value = (
+        header_length + payload_length + footer_length
+    )
+    directory = Mock()
+    directory.openInput.return_value = data_input
+    codec_util = Mock()
+    codec_util.footerLength.return_value = footer_length
+    runtime = SimpleNamespace(
+        IOContext=SimpleNamespace(READONCE=object()), CodecUtil=codec_util
+    )
+    segment = SimpleNamespace(info=Mock(name="segment_info"))
+    segment.info.name = "_0"
+    fields = [
+        SimpleNamespace(
+            cagra_offset=header_length + offset, cagra_length=length
+        )
+        for offset, length in ranges
+    ]
+
+    CagraIndexVerifier(runtime)._verify_data(
+        directory, segment, "_0.vemc", fields
+    )
+
+    codec_util.checksumEntireFile.assert_called_once_with(data_input)
+    data_input.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        pytest.param([(0, 100)], id="contiguous"),
+        pytest.param([(8, 92)], id="abandoned-merge-prefix"),
+        pytest.param([(0, 40), (48, 52)], id="gap-between-fields"),
+        pytest.param([(0, 92)], id="unreferenced-tail"),
+    ],
+)
+def test_cagra_payload_verification_allows_unreferenced_bytes(ranges) -> None:
+    # A failed native merge can leave bytes behind before the vector-based
+    # rebuild writes its successful CAGRA payload at a later offset.
+    _verify_cagra_payload_ranges(ranges)
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        pytest.param([(-1, 101)], id="starts-in-header"),
+        pytest.param([(0, 101)], id="extends-into-footer"),
+        pytest.param([(0, 60), (50, 50)], id="overlapping-fields"),
+        pytest.param([(0, 0)], id="empty-range"),
+    ],
+)
+def test_cagra_payload_verification_rejects_invalid_ranges(ranges) -> None:
+    with pytest.raises(CagraVerificationError):
+        _verify_cagra_payload_ranges(ranges)
+
+
 def test_missing_pylucene_reports_the_required_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -372,17 +437,20 @@ def test_missing_pylucene_reports_the_required_runtime(
     message = str(error.value)
     assert "requires the custom PyLucene 10.2.0 runtime" in message
     assert "Install and activate the optional Lucene runtime" in message
+    # Keep documentation URLs and checkout-specific setup paths out of errors.
     assert "http" not in message
     assert ".md" not in message
     assert ".sh" not in message
     assert "PyLucene import failed: no lucene module" in message
 
 
+@pytest.mark.parametrize("version", ("10.1.0", "10.3.2", "10.4.0", "10.5.0"))
 def test_incompatible_pylucene_version_fails_before_vm_initialization(
     monkeypatch: pytest.MonkeyPatch,
+    version: str,
 ) -> None:
     fake_lucene = _FakeLucene()
-    fake_lucene.VERSION = "10.1.0"
+    fake_lucene.VERSION = version
     _reset_jvm_state(monkeypatch)
     monkeypatch.setattr(_lucene_runtime, "_load_pylucene", lambda: fake_lucene)
 
@@ -390,7 +458,7 @@ def test_incompatible_pylucene_version_fails_before_vm_initialization(
         initialize_pylucene({})
 
     message = str(error.value)
-    assert "expected 10.2.0, found 10.1.0" in message
+    assert f"expected 10.2.0, found {version}" in message
     assert "Install and activate a compatible PyLucene runtime" in message
     assert "http" not in message
     assert ".md" not in message
@@ -522,11 +590,12 @@ def test_reused_jvm_reports_the_initialized_artifact_identity(
         "cuvs_lucene_jar": str(lucene_jar),
     }
 
-    first = initialize_pylucene(config)
-    second = initialize_pylucene(config)
+    _, first_provenance, first_tokens = initialize_pylucene(config)
+    _, reused_provenance, reused_tokens = initialize_pylucene(config)
 
     assert len(fake_lucene.initializations) == 1
-    assert second[1:] == first[1:]
+    assert reused_provenance == first_provenance
+    assert reused_tokens == first_tokens
 
 
 def test_reused_jvm_rejects_a_same_path_artifact_replacement(
@@ -574,7 +643,7 @@ def test_reused_jvm_hashes_artifacts_when_stat_tokens_collide(
         initialize_pylucene(config)
 
 
-def test_artifact_hashing_occurs_once_per_operation_boundary(
+def test_thread_attachment_does_not_rehash_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = object.__new__(LuceneRuntime)
