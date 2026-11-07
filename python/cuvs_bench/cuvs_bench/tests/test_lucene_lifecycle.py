@@ -572,7 +572,7 @@ def test_search_rejects_a_file_that_was_not_the_explicit_build_array(
     assert runtime.search_calls == []
 
 
-def test_search_rejects_a_physical_index_that_fails_verification(
+def test_search_reports_verification_failure_without_querying(
     tmp_path: Path,
 ) -> None:
     runtime = RecordingRuntime()
@@ -581,14 +581,13 @@ def test_search_rejects_a_physical_index_that_fails_verification(
     )
     dataset = _dataset()
     assert backend.build(dataset, [index]).success
-    runtime.verification_error = RuntimeError(
-        "Segment '_0' uses CuVS2510GPUSearchCodec, not Lucene101"
-    )
+    verification_message = "i-am-fake-verifier-failure"
+    runtime.verification_error = RuntimeError(verification_message)
 
     result = backend.search(dataset, [index], k=2)[0]
 
     assert not result.success
-    assert "uses CuVS2510GPUSearchCodec, not Lucene101" in result.error_message
+    assert result.error_message == f"RuntimeError: {verification_message}"
     assert runtime.search_calls == []
 
 
