@@ -146,9 +146,9 @@ Add a new backend when cuVS Bench needs to drive a different execution path, suc
 1. Implement a config loader by subclassing `ConfigLoader` and defining
    `_discover_algo_groups()`, `_build_benchmark_configs()`, and `backend_type`.
    The inherited `load()` method returns
-   `(DatasetConfig, list[BenchmarkConfig])`.
+   `(DatasetConfig, List[BenchmarkConfig])`.
 2. Implement a backend by subclassing `BenchmarkBackend`. Its `build()` method
-   returns `BuildResult`; its `search()` method returns `list[SearchResult]`.
+   returns `BuildResult`; its `search()` method returns `List[SearchResult]`.
 3. Register both pieces with the same backend type name.
 4. Select an installed backend with a YAML `backend:` field passed through
    `--backend-config`, or construct `BenchmarkOrchestrator` directly with its
@@ -265,8 +265,8 @@ excluded from the CSV output and do not replace prior measurements. Returning
 
 | Component | Description |
 | --- | --- |
-| `ConfigLoader` | Template base class whose `load(**kwargs)` method returns `(DatasetConfig, list[BenchmarkConfig])`; plugins implement its discovery/build hooks. Register with `register_config_loader(backend_type, loader_class)`. |
-| `BenchmarkBackend` | Abstract class whose `build(...)` method returns `BuildResult` and whose `search(...)` method returns `list[SearchResult]`. Its optional class hooks control the CLI algorithm default and fatal-result policy. |
+| `ConfigLoader` | Template base class whose `load(**kwargs)` method returns `(DatasetConfig, List[BenchmarkConfig])`; plugins implement its discovery/build hooks. Register with `register_config_loader(backend_type, loader_class)`. |
+| `BenchmarkBackend` | Abstract class whose `build(...)` method returns `BuildResult` and whose `search(...)` method returns `List[SearchResult]`. Its optional class hooks control the CLI algorithm default and fatal-result policy. |
 | `BackendRegistry` | Singleton registry returned by `get_registry()` that stores registered backend classes. The `get_backend_class()` and `get_config_loader()` helpers discover matching installed entry points on demand. |
 
 ## C++ Backend
