@@ -43,6 +43,69 @@ python -m cuvs_bench.run \
     --build --search
 ```
 
+## Optional build controls
+
+An empty `build` configuration keeps the codec's defaults and Lucene's ordinary
+flush and merge policies. To configure accelerated HNSW, supply both `m` and
+`beam_width` (the HNSW-equivalent construction effort, often called
+`ef_construction`). Native cuVS derives its CAGRA build settings through the
+default heuristic; these are not search parameters.
+
+For reproducible segment layouts, both cuVS-backed algorithms also accept
+`premerge_segment_count`, `force_merge_segment_count`, and
+`ram_per_thread_hard_limit_mb` together. For example, add this group to an
+algorithm YAML passed through the existing `--configuration` option:
+
+```yaml
+name: lucene_accelerated_hnsw
+groups:
+  controlled:
+    build:
+      m: [16]
+      beam_width: [100]
+      premerge_segment_count: [1]
+      force_merge_segment_count: [0]
+      ram_per_thread_hard_limit_mb: [1024]
+    search:
+      num_candidates: [100]
+```
+
+The RAM value above is an example, not a dataset-size budget. Choose a value
+appropriate for the segment and leave headroom for JVM, native-host, and device
+allocations. The controls have these meanings:
+
+- `premerge_segment_count` partitions the vectors into equal contiguous groups,
+  ingested sequentially through separate writer lifecycles. It does not request
+  indexing threads. The vector count must be divisible by the partition count.
+- Automatic merges and the ordinary RAM-triggered flush are disabled during
+  controlled ingestion. The per-thread safety threshold still applies. The
+  build fails if the committed segment/vector counts differ from the request.
+- `force_merge_segment_count` is `0` to retain the segments or `1` to merge
+  accelerated-HNSW segments serially. GPU CAGRA requires `0`.
+- Limits from 1 through 2047 MiB use Lucene's public per-thread setter. Larger
+  values additionally require `allow_unsupported_lucene_ram_limit: [true]` and
+  no final merge. This explicitly unsupported mode overrides a non-public
+  Lucene field and verifies readback. It is qualified only for Lucene 10.2 and
+  fails on an unavailable or incompatible bridge. It bypasses a Lucene safety
+  check; it is not a general promise that arbitrary segment sizes are safe.
+
+The codec factory and unsupported RAM-limit bridge belong to the thin
+cuVS-Lucene JAR. Configured HNSW builds need the updated factory; the unsupported
+limit needs the updated RAM bridge. Default builds and searches do not require
+these new classes. Java's factory selects the writing codec for its artifact's
+Lucene release; the Python runtime still supports only PyLucene 10.2.0.
+
+Configured index names include their build settings. Their schema-3 manifests
+record the settings and, when topology is controlled, observed segment counts
+and applied RAM-limit mode. Ordinary builds keep their previous names and
+schema-2 manifests; those indexes remain reusable. An index built with different
+settings must be rebuilt with `--build --force`. Saved codec identities remain
+independent of the current writing codec.
+
+This does not add parallel ingestion, Java-side FBIN ingestion, or bounded-memory
+construction. Python still loads the training vectors and sends each document
+through JCC. A larger flush threshold reserves neither host nor GPU memory.
+
 ## Runtime requirements
 
 The Lucene backend is opt-in because its runtime is not provisioned by the
@@ -239,3 +302,29 @@ GPU; missing prerequisites fail rather than skip. Accelerated-HNSW GPU-intended
 cases fail if the codec logs its CPU-writer fallback. A separate GPU-hidden
 negative control verifies that this warning remains observable and attributable
 to the case that produced it.
+
+The above suite also checks configured HNSW builds, retained segment layouts
+for both GPU algorithms, and HNSW force merging. Its real warning controls must
+run alongside tests that rely on warning absence; a failed control invalidates
+that negative evidence until logging or capture is repaired.
+
+Run the larger capacity cases separately in a fresh process:
+
+```bash
+python -m pytest -q -s \
+    python/cuvs_bench/cuvs_bench/tests/test_lucene_large_segment_python_integration.py \
+    --run-lucene-large-segment-e2e
+```
+
+These two cases exercise the unsupported override with one 3 GiB vector payload
+per retained segment, for CAGRA-built HNSW and GPU CAGRA. The generated data has
+eight intrinsic dimensions tiled to 1,024
+stored coordinates; this is a physical-capacity check, not a representative
+high-dimensional ANN-quality benchmark. The cases require a 12 GiB JVM heap,
+at least 16 GiB available host memory and temporary disk space, and
+serial execution without pytest-xdist. A prerequisite runs the real warning
+controls in a separate JVM before generating the payload; failures or skips
+invalidate the capacity run's warning-absence evidence. The cases verify
+persisted layout and mandatory self-matches around the 2 GiB boundary and at
+the final vector, not a universal safe-capacity limit. Temporary generated data
+is removed after the run.

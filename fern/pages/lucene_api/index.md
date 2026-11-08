@@ -6,6 +6,7 @@ For an introduction to the codecs, configuration, and tuning, see the [Lucene In
 
 ## Common
 
+- [AcceleratedHNSWCodecFactory](/api-reference/lucene-api-com-nvidia-cuvs-lucene-acceleratedhnswcodecfactory)
 - [AcceleratedHNSWParams](/api-reference/lucene-api-com-nvidia-cuvs-lucene-acceleratedhnswparams)
 - [AcceleratedHNSWUtils](/api-reference/lucene-api-com-nvidia-cuvs-lucene-acceleratedhnswutils)
 - [CagraIndexParamsFactory](/api-reference/lucene-api-com-nvidia-cuvs-lucene-cagraindexparamsfactory)
@@ -15,6 +16,7 @@ For an introduction to the codecs, configuration, and tuning, see the [Lucene In
 - [GPUIndex](/api-reference/lucene-api-com-nvidia-cuvs-lucene-gpuindex)
 - [GPUSearchParams](/api-reference/lucene-api-com-nvidia-cuvs-lucene-gpusearchparams)
 - [IndexSearcherTimingBridge](/api-reference/lucene-api-com-nvidia-cuvs-lucene-indexsearchertimingbridge)
+- [IndexWriterConfigRAMLimitBridge](/api-reference/lucene-api-com-nvidia-cuvs-lucene-indexwriterconfigramlimitbridge)
 - [ThreadLocalCuVSResourcesProvider](/api-reference/lucene-api-com-nvidia-cuvs-lucene-threadlocalcuvsresourcesprovider)
 - [Utils](/api-reference/lucene-api-com-nvidia-cuvs-lucene-utils)
 

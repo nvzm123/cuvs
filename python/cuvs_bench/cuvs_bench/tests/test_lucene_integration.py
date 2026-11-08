@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from _lucene_log_capture import (
+    GRAPH_CLAMP_WARNINGS,
     case_used_cpu_hnsw_fallback,
     lucene_case_output,
     lucene_log_case,
@@ -48,11 +49,7 @@ pytestmark = [
 # The absence checks below are trustworthy only while the corresponding live
 # test_native_graph_clamp_warning_reaches_pytest cases pass. Include those cases
 # when selecting warning-sensitive tests with -k; collection alone is not proof.
-_GRAPH_CLAMP_WARNINGS = (
-    "Intermediate graph degree cannot be larger",
-    "cannot be larger than intermediate graph degree",
-    "for nn-descent needs to match cagra intermediate graph degree",
-)
+_GRAPH_CLAMP_WARNINGS = GRAPH_CLAMP_WARNINGS
 _FRESH_PROCESS_TIMEOUT_SECONDS = 600
 _MINIMUM_RECALL = 0.75
 _ARTIFACT_VERSION = maven_artifact_version()
@@ -461,6 +458,107 @@ def test_cagra_build_and_search_verify_persisted_index_and_search_behavior(
     output = "\n".join(capfd.readouterr())
     for warning in _GRAPH_CLAMP_WARNINGS:
         assert warning.casefold() not in output.casefold()
+
+
+@pytest.mark.parametrize(
+    "algorithm, codec, segments, merge_to",
+    [
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            1,
+            0,
+            id="gpu-built-hnsw-one-segment",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            4,
+            0,
+            id="gpu-built-hnsw-four-segments",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            4,
+            1,
+            id="gpu-built-hnsw-four-merged-to-one",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM, CAGRA_CODEC, 1, 0, id="gpu-cagra-one-segment"
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM, CAGRA_CODEC, 4, 0, id="gpu-cagra-four-segments"
+        ),
+    ],
+)
+def test_controlled_build_retains_requested_segments_and_search_quality(
+    tmp_path, capfd, request, algorithm, codec, segments, merge_to
+):
+    dataset, query_ids = _case(algorithm, 128)
+    search_parameters = (
+        [{"num_candidates": 128}]
+        if algorithm == ACCELERATED_HNSW_ALGORITHM
+        else [{}]
+    )
+    backend, index = _backend_and_index(
+        tmp_path, algorithm, codec, search_parameters
+    )
+    index.build_param.update(
+        premerge_segment_count=segments,
+        force_merge_segment_count=merge_to,
+        ram_per_thread_hard_limit_mb=512,
+    )
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        index.build_param.update(m=32, beam_width=100)
+    case_name = request.node.nodeid
+    capfd.readouterr()
+
+    with lucene_log_case(case_name):
+        build = backend.build(dataset, [index])
+        assert build.success, build.error_message
+        result = backend.search(dataset, [index], k=10)[0]
+        reused = backend.build(dataset, [index])
+
+    captured = capfd.readouterr()
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        assert not case_used_cpu_hnsw_fallback(captured.err, case_name), (
+            lucene_case_output(captured.err, case_name)
+        )
+    for warning in _GRAPH_CLAMP_WARNINGS:
+        assert (
+            warning.casefold() not in (captured.out + captured.err).casefold()
+        )
+    assert build.metadata["segment_count"] == (merge_to or segments)
+    assert build.metadata["observed_premerge_segment_count"] == segments
+    assert build.metadata["applied_ram_per_thread_hard_limit_mb"] == 512
+    assert (
+        build.metadata["ram_per_thread_hard_limit_application"]
+        == "public_setter"
+    )
+    assert build.metadata["persisted_index_kind"] == (
+        "hnsw" if algorithm == ACCELERATED_HNSW_ALGORITHM else "gpu_cagra_only"
+    )
+    assert result.success, result.error_message
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"]
+    np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+    assert all(len(set(row)) == len(row) for row in result.neighbors.tolist())
+    assert (
+        _recall(result.neighbors, dataset.groundtruth_neighbors)
+        >= _MINIMUM_RECALL
+    )
+    expected_distances = np.sum(
+        (
+            dataset.training_vectors[result.neighbors]
+            - dataset.query_vectors[:, None, :]
+        )
+        ** 2,
+        axis=2,
+    )
+    np.testing.assert_allclose(
+        result.distances, expected_distances, rtol=1e-4, atol=1e-4
+    )
 
 
 def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path):

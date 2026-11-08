@@ -582,6 +582,8 @@ navigation:
       - section: "Lucene API Documentation"
         path: "./pages/lucene_api/index.md"
         contents:
+          - page: "AcceleratedHNSWCodecFactory"
+            path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-acceleratedhnswcodecfactory.md"
           - page: "AcceleratedHNSWParams"
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-acceleratedhnswparams.md"
           - page: "AcceleratedHNSWUtils"
@@ -600,6 +602,8 @@ navigation:
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-gpusearchparams.md"
           - page: "IndexSearcherTimingBridge"
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-indexsearchertimingbridge.md"
+          - page: "IndexWriterConfigRAMLimitBridge"
+            path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-indexwriterconfigramlimitbridge.md"
           - page: "ThreadLocalCuVSResourcesProvider"
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-threadlocalcuvsresourcesprovider.md"
           - page: "Utils"
