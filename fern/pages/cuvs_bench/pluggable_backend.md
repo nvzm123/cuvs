@@ -43,7 +43,7 @@ A config loader receives the arguments passed to `run_benchmark()`, such as `dat
 | Return value | Purpose |
 | --- | --- |
 | `DatasetConfig` | Dataset metadata, including vector files, ground-truth files, distance metric, dimensions, and optional subset size. |
-| `list[BenchmarkConfig]` | One or more benchmark configurations. Each contains index configurations and backend-specific options. |
+| `List[BenchmarkConfig]` | One or more benchmark configurations. Each contains index configurations and backend-specific options. |
 
 Each `IndexConfig` describes one index to benchmark:
 
