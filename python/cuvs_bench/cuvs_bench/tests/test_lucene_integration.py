@@ -45,6 +45,9 @@ pytestmark = [
     ),
 ]
 
+# The absence checks below are trustworthy only while the corresponding live
+# test_native_graph_clamp_warning_reaches_pytest cases pass. Include those cases
+# when selecting warning-sensitive tests with -k; collection alone is not proof.
 _GRAPH_CLAMP_WARNINGS = (
     "Intermediate graph degree cannot be larger",
     "cannot be larger than intermediate graph degree",
@@ -241,6 +244,67 @@ def _assert_timing_contract(
         assert "subsequent_java_index_searcher_search_mean_ms" not in metadata
 
 
+@pytest.mark.parametrize(
+    "expected_warning",
+    _GRAPH_CLAMP_WARNINGS,
+    ids=[
+        "intermediate-degree-reduction",
+        "graph-degree-reduction",
+        "nn-descent-degree-alignment",
+    ],
+)
+def test_native_graph_clamp_warning_reaches_pytest(
+    tmp_path, capfd, expected_warning
+):
+    """Detect false-green warning-absence checks using a real native build.
+
+    These controls intentionally trigger warnings; the ordinary GPU builds must
+    remain warning-free. If a control fails, do not trust their absence checks:
+    inspect the loaded cuVS version, codec defaults, native warning emitters,
+    logging level/sink, and fd capture. Update the fixture or warning fragments
+    only after verifying the real warning path, then rerun controls and normal
+    GPU cases together. Do not silence a failure by removing the assertion.
+    """
+    # The default codec requests degree 64 (heuristic intermediate degree 96).
+    # With only 64 vectors, CAGRA reduces both to 63 and realigns NN-descent's
+    # degree. This deliberately exercises all three native warning emitters.
+    requested_graph_degree = 64
+    document_count = requested_graph_degree
+    dimensions = 128
+    rng = np.random.default_rng(174)
+    vectors = rng.standard_normal((document_count, dimensions)).astype(
+        np.float32
+    )
+    dataset = Dataset(
+        name="deliberately-undersized-cagra-warning-control",
+        training_vectors=vectors,
+        distance_metric="euclidean",
+    )
+    backend, index = _backend_and_index(
+        tmp_path, CAGRA_ALGORITHM, CAGRA_CODEC, [{}]
+    )
+    capfd.readouterr()
+
+    build = backend.build(dataset, [index], force=True)
+    output = "\n".join(capfd.readouterr())
+
+    assert build.success, (
+        f"Warning-control build failed: {build.error_message}\n{output}"
+    )
+    # A failed native build can log warnings and then persist brute force.
+    # Require verified CAGRA-only persistence before accepting the log evidence.
+    assert build.metadata["persisted_index_kind"] == "gpu_cagra_only"
+    assert build.metadata["vector_count"] == document_count
+    assert expected_warning.casefold() in output.casefold(), (
+        f"Native warning was not captured: {expected_warning!r}. "
+        "The graph-clamp absence checks in the accelerated HNSW and CAGRA "
+        "build/search tests may be false positives. Check the loaded cuVS "
+        "version, codec defaults, warning emitter, logging level/sink, and "
+        "fd capture; verify the real warning path before updating this test, "
+        f"then rerun the full Lucene E2E module. Captured output:\n{output}"
+    )
+
+
 def test_accelerated_hnsw_builds_on_gpu_and_searches_on_cpu(
     tmp_path,
     capfd,
@@ -351,8 +415,8 @@ def test_cagra_build_and_search_verify_persisted_index_and_search_behavior(
     )
     _assert_artifact_provenance(build.metadata, "build_runtime")
 
-    # CAGRA evidence combines verified CAGRA-only payloads, a supported k,
-    # result oracles, and the absence of fallback or graph-clamp warnings.
+    # Verified CAGRA-only payloads exclude brute-force fallback independently
+    # of logging. Search also checks supported k, result quality, and distances.
     results = backend.search(dataset, [index], k=10, batch_size=2)
     assert len(results) == 1
     result = results[0]
@@ -395,7 +459,6 @@ def test_cagra_build_and_search_verify_persisted_index_and_search_behavior(
         assert ".vcag" not in index_files
 
     output = "\n".join(capfd.readouterr())
-    assert "falling back to a brute force index" not in output
     for warning in _GRAPH_CLAMP_WARNINGS:
         assert warning.casefold() not in output.casefold()
 
@@ -521,7 +584,13 @@ def test_numeric_document_values_preserve_dataset_ids_across_segments(
 
 
 def test_accelerated_hnsw_logs_cpu_fallback_when_gpu_is_hidden(tmp_path):
-    """Keep the positive GPU-path assertion from passing vacuously."""
+    """Prove the real CPU-fallback warning reaches the per-case detector.
+
+    If this control fails, the HNSW tests' no-fallback assertions may pass
+    falsely. Check the Java warning emitter, logger configuration, stderr
+    capture, and case markers before changing the detector. Include this
+    control when selecting GPU-built HNSW cases with -k, then rerun both.
+    """
     child_flag = "CUVS_BENCH_LUCENE_GPU_HIDDEN_FALLBACK_PROBE"
     if child_flag not in os.environ:
         environment = os.environ.copy()
@@ -558,6 +627,13 @@ def test_accelerated_hnsw_logs_cpu_fallback_when_gpu_is_hidden(tmp_path):
         assert "1 passed" in completed.stdout
         assert case_used_cpu_hnsw_fallback(
             completed.stderr, _GPU_HIDDEN_FALLBACK_CASE
+        ), (
+            "The GPU-hidden build succeeded, but its CPU-fallback warning "
+            "was not detected. GPU-built HNSW tests may now pass falsely. "
+            "Check the Java warning emitter, logger configuration, stderr "
+            "capture, and case markers; verify the real warning before "
+            "updating the detector, then rerun the full Lucene E2E module. "
+            f"Captured stderr:\n{completed.stderr}"
         )
         return
 
@@ -674,6 +750,12 @@ def test_public_cli_builds_searches_and_exports_cpu_hnsw(tmp_path):
 def test_cagra_build_rejects_lucenes_one_document_brute_force_fallback(
     tmp_path,
 ):
+    """Reject persisted brute force without relying on a fallback warning.
+
+    Lucene intentionally uses brute force for one vector, bypassing the
+    failed-CAGRA-build logging path. This control proves that persisted-index
+    verification rejects fallback before publication, even without that log.
+    """
     vectors = np.zeros((1, 32), dtype=np.float32)
     dataset = Dataset(
         name="lucene-cagra-one-document",
