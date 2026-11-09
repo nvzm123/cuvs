@@ -11,7 +11,11 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from cuvs_bench.backends._lucene_runtime import LuceneRuntime
+from cuvs_bench.backends._lucene_runtime import (
+    ACCELERATED_HNSW_CODEC,
+    CAGRA_CODEC,
+    LuceneRuntime,
+)
 from _lucene_test_support import RecordingRuntime, _backend_and_index, _dataset
 from cuvs_bench.backends.lucene import CAGRA_ALGORITHM
 
@@ -52,6 +56,48 @@ def test_parameter_requests_preserve_boolean_integer_and_fraction_types():
         "fake_boolean": ("Boolean", True),
         "fake_string": "i-am-fake-data",
     }
+
+
+def test_hnsw_codec_request_keeps_topology_out_of_algorithm_controls():
+    runtime = object.__new__(LuceneRuntime)
+    fake_configured_codec = object()
+    runtime.resolve_configured_hnsw_codec = Mock(
+        return_value=fake_configured_codec
+    )
+
+    selected = runtime._resolve_build_codec(
+        ACCELERATED_HNSW_CODEC,
+        {
+            "m": 16,
+            "beam_width": 100,
+            "hnsw_layers": 3,
+            "writer_threads": 2,
+        },
+    )
+
+    assert selected is fake_configured_codec
+    runtime.resolve_configured_hnsw_codec.assert_called_once_with(
+        16, 100, {"hnsw_layers": 3, "writer_threads": 2}
+    )
+
+
+def test_custom_cagra_build_reaches_the_gpu_codec_factory():
+    runtime = object.__new__(LuceneRuntime)
+    fake_configured_codec = object()
+    runtime.resolve_configured_cagra_codec = Mock(
+        return_value=fake_configured_codec
+    )
+    algorithm_controls = {
+        "graph_build_algo": "nn_descent",
+        "nn_descent_n_iters": 7,
+    }
+
+    selected = runtime._resolve_build_codec(CAGRA_CODEC, algorithm_controls)
+
+    assert selected is fake_configured_codec
+    runtime.resolve_configured_cagra_codec.assert_called_once_with(
+        algorithm_controls
+    )
 
 
 def test_configured_query_forwards_the_java_vector_and_every_search_control():

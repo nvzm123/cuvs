@@ -43,6 +43,68 @@ python -m cuvs_bench.run \
     --build --search
 ```
 
+## Optional build controls
+
+An empty `build` configuration keeps the codec's defaults and Lucene's ordinary
+flush and merge policies. To configure accelerated HNSW, supply both `m` and
+`beam_width` (the HNSW-equivalent construction effort, often called
+`ef_construction`). Native cuVS derives its CAGRA build settings through the
+default heuristic; these are not search parameters.
+
+Both cuVS-backed algorithms also accept the following optional build controls.
+Omitting them retains the corresponding Java codec's defaults.
+
+| Controls | Meaning |
+| --- | --- |
+| `build_strategy` | `heuristic` or `custom`. Explicit graph geometry, graph-builder selection, NN-descent iterations select `custom` unless a strategy is supplied. |
+| `graph_degree`, `intermediate_graph_degree` | Final and intermediate CAGRA graph degrees, in ranges 1–512 and 2–512. Intermediate degree must be at least final degree. Accelerated HNSW additionally requires final degree ≤ `2 * m`. |
+| `graph_build_algo` | `nn_descent` (custom-mode default), for constructing the initial CAGRA graph—not selecting the final search algorithm. |
+| `nn_descent_n_iters` | NN-descent construction iterations, 1–100; only for the NN-descent graph builder. |
+| `writer_threads` | Calling-thread OpenMP count for native graph build/merge work, 1–512, restored after the operation; not Python ingestion threads or a process-wide cap. Defaults remain 1 for accelerated HNSW and 32 for GPU CAGRA. |
+| `hnsw_layers` | Accelerated HNSW layer limit, 1–99; the graph may have fewer layers on small datasets. |
+| `build_quality` | GPU CAGRA construction-effort setting, not a percentage or a 0–10 score. Default 7; cuVS describes values below 20 as most practical. The binding accepts integers from 0 through 2,147,483,647, but that type limit is not a recommended tuning range or a guarantee of successful construction. Requires heuristic mode. |
+
+Heuristic mode rejects settings it would ignore. The GPU CAGRA dataset heuristic
+does consume `graph_degree`, so use `build_strategy: [heuristic]` explicitly to
+combine that degree with `build_quality`. Accelerated HNSW keeps the
+`SAME_GRAPH_FOOTPRINT` default, with no exposed heuristic selector. It derives
+`graph_degree = 2 * m` and `intermediate_graph_degree = 3 * m`, before any
+dataset-size clamping during construction; `beam_width` tunes construction
+effort. In custom mode, omitted graph
+degree is 64 (capped at `2 * m` for HNSW); omitted intermediate degree is the
+larger of 128 and the final degree. If neither `m` nor `beam_width` is supplied,
+their Java defaults remain 32 and 32.
+
+In the current native dataset heuristic, `build_quality` increases NN-descent's
+maximum iterations to `5 + build_quality` for segments with fewer than one
+million vectors. Start with the
+default 7; larger values request more construction work, not a proportional
+recall improvement. Very large values can be impractical or fail native limits.
+
+Choose graph settings for the actual segment sizes. Small segments can cause
+native clamping; larger resource requests are not memory reservations or
+guarantees of successful allocation.
+
+The codec/query factories belong to the thin cuVS-Lucene JAR. Newly configured
+builds require an updated JAR containing `AcceleratedHNSWCodecFactory` or
+`GPUSearchCodecFactory`; explicit GPU query controls require
+`GPUKnnFloatVectorQueryFactory`. Missing helpers fail rather than silently
+ignoring the request. Default builds and searches do not require these new
+classes. Java's factory selects the writing codec for its artifact's Lucene
+release; the Python runtime still supports only PyLucene 10.2.0.
+
+Configured index names distinguish their build settings; new tuning combinations
+use a stable digest to keep filenames bounded. Their schema-3 manifests
+record the build settings with `runtime_build_topology: null`; they do not
+claim a controlled segment layout. Ordinary builds keep their previous names and
+schema-2 manifests; those indexes remain reusable. An index built with different
+settings must be rebuilt with `--build --force`. Saved codec identities remain
+independent of the current writing codec.
+
+This does not add parallel ingestion, Java-side FBIN ingestion, or bounded-memory
+construction. Python still loads the training vectors and sends each document
+through JCC.
+
 ## Runtime requirements
 
 The Lucene backend is opt-in because its runtime is not provisioned by the
@@ -90,11 +152,6 @@ device memory. Defaults are `itopk=k`, width 1, automatic iterations/block size
 and algorithm. Explicit controls construct `GPUKnnFloatVectorQuery` through the
 thin-JAR bridge; an empty search configuration retains the existing query path.
 Search sweeps reuse one index: these settings do not change its build identity.
-
-Explicit GPU query controls require an updated thin cuVS-Lucene JAR containing
-`GPUKnnFloatVectorQueryFactory`; a missing helper fails rather than silently
-ignoring the request. Empty search configurations retain the existing query
-path and do not require this new class.
 
 ### Build PyLucene 10.2.0 from source
 

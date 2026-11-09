@@ -463,8 +463,25 @@ def test_cagra_build_and_search_verify_persisted_index_and_search_behavior(
         assert warning.casefold() not in output.casefold()
 
 
+_CUSTOM_GRAPH_BUILD = {
+    "graph_degree": 32,
+    "intermediate_graph_degree": 64,
+    "writer_threads": 1,
+}
+
+
+@pytest.mark.parametrize(
+    "build_controls",
+    [
+        pytest.param({}, id="default-build"),
+        pytest.param(
+            {**_CUSTOM_GRAPH_BUILD, "nn_descent_n_iters": 15},
+            id="custom-nn-descent-build",
+        ),
+    ],
+)
 def test_cagra_query_controls_preserve_search_quality(
-    tmp_path, capfd, request
+    tmp_path, capfd, request, build_controls
 ):
     dataset, query_ids = _case(CAGRA_ALGORITHM, 128)
     search_plans = [
@@ -480,6 +497,7 @@ def test_cagra_query_controls_preserve_search_quality(
     backend, index = _backend_and_index(
         tmp_path, CAGRA_ALGORITHM, CAGRA_CODEC, search_plans
     )
+    index.build_param.update(build_controls)
 
     case_name = request.node.nodeid
     capfd.readouterr()

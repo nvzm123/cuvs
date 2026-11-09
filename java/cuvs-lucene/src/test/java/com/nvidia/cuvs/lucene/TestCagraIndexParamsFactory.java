@@ -23,6 +23,9 @@ import org.junit.Test;
  */
 @SuppressSysoutChecks(bugUrl = "")
 public class TestCagraIndexParamsFactory extends LuceneTestCase {
+  private static final String DEFAULT_HEURISTIC_CHANGED =
+      "Default HNSW heuristic changed: review fern/pages/cuvs_bench/lucene_backend.md and "
+          + "heuristic-dependent tests before updating these expectations.";
 
   /**
    * The GPU-native HEURISTIC path hands the build-algorithm decision to cuVS (AUTO_SELECT) while
@@ -172,17 +175,16 @@ public class TestCagraIndexParamsFactory extends LuceneTestCase {
   }
 
   /**
-   * The accelerated-HNSW HEURISTIC path delegates to cuVS' native {@code fromHnswParams}, which
-   * derives the graph degrees from maxConn/beamWidth, and re-attaches the caller's writerThreads
-   * (which fromHnswParams itself cannot carry). Requires the native cuVS library.
+   * Checks the documented default degrees through cuVS' native parameter derivation, before any
+   * dataset-size clamping during graph construction. The heuristic is deliberately not selected
+   * explicitly: a changed default must also fail this check. Requires native cuVS support.
    */
   @Test
-  public void testHnswHeuristicDelegatesToCuVS() {
+  public void testDefaultHnswHeuristicUsesTwoMAndThreeMDegrees() {
     assumeTrue("cuVS not supported", isSupported());
 
     AcceleratedHNSWParams params =
         new AcceleratedHNSWParams.Builder()
-            .withStrategy(AcceleratedHNSWParams.Strategy.HEURISTIC)
             .withMaxConn(16)
             .withBeamWidth(100)
             .withWriterThreads(7)
@@ -190,9 +192,14 @@ public class TestCagraIndexParamsFactory extends LuceneTestCase {
 
     CagraIndexParams cagraParams = CagraIndexParamsFactory.create(params, 10_000, 128);
 
-    // SAME_GRAPH_FOOTPRINT yields graph_degree = 2 * maxConn; cuVS owns the exact derivation, so we
-    // assert the footprint relationship it documents rather than a hardcoded value.
-    assertEquals(2L * params.getMaxConn(), cagraParams.getGraphDegree());
+    assertEquals(
+        DEFAULT_HEURISTIC_CHANGED + " Expected graph_degree = 2 * M.",
+        2L * params.getMaxConn(),
+        cagraParams.getGraphDegree());
+    assertEquals(
+        DEFAULT_HEURISTIC_CHANGED + " Expected intermediate_graph_degree = 3 * M.",
+        3L * params.getMaxConn(),
+        cagraParams.getIntermediateGraphDegree());
     // The variable-degree fraction chosen by the heuristic must survive the native round trip and
     // the rebuild of the params (SAME_GRAPH_FOOTPRINT enables variable-degree graphs).
     assertTrue(cagraParams.getVariableGraphDegreeFraction() < 1.0);
@@ -232,7 +239,8 @@ public class TestCagraIndexParamsFactory extends LuceneTestCase {
   @Test
   public void testHnswHeuristicTypeDefault() {
     assertEquals(
-        AcceleratedHNSWParams.DEFAULT_HNSW_HEURISTIC_TYPE,
+        DEFAULT_HEURISTIC_CHANGED,
+        HnswHeuristicType.SAME_GRAPH_FOOTPRINT,
         new AcceleratedHNSWParams.Builder().build().getHnswHeuristicType());
   }
 

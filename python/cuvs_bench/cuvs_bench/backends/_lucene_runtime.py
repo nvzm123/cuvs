@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from ._lucene_compat import LUCENE_COMPATIBILITY, PERSISTED_CODEC_KINDS
+from ._lucene_parameters import CUVS_BUILD_KEYS
 from ._lucene_runtime_config import (
     CUVS_LUCENE_ARTIFACT_ID,
     maven_artifact_version,
@@ -28,7 +29,14 @@ from ._lucene_runtime_config import (
 CPU_HNSW_CODEC = LUCENE_COMPATIBILITY.cpu_hnsw_codec
 ACCELERATED_HNSW_CODEC = LUCENE_COMPATIBILITY.accelerated_hnsw_codec
 CAGRA_CODEC = LUCENE_COMPATIBILITY.cagra_codec
+CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY = (
+    "com.nvidia.cuvs.lucene.AcceleratedHNSWCodecFactory"
+)
+CONFIGURED_CAGRA_CODEC_FACTORY = "com.nvidia.cuvs.lucene.GPUSearchCodecFactory"
 _CAGRA_QUERY_FACTORY = "com.nvidia.cuvs.lucene.GPUKnnFloatVectorQueryFactory"
+_CONFIGURED_CODEC_RESPONSE_KEY = "codec"
+_HNSW_MAX_CONN_REQUEST_KEY = "max_conn"
+_HNSW_BEAM_WIDTH_REQUEST_KEY = "beam_width"
 MAX_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = LUCENE_COMPATIBILITY.pylucene_version
 
@@ -1077,6 +1085,8 @@ class LuceneRuntime:
         self.artifact_provenance: dict[str, str] = {}
         self._artifact_tokens: dict[str, tuple[int, ...]] = {}
         self._java_search_timer: Any | None = None
+        self._java_configured_codec_factory: Any | None = None
+        self._java_cagra_codec_factory: Any | None = None
         self._java_cagra_query_factory: Any | None = None
 
     @classmethod
@@ -1101,6 +1111,21 @@ class LuceneRuntime:
         except Exception as error:
             raise RuntimeError(
                 f"Could not load or adapt {_INDEX_SEARCHER_TIMING_BRIDGE} "
+                "through PyLucene/JCC: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _load_java_configured_codec_factory(self) -> Any:
+        """Load the codec factory through JCC's wrapped Function interface."""
+        try:
+            instance = self.Class.forName(
+                CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY
+            ).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                "Could not load or adapt "
+                f"{CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY} "
                 "through PyLucene/JCC: "
                 f"{type(error).__name__}: {error}"
             ) from error
@@ -1169,6 +1194,92 @@ class LuceneRuntime:
         self._codecs[name] = codec
         return codec
 
+    def resolve_configured_hnsw_codec(
+        self,
+        max_conn: int,
+        beam_width: int,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Construct an accelerated-HNSW codec from one atomic request."""
+        self.attach_current_thread()
+        factory = self._java_configured_codec_factory
+        if factory is None:
+            factory = self._load_java_configured_codec_factory()
+            self._java_configured_codec_factory = factory
+        request = self._parameter_request(
+            {
+                **(parameters or {}),
+                _HNSW_MAX_CONN_REQUEST_KEY: max_conn,
+                _HNSW_BEAM_WIDTH_REQUEST_KEY: beam_width,
+            }
+        )
+        try:
+            raw_response = factory.apply(request)
+            response = self.Map.cast_(raw_response)
+            codec = self.Codec.cast_(
+                response.get(_CONFIGURED_CODEC_RESPONSE_KEY)
+            )
+            applied_max_conn = int(
+                self.Integer.cast_(
+                    response.get(_HNSW_MAX_CONN_REQUEST_KEY)
+                ).intValue()
+            )
+            applied_beam_width = int(
+                self.Integer.cast_(
+                    response.get(_HNSW_BEAM_WIDTH_REQUEST_KEY)
+                ).intValue()
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured accelerated-HNSW codec "
+                f"through {CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+        self._validate_codec(codec, ACCELERATED_HNSW_CODEC)
+        if (applied_max_conn, applied_beam_width) != (max_conn, beam_width):
+            raise RuntimeError(
+                "Configured accelerated-HNSW codec did not retain the "
+                "requested parameters: requested "
+                f"({max_conn}, {beam_width}), applied "
+                f"({applied_max_conn}, {applied_beam_width})"
+            )
+        return codec
+
+    def resolve_configured_cagra_codec(
+        self, parameters: Mapping[str, Any]
+    ) -> Any:
+        self.attach_current_thread()
+        if self._java_cagra_codec_factory is None:
+            self._java_cagra_codec_factory = self._load_parameter_factory(
+                CONFIGURED_CAGRA_CODEC_FACTORY
+            )
+        try:
+            response = self.Map.cast_(
+                self._java_cagra_codec_factory.apply(
+                    self._parameter_request(parameters)
+                )
+            )
+            codec = self.Codec.cast_(
+                response.get(_CONFIGURED_CODEC_RESPONSE_KEY)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured GPU CAGRA codec: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        self._validate_codec(codec, CAGRA_CODEC)
+        return codec
+
+    @staticmethod
+    def _validate_codec(codec: Any, name: str) -> None:
+        if str(codec.getName()) != name:
+            raise RuntimeError(
+                f"Requested codec {name}, resolved {codec.getName()}"
+            )
+        if codec.knnVectorsFormat() is None:
+            raise RuntimeError(f"{name} did not initialize a vector format")
+
     def _java_vector(self, vector: np.ndarray) -> Any:
         return self.lucene.JArray("float")(vector.tolist())
 
@@ -1184,8 +1295,37 @@ class LuceneRuntime:
         )
         return document
 
+    def _resolve_build_codec(
+        self,
+        codec_name: str,
+        build_parameters: Mapping[str, Any] | None,
+    ) -> Any:
+        parameters = build_parameters or {}
+        codec_controls = {
+            key: value
+            for key, value in parameters.items()
+            if key in CUVS_BUILD_KEYS
+        }
+        if codec_name == CAGRA_CODEC and codec_controls:
+            return self.resolve_configured_cagra_codec(codec_controls)
+        if codec_name == ACCELERATED_HNSW_CODEC and (
+            codec_controls or {"m", "beam_width"}.issubset(parameters)
+        ):
+            # Match AcceleratedHNSWParams' defaults when only a new control
+            # (for example, hnsw_layers) is supplied.
+            return self.resolve_configured_hnsw_codec(
+                int(parameters.get("m", 32)),
+                int(parameters.get("beam_width", 32)),
+                codec_controls,
+            )
+        return self.resolve_codec(codec_name)
+
     def build_index(
-        self, index_path: Path, vectors: np.ndarray, codec_name: str
+        self,
+        index_path: Path,
+        vectors: np.ndarray,
+        codec_name: str,
+        build_parameters: Mapping[str, Any] | None = None,
     ) -> RuntimeBuildResult:
         self.attach_current_thread()
         runtime_started = time.perf_counter_ns()
@@ -1212,7 +1352,9 @@ class LuceneRuntime:
             writer_setup_started = time.perf_counter_ns()
             config = self.IndexWriterConfig()
             config.setOpenMode(self.IndexWriterConfig.OpenMode.CREATE)
-            config.setCodec(self.resolve_codec(codec_name))
+            config.setCodec(
+                self._resolve_build_codec(codec_name, build_parameters)
+            )
             writer = self.IndexWriter(directory, config)
             writer_setup_ns = time.perf_counter_ns() - writer_setup_started
             try:
