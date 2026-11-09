@@ -662,15 +662,17 @@ def _persisted_hnsw_layer_counts(runtime, index_path):
             ACCELERATED_HNSW_ALGORITHM,
             ACCELERATED_HNSW_CODEC,
             {**_CUSTOM_GRAPH_BUILD, "graph_build_algo": "ivf_pq"},
-            4096,
-            id="ivf-pq-hnsw-segment-defaults",
+            # The 1024-list/20-probe defaults need a larger candidate pool than
+            # our 4096-row explicit-override fixture provides.
+            32768,
+            id="ivf-pq-hnsw-defaults",
         ),
         pytest.param(
             CAGRA_ALGORITHM,
             CAGRA_CODEC,
             {**_CUSTOM_GRAPH_BUILD, "graph_build_algo": "ivf_pq"},
-            4096,
-            id="ivf-pq-gpu-search-segment-defaults",
+            32768,
+            id="ivf-pq-gpu-search-defaults",
         ),
         pytest.param(
             ACCELERATED_HNSW_ALGORITHM,
@@ -679,8 +681,9 @@ def _persisted_hnsw_layer_counts(runtime, index_path):
                 **_CUSTOM_GRAPH_BUILD,
                 "graph_build_algo": "ivf_pq",
                 "hnsw_layers": 3,
-                # Upper layers reuse 256 segment-derived lists. Probe all of them:
+                # Keep 256 lists for the 256-row top layer; the default 1024 is too large.
                 # 32 probes failed upper-layer graph construction on the 256-row top layer.
+                "n_lists": 256,
                 "n_probes": 256,
             },
             # Three layers retain 65536, 4096, then 256 vectors: enough for 8-bit PQ training.
@@ -1051,31 +1054,6 @@ def test_public_cli_builds_searches_and_exports_cpu_hnsw(tmp_path):
     assert row["effective_search_batch_size"] == "1"
     assert row["client_query_count"] == "3"
     assert int(row["index_prewarm_bytes"]) > 0
-
-
-def test_cagra_rejects_probes_above_segment_derived_lists_without_brute_force_fallback(
-    tmp_path,
-):
-    dataset, _ = _case(CAGRA_ALGORITHM, 128, document_count=1024)
-    backend, index = _backend_and_index(
-        tmp_path, CAGRA_ALGORITHM, CAGRA_CODEC, [{}]
-    )
-    # This segment derives 32 lists. Only Java knows the final segment shape.
-    index.build_param.update(
-        **_CUSTOM_GRAPH_BUILD,
-        graph_build_algo="ivf_pq",
-        n_probes=33,
-    )
-
-    build = backend.build(dataset, [index])
-
-    assert not build.success
-    # The configuration error must surface, not become a persisted brute-force rejection later.
-    assert (
-        "n_probes must not exceed n_lists for this segment"
-        in build.error_message
-    )
-    assert not Path(index.file).exists()
 
 
 def test_cagra_build_rejects_lucenes_one_document_brute_force_fallback(

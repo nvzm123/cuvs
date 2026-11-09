@@ -7,9 +7,11 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from _lucene_test_support import RecordingRuntime, _backend_and_index, _dataset
+from cuvs_bench.backends.base import Dataset
 from cuvs_bench.backends.lucene import (
     ACCELERATED_HNSW_ALGORITHM,
     CAGRA_ALGORITHM,
@@ -83,6 +85,7 @@ def test_all_ivf_build_controls_reach_runtime_and_survive_saved_index_reuse(
 @pytest.mark.parametrize(
     "extra",
     [
+        {},  # The fixed 1024-list default exceeds this four-vector fixture.
         {"n_lists": 5, "n_probes": 1},
         {
             "n_lists": 3,
@@ -148,42 +151,87 @@ def test_cagra_build_strategy_does_not_invent_or_drop_settings(
 )
 @pytest.mark.parametrize(
     "supplied",
-    [{}, {"n_lists": 10}, {"n_probes": 2048}, {"n_lists": 10, "n_probes": 10}],
+    [{}, {"n_lists": 64}, {"n_probes": 1024}, {"n_lists": 10, "n_probes": 10}],
     ids=[
         "all-defaults",
         "lists-only",
-        "probes-deferred-to-segment",
+        "probe-all-default-lists",
         "explicit-pair",
     ],
 )
-def test_ivf_defaults_remain_omitted_until_java_knows_the_segment_shape(
+def test_ivf_normalization_records_java_builder_defaults_and_explicit_overrides(
     algorithm, supplied
 ):
     request = {"graph_build_algo": "ivf_pq", **supplied}
     assert _build_controls(algorithm, request) == {
+        "n_lists": 1024,
+        "n_probes": 20,
+        "pq_dim": 0,
+        "kmeans_n_iters": 20,
+        "kmeans_trainset_fraction": 0.5,
         **request,
         "build_strategy": "custom",
     }
 
 
-def test_fake_runtime_receives_omitted_ivf_defaults_without_a_corpus_size_assumption(
+@pytest.mark.parametrize(
+    "old_implicit_default",
+    [
+        "n_lists",
+        "n_probes",
+        "pq_dim",
+        "kmeans_n_iters",
+        "kmeans_trainset_fraction",
+    ],
+)
+def test_restored_ivf_defaults_are_persisted_and_old_implicit_defaults_are_not_reused(
     tmp_path,
+    old_implicit_default,
 ):
     fake_runtime = FakeControlledRuntime()
     backend, index, _ = _backend_and_index(
         tmp_path, CAGRA_ALGORITHM, fake_runtime
     )
     index = replace(index, build_param={"graph_build_algo": "ivf_pq"})
-    expected = {"graph_build_algo": "ivf_pq", "build_strategy": "custom"}
+    expected = {
+        "graph_build_algo": "ivf_pq",
+        "build_strategy": "custom",
+        "n_lists": 1024,
+        "n_probes": 20,
+        "pq_dim": 0,
+        "kmeans_n_iters": 20,
+        "kmeans_trainset_fraction": 0.5,
+    }
+    # Only configuration/persistence is exercised: these fake vectors never reach cuVS.
+    dataset = Dataset(
+        name="fake-ivf-defaults",
+        training_vectors=np.zeros((1024, 2), dtype=np.float32),
+        distance_metric="euclidean",
+    )
 
-    built = backend.build(_dataset(), [index])
-    reused = backend.build(_dataset(), [index])
+    built = backend.build(dataset, [index])
+    reused = backend.build(dataset, [index])
 
     assert built.success, built.error_message
     assert reused.success, reused.error_message
     assert reused.metadata["skipped"] is True
     assert fake_runtime.received_controls == [expected]
     assert _read_manifest(Path(index.file))["build_parameters"] == expected
+
+    # Older experimental manifests omitted these controls and used different defaults.
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    old_manifest = json.loads(manifest_path.read_text())
+    old_manifest["build_parameters"].pop(old_implicit_default)
+    manifest_path.write_text(json.dumps(old_manifest))
+
+    old_index_reuse = backend.build(dataset, [index])
+
+    assert not old_index_reuse.success
+    assert (
+        "Invalid Lucene manifest build parameters"
+        in old_index_reuse.error_message
+    )
+    assert fake_runtime.received_controls == [expected]
 
 
 def test_hnsw_layer_control_preserves_heuristic_mode_and_legacy_identity():
@@ -267,6 +315,14 @@ def test_legacy_manifests_keep_their_original_schema_fields_and_reuse(
             "requires graph_build_algo=nn_descent",
         ),
         ({"n_lists": 128}, "require graph_build_algo=ivf_pq"),
+        (
+            {"graph_build_algo": "ivf_pq", "n_lists": 19},
+            "n_probes must not exceed",
+        ),
+        (
+            {"graph_build_algo": "ivf_pq", "n_probes": 1025},
+            "n_probes must not exceed",
+        ),
         (
             {"graph_build_algo": "ivf_pq", "n_lists": 10, "n_probes": 11},
             "n_probes must not exceed",
@@ -360,6 +416,11 @@ def test_ivf_preserves_compatible_distance_and_lookup_table_precisions(
     }
     assert _build_controls(algorithm, controls) == {
         "build_strategy": "custom",
+        "n_lists": 1024,
+        "n_probes": 20,
+        "pq_dim": 0,
+        "kmeans_n_iters": 20,
+        "kmeans_trainset_fraction": 0.5,
         **controls,
     }
 

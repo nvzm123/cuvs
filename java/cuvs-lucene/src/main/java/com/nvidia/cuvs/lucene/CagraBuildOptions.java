@@ -135,7 +135,7 @@ final class CagraBuildOptions {
                   AcceleratedHNSWParams.MIN_NN_DESCENT_NUM_ITERATIONS,
                   AcceleratedHNSWParams.MAX_NN_DESCENT_NUM_ITERATIONS));
       if (options.algorithm == CagraGraphBuildAlgo.IVF_PQ) {
-        builder.withIvfPqBuildOptions(IvfPqBuildOptions.parse(request));
+        builder.withCuVSIvfPqParams(IvfPqBuildOptions.parse(request));
       }
     }
     return builder.build();
@@ -178,7 +178,7 @@ final class CagraBuildOptions {
                   GPUSearchParams.MIN_NN_DESCENT_NUM_ITERATIONS,
                   GPUSearchParams.MAX_NN_DESCENT_NUM_ITERATIONS));
       if (options.algorithm == CagraGraphBuildAlgo.IVF_PQ) {
-        builder.withIvfPqBuildOptions(IvfPqBuildOptions.parse(request));
+        builder.withCuVSIvfPqParams(IvfPqBuildOptions.parse(request));
       }
     } else {
       builder.withBuildQuality(

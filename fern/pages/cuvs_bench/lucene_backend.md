@@ -83,18 +83,16 @@ default 7; larger values request more construction work, not a proportional
 recall improvement. Very large values can be impractical or fail native limits.
 
 With `graph_build_algo: [ivf_pq]`, these additional **build** controls tune the
-temporary IVF-PQ index used to construct CAGRA. These are the Lucene binding
-factories' custom defaults, not cuVS's native heuristic or its generic Java
-builder defaults. Shape-dependent settings resolve separately for each field's
-segment build; `N` is that field's vector count and `D` its vector dimension:
+temporary IVF-PQ index used to construct CAGRA. Omitted values use the existing
+cuVS Java-builder defaults below, not the separate native CAGRA build heuristic:
 
 | Control | Default | Meaning |
 | --- | --- | --- |
-| `n_lists` | `floor(sqrt(N))` | Number of IVF clusters (inverted lists), based on the nonempty segment's vectors rather than the entire corpus. Explicit values must be positive and fit the available training data. |
-| `n_probes` | `min(32, n_lists)` | Number of IVF clusters searched when finding CAGRA construction candidates. Explicit values must be positive and no greater than `n_lists`; it does not control final CAGRA queries. |
-| `kmeans_n_iters` | 10 | Number of k-means training iterations used to find cluster centers. Must be a positive integer. |
-| `kmeans_trainset_fraction` | 0.25 | Fraction of input vectors used for k-means training, in `(0, 1]`; `0.25` requests 25%. Native sampling is rounded and must accommodate `n_lists`, so this is not an exact row-count promise. All input vectors are still indexed. |
-| `pq_dim` | `32 * ceil(D / 128)` | One quarter of the vector dimension, rounded upward to a multiple of 32. Explicit `0` instead selects the native PQ heuristic. Must be nonnegative, and `pq_dim * pq_bits` must be divisible by 8. Does not change the input dimensions or compress the final Lucene vectors. |
+| `n_lists` | 1024 | Number of IVF clusters (inverted lists), matching the generic Java-builder default. Explicit values must be positive and fit the available training data; use fewer lists for small segments. |
+| `n_probes` | 20 | Number of IVF clusters searched when finding CAGRA construction candidates. Must be positive and no greater than `n_lists`; set it explicitly if requesting fewer than 20 lists. It does not control final CAGRA queries. |
+| `kmeans_n_iters` | 20 | Number of k-means training iterations used to find cluster centers. Must be a positive integer. |
+| `kmeans_trainset_fraction` | 0.5 | Fraction of input vectors used for k-means training, in `(0, 1]`; `0.5` requests 50%. Native sampling is rounded and must accommodate `n_lists`, so this is not an exact row-count promise. All input vectors are still indexed. |
+| `pq_dim` | 0 | Native automatic selection of the temporary PQ dimension. Explicit values must be nonnegative, and `pq_dim * pq_bits` must be divisible by 8. Does not change the input dimensions or compress the final Lucene vectors. |
 | `pq_bits` | 8 | Bits per product-quantization code in the temporary index. Integer from 4 through 8; the same byte-alignment constraint applies. Does not compress the final Lucene vectors. |
 | `refinement_rate` | 2 | Candidate-expansion factor before exact refinement during graph construction. Must remain finite and greater than 1 after float32 conversion; the underlying CAGRA bridge does not apply rates ≤ 1 as explicit overrides. |
 | `max_train_points_per_pq_code` | 256 | Positive training-sample cap per PQ code when learning codebooks. Separate from the k-means training fraction. |
@@ -103,7 +101,9 @@ segment build; `N` is that field's vector count and `D` its vector dimension:
 | `lut_dtype` | `float32` | Precision of the distance lookup table used by construction-time IVF-PQ searches: `float32`, `float16`, or `uint8`. |
 | `internal_distance_dtype` | `float32` | Precision of distances computed by construction-time IVF-PQ searches: `float32` or `float16`. Using `float16` requires `lut_dtype=float16` or `uint8`. Native overflow handling may promote distance precision. |
 
-For manual tuning, `n_lists ≈ sqrt(N)` is a useful IVF starting point, as described
+For manual tuning, `n_lists = floor(sqrt(N))` is an alternative to the fixed 1024
+default that may give better results for a particular workload. Square-root
+scaling is a useful IVF starting point, as described
 in [NVIDIA's IVF tuning guidance](https://developer.nvidia.com/blog/accelerated-vector-search-approximating-with-nvidia-cuvs-ivf-flat/),
 not a universal optimum. Here, `N` is the field's vector count in the segment/build
 being processed, not necessarily the entire corpus or just the training sample. Tune
@@ -111,27 +111,21 @@ being processed, not necessarily the entire corpus or just the training sample. 
 recall; the [IVF-PQ tuning guide](https://developer.nvidia.com/blog/accelerating-vector-search-nvidia-cuvs-ivf-pq-performance-tuning-part-2/)
 illustrates how the best choice varies with the dataset and recall target.
 
+New custom IVF-PQ builds record these restored defaults in their build settings.
+Rebuild indexes created by earlier experimental versions with different implicit
+defaults; the saved build settings must match the requested configuration.
+
 In contrast, when the automatic CAGRA heuristic selects IVF-PQ, the
 [current native implementation](https://github.com/NVIDIA/cuvs/blob/b3be92aca7ac095df232732f847f52980b06a30d/cpp/include/cuvs/neighbors/ivf_pq.hpp#L3427)
 uses `n_lists = max(1, floor(N / 2000))`, not these custom defaults.
 
-These custom defaults are tuning starting points, not a promise of better
-performance or recall than the native heuristic. If recall is insufficient,
-also try 64, 96, or 128 probes, provided the list count permits it, and measure
-the added construction work. These probes do not directly control final-index
-query latency.
-
 Multi-layer HNSW reuses the segment's IVF settings for its smaller upper layers;
-the list/probe count clamps do not guarantee enough construction candidates.
-For example, a 65,536-vector, three-layer build with graph degree 32 and
-intermediate degree 64 failed with the default 32 probes; explicitly probing
-all 256 lists passed that test. Tune probes or lists for the smallest layer,
-not just layer 0. This example is not a universal success or recall guarantee.
+list and probe counts must also be suitable for those layers. Valid parameter
+ranges alone do not guarantee enough construction candidates or good recall.
 
 For example, for a field with 1,000,000 vectors of dimension 96 in one segment,
-the custom defaults give 1,000 lists and a PQ dimension of 32. The following
-example supplies them explicitly; omitting the six IVF-PQ settings uses the
-defaults above instead:
+the square-root tuning alternative gives 1,000 lists. This example overrides
+only that IVF-PQ setting; the remaining IVF-PQ controls use the defaults above:
 
 ```yaml
 name: lucene_cuvs_cagra
@@ -142,11 +136,6 @@ groups:
       intermediate_graph_degree: [64]
       graph_build_algo: [ivf_pq]
       n_lists: [1000]
-      n_probes: [32]
-      pq_bits: [8]
-      pq_dim: [32]
-      kmeans_n_iters: [10]
-      kmeans_trainset_fraction: [0.25]
     search:
       itopk: [128]
       search_width: [16, 32]

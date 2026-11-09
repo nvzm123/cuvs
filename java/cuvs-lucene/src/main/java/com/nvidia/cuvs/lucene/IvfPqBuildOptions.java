@@ -7,7 +7,6 @@ package com.nvidia.cuvs.lucene;
 import static com.nvidia.cuvs.lucene.CagraBuildOptions.choice;
 import static com.nvidia.cuvs.lucene.CagraBuildOptions.floating;
 import static com.nvidia.cuvs.lucene.CagraBuildOptions.integer;
-import static com.nvidia.cuvs.lucene.CagraBuildOptions.requiredInteger;
 
 import com.nvidia.cuvs.CagraIndexParams.CodebookGen;
 import com.nvidia.cuvs.CagraIndexParams.CudaDataType;
@@ -16,40 +15,30 @@ import com.nvidia.cuvs.CuVSIvfPqParams;
 import com.nvidia.cuvs.CuVSIvfPqSearchParams;
 import java.util.Map;
 
-/** Binding-factory settings; omitted shape-dependent values resolve per field/segment, not corpus. */
-record IvfPqBuildOptions(
-    Integer lists,
-    Integer probes,
-    Integer pqDimensions,
-    int pqBits,
-    int trainingIterations,
-    double trainingFraction,
-    int maxTrainingPointsPerCode,
-    float refinementRate,
-    CodebookGen codebook,
-    boolean forceRotation,
-    CudaDataType lookupTableType,
-    CudaDataType distanceType) {
-  private static final int DEFAULT_PROBES = 32;
-  private static final int PQ_DIMENSION_ALIGNMENT = 32;
-  private static final int DIMENSIONS_PER_PQ_SUBSPACE = 4;
+/** Validate binding overrides while retaining the existing cuVS Java builder defaults. */
+final class IvfPqBuildOptions {
+  private IvfPqBuildOptions() {}
 
-  static IvfPqBuildOptions parse(Map<String, Object> request) {
-    Integer lists = optionalInteger(request, "n_lists", 1);
-    Integer probes = optionalInteger(request, "n_probes", 1);
-    if (lists != null && probes != null && probes > lists) {
+  static CuVSIvfPqParams parse(Map<String, Object> request) {
+    var defaults = new CuVSIvfPqParams.Builder().build();
+    var indexDefaults = defaults.getIndexParams();
+    int lists = integer(request, "n_lists", indexDefaults.getnLists(), 1, Integer.MAX_VALUE);
+    int probes =
+        integer(request, "n_probes", defaults.getSearchParams().getnProbes(), 1, Integer.MAX_VALUE);
+    if (probes > lists) {
       throw new IllegalArgumentException("n_probes must not exceed n_lists");
     }
-    Integer dimensions = optionalInteger(request, "pq_dim", 0);
-    int bits = integer(request, "pq_bits", 8, 4, 8);
-    if (dimensions != null && (long) dimensions * bits % 8 != 0) {
+    int dimensions = integer(request, "pq_dim", indexDefaults.getPqDim(), 0, Integer.MAX_VALUE);
+    int bits = integer(request, "pq_bits", indexDefaults.getPqBits(), 4, 8);
+    if ((long) dimensions * bits % 8 != 0) {
       throw new IllegalArgumentException("pq_dim * pq_bits must be a multiple of 8");
     }
-    double fraction = floating(request, "kmeans_trainset_fraction", 0.25);
+    double fraction =
+        floating(request, "kmeans_trainset_fraction", indexDefaults.getKmeansTrainsetFraction());
     if (fraction <= 0 || fraction > 1) {
       throw new IllegalArgumentException("kmeans_trainset_fraction must be in (0, 1]");
     }
-    float refinement = (float) floating(request, "refinement_rate", 2.0);
+    float refinement = (float) floating(request, "refinement_rate", defaults.getRefinementRate());
     // The native CAGRA C API leaves its heuristic unchanged for rates <= 1, including 1.
     if (!Float.isFinite(refinement) || refinement <= 1) {
       throw new IllegalArgumentException(
@@ -71,71 +60,45 @@ record IvfPqBuildOptions(
       throw new IllegalArgumentException(
           "internal_distance_dtype=float16 requires lut_dtype=float16 or uint8");
     }
-    return new IvfPqBuildOptions(
-        lists,
-        probes,
-        dimensions,
-        bits,
-        integer(request, "kmeans_n_iters", 10, 1, Integer.MAX_VALUE),
-        fraction,
-        integer(request, "max_train_points_per_pq_code", 256, 1, Integer.MAX_VALUE),
-        refinement,
+    var codebook =
         choice(request, "codebook_kind", "per_subspace", "per_subspace", "per_cluster")
                 .equals("per_subspace")
             ? CodebookGen.PER_SUBSPACE
-            : CodebookGen.PER_CLUSTER,
-        rotation,
-        lookupTableType,
-        distanceType);
-  }
-
-  CuVSIvfPqParams resolve(long vectorCount, long vectorDimension) {
-    if (vectorCount < 1
-        || vectorCount > Integer.MAX_VALUE
-        || vectorDimension < 1
-        || vectorDimension > Integer.MAX_VALUE) {
-      throw new IllegalArgumentException(
-          "IVF-PQ segment shape must have positive int-sized extents");
-    }
-    int resolvedLists = lists != null ? lists : (int) Math.sqrt(vectorCount);
-    int resolvedProbes = probes != null ? probes : Math.min(DEFAULT_PROBES, resolvedLists);
-    if (resolvedProbes > resolvedLists) {
-      throw new IllegalArgumentException("n_probes must not exceed n_lists for this segment");
-    }
-    // Round D/4 upward to a whole group of 32 PQ subspaces, without integer-division truncation.
-    // This changes the temporary PQ representation, never the input vectors or Lucene field shape.
-    int defaultDimensions =
-        (int) Math.ceilDiv(vectorDimension, DIMENSIONS_PER_PQ_SUBSPACE * PQ_DIMENSION_ALIGNMENT)
-            * PQ_DIMENSION_ALIGNMENT;
-    int resolvedDimensions = pqDimensions != null ? pqDimensions : defaultDimensions;
+            : CodebookGen.PER_CLUSTER;
     var index =
         new CuVSIvfPqIndexParams.Builder()
-            .withNLists(resolvedLists)
-            .withKmeansNIters(trainingIterations)
-            .withKmeansTrainsetFraction(trainingFraction)
-            .withPqDim(resolvedDimensions)
-            .withPqBits(pqBits)
-            .withMaxTrainPointsPerPqCode(maxTrainingPointsPerCode)
-            .withForceRandomRotation(forceRotation)
+            .withNLists(lists)
+            .withKmeansNIters(
+                integer(
+                    request,
+                    "kmeans_n_iters",
+                    indexDefaults.getKmeansNIters(),
+                    1,
+                    Integer.MAX_VALUE))
+            .withKmeansTrainsetFraction(fraction)
+            .withPqDim(dimensions)
+            .withPqBits(bits)
+            .withMaxTrainPointsPerPqCode(
+                integer(
+                    request,
+                    "max_train_points_per_pq_code",
+                    indexDefaults.getMaxTrainPointsPerPqCode(),
+                    1,
+                    Integer.MAX_VALUE))
+            .withForceRandomRotation(rotation)
             .withCodebookKind(codebook)
             .build();
     var search =
         new CuVSIvfPqSearchParams.Builder()
-            .withNProbes(resolvedProbes)
+            .withNProbes(probes)
             .withLutDtype(lookupTableType)
             .withInternalDistanceDtype(distanceType)
             .build();
     return new CuVSIvfPqParams.Builder()
         .withCuVSIvfPqIndexParams(index)
         .withCuVSIvfPqSearchParams(search)
-        .withRefinementRate(refinementRate)
+        .withRefinementRate(refinement)
         .build();
-  }
-
-  private static Integer optionalInteger(Map<String, Object> request, String key, int minimum) {
-    return request.containsKey(key)
-        ? requiredInteger(request, key, minimum, Integer.MAX_VALUE)
-        : null;
   }
 
   private static CudaDataType dtype(String name) {

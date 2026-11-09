@@ -42,12 +42,11 @@ import org.apache.lucene.codecs.Codec;
  * {@code internal_distance_dtype} ({@code float32} or {@code float16}).
  * A float16 internal distance requires a float16 or uint8 LUT; an omitted LUT defaults to float32.
  * The product {@code pq_dim * pq_bits} must be a multiple of 8, and explicit n_probes must not exceed n_lists.
- * Omitted n_lists is the floor of the square root of the field's vector count in the segment being
- * built; omitted n_probes is min(32, n_lists). Omitted pq_dim is one quarter of the vector dimension,
- * rounded upward to a multiple of 32. Other custom defaults include pq_bits=8, kmeans_n_iters=10,
- * and kmeans_trainset_fraction=0.25. Explicit pq_dim=0 still selects cuVS's own PQ heuristic.
- * These binding-factory defaults do not change the native HEURISTIC strategy or existing Java
- * parameter-builder defaults. Shape-dependent values resolve when the segment is built.
+ * Omitted values retain the generic Java builder defaults: n_lists=1024, n_probes=20,
+ * pq_dim=0 (native automatic selection), pq_bits=8, kmeans_n_iters=20, and kmeans_trainset_fraction=0.5.
+ * For tuning, try floor(sqrt(segment vector count)) rather than assuming 1024 is optimal, and
+ * compare construction time and final-index recall. A list count below 20 requires an explicit
+ * n_probes no greater than that count. These controls do not change the native HEURISTIC strategy.
  * These IVF-PQ search controls construct the CAGRA graph; they do not configure CAGRA queries.
  *
  * @since 26.12

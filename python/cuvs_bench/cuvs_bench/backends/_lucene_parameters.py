@@ -11,6 +11,15 @@ import sys
 from typing import Any, Mapping
 
 _JAVA_INT_MAX = 2_147_483_647
+# These Java-builder defaults are explicit in saved build identities. Keeping
+# them here also permits validation without starting a JVM.
+_IVF_DEFAULTS = {
+    "n_lists": 1024,
+    "n_probes": 20,
+    "pq_dim": 0,
+    "kmeans_n_iters": 20,
+    "kmeans_trainset_fraction": 0.5,
+}
 # Mirrors GPUKnnFloatVectorQuery.MAX_SEARCH_WIDTH, its result-buffer indexing limit.
 _MAX_CAGRA_SEARCH_WIDTH = 4_194_303
 IVF_PQ_BUILD_KEYS = frozenset(
@@ -196,7 +205,10 @@ def normalize_cuvs_build_controls(
         raise ValueError(
             "nn_descent_n_iters requires graph_build_algo=nn_descent"
         )
-    # Omitted values are resolved by Java from the actual segment, not the corpus.
+    if controls.get("graph_build_algo") == "ivf_pq":
+        # Record all restored defaults so an old experimental index cannot be
+        # reused under a different omitted-parameter policy.
+        controls = {**_IVF_DEFAULTS, **controls}
     if (
         "n_probes" in controls
         and "n_lists" in controls
