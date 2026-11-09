@@ -9,7 +9,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.KnnFloatVectorField;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.junit.Test;
 
@@ -77,6 +84,52 @@ public class TestGPUKnnFloatVectorQueryFactory extends LuceneTestCase {
           blockSize,
           0,
           CagraSearchParams.SearchAlgo.AUTO);
+    }
+  }
+
+  @Test
+  public void testLargeResultCountsKeepDefaultAndExplicitSearchParameters() {
+    for (int k : new int[] {1025, 1500, 2000}) {
+      var request = request(k);
+      var query = (GPUKnnFloatVectorQuery) new GPUKnnFloatVectorQueryFactory().apply(request);
+      assertEquals(k, query.getK());
+      assertSearchParameters(query, k, 1, 0, 0, CagraSearchParams.SearchAlgo.AUTO);
+
+      request.put("algo", "multi_cta");
+      request.put("itopk", 2048);
+      query = (GPUKnnFloatVectorQuery) new GPUKnnFloatVectorQueryFactory().apply(request);
+      assertEquals(k, query.getK());
+      assertSearchParameters(query, 2048, 1, 0, 0, CagraSearchParams.SearchAlgo.MULTI_CTA);
+    }
+  }
+
+  @Test
+  public void testLargeFactoryQueryRejectsPerLeafFallbackButExistingQueriesRetainIt()
+      throws Exception {
+    try (Directory directory = newDirectory()) {
+      try (IndexWriter writer = new IndexWriter(directory, new IndexWriterConfig())) {
+        Document document = new Document();
+        document.add(new KnnFloatVectorField("vector", new float[] {1f, 2f}));
+        writer.addDocument(document);
+      }
+      try (DirectoryReader reader = DirectoryReader.open(directory)) {
+        IndexSearcher searcher = new IndexSearcher(reader);
+        var factory = new GPUKnnFloatVectorQueryFactory();
+
+        // This ordinary Lucene index has no CAGRA partition. A large factory query must not
+        // silently use a different path, even if that path could supply enough merged hits.
+        var error =
+            expectThrows(
+                UnsupportedOperationException.class,
+                () -> searcher.rewrite(factory.apply(request(1500))));
+        assertTrue(
+            error.getMessage(), error.getMessage().contains("per-segment fallback is disabled"));
+
+        assertEquals(1, searcher.search(factory.apply(request(1024)), 1).scoreDocs.length);
+        var directQuery =
+            new GPUKnnFloatVectorQuery("vector", new float[] {1f, 2f}, 1500, null, 64, 1);
+        assertEquals(1, searcher.search(directQuery, 1).scoreDocs.length);
+      }
     }
   }
 
@@ -161,8 +214,8 @@ public class TestGPUKnnFloatVectorQueryFactory extends LuceneTestCase {
 
   @Test
   public void testRejectsInvalidSearchBoundsAndAlgorithmNames() {
-    for (int k : new int[] {-1, 0, 1025, Integer.MAX_VALUE}) {
-      assertInvalidRequest(request(k), "k must be in range");
+    for (int k : new int[] {-1, 0}) {
+      assertInvalidRequest(request(k), "k must be positive");
     }
     for (int iTopK : new int[] {-1, 0, 9}) {
       var request = request(10);

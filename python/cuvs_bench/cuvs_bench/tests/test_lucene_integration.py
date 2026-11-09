@@ -26,6 +26,7 @@ from cuvs_bench.backends.base import Dataset
 from cuvs_bench.backends._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
     DIRECT_PYLUCENE_DISPATCH,
+    LuceneRuntime,
     TIMED_BRIDGE_PYLUCENE_DISPATCH,
 )
 from cuvs_bench.backends.lucene import (
@@ -60,7 +61,11 @@ _GPU_HIDDEN_FALLBACK_CASE = (
 
 
 def _case(
-    algorithm: str, dimensions: int, *, document_count: int | None = None
+    algorithm: str,
+    dimensions: int,
+    *,
+    document_count: int | None = None,
+    top_k: int = 10,
 ) -> tuple[Dataset, np.ndarray]:
     if document_count is None:
         document_count = 1024 if algorithm != CPU_HNSW_ALGORITHM else 512
@@ -74,7 +79,7 @@ def _case(
         (queries[:, np.newaxis, :] - vectors[np.newaxis, :, :]) ** 2,
         axis=2,
     )
-    ground_truth = np.argsort(squared_distances, axis=1)[:, :10]
+    ground_truth = np.argsort(squared_distances, axis=1)[:, :top_k]
     return (
         Dataset(
             name=f"lucene-e2e-{algorithm}-{dimensions}",
@@ -849,6 +854,66 @@ def test_random_entry_search_reuses_the_cagra_built_hnsw_index(
             np.testing.assert_array_equal(
                 result.distances, results[0].distances
             )
+
+
+@pytest.mark.parametrize("k", (1500, 2000), ids=("top-1500", "top-2000"))
+def test_large_cagra_queries_use_multi_partition_search_and_match_brute_force(
+    tmp_path, monkeypatch, k
+):
+    dataset, query_ids = _case(
+        CAGRA_ALGORITHM, 16, document_count=4096, top_k=k
+    )
+    search_plans = [{}, {"algo": "multi_cta", "itopk": 2048}]
+    backend, index = _backend_and_index(
+        tmp_path, CAGRA_ALGORITHM, CAGRA_CODEC, search_plans
+    )
+    real_search = LuceneRuntime._search
+    observed_gpu_queries = []
+
+    def search_observing_gpu_rewrite(runtime, searcher, query, top_k):
+        # Native search runs during rewrite. Inspect its real result, not just requested
+        # settings or persisted files. This test does not make timing assertions.
+        rewritten = searcher.rewrite(query)
+        assert str(rewritten) == "GPUDocAndScoreQuery"
+        observed_gpu_queries.append(top_k)
+        return real_search(runtime, searcher, rewritten, top_k)
+
+    monkeypatch.setattr(LuceneRuntime, "_search", search_observing_gpu_rewrite)
+    build = backend.build(dataset, [index])
+    assert build.success, build.error_message
+    assert build.metadata["persisted_index_kind"] == "gpu_cagra_only"
+    assert build.metadata["segment_count"] == 1
+
+    results = backend.search(dataset, [index], k=k)
+
+    assert len(results) == len(search_plans)
+    assert observed_gpu_queries == [k] * (len(search_plans) * len(query_ids))
+    for result in results:
+        assert result.success, result.error_message
+        assert result.neighbors.shape == (len(query_ids), k)
+        np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+        assert np.all(
+            (result.neighbors >= 0)
+            & (result.neighbors < len(dataset.training_vectors))
+        )
+        assert all(len(set(row)) == k for row in result.neighbors.tolist())
+        assert np.all(np.isfinite(result.distances))
+        assert np.all(np.diff(result.distances, axis=1) >= 0)
+        assert (
+            _recall(result.neighbors, dataset.groundtruth_neighbors)
+            >= _MINIMUM_RECALL
+        )
+        expected_distances = np.sum(
+            (
+                dataset.training_vectors[result.neighbors]
+                - dataset.query_vectors[:, None, :]
+            )
+            ** 2,
+            axis=2,
+        )
+        np.testing.assert_allclose(
+            result.distances, expected_distances, rtol=1e-4, atol=1e-4
+        )
 
 
 def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path):

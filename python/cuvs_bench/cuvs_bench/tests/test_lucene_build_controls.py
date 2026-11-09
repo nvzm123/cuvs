@@ -150,6 +150,18 @@ def test_invalid_build_controls_fail_before_creating_a_runtime(
         _build_parameters_for(ACCELERATED_HNSW_ALGORITHM, parameters)
 
 
+@pytest.mark.parametrize("ram_limit_mb", [1, 2047])
+def test_supported_ram_limit_boundaries_reach_runtime_topology(ram_limit_mb):
+    parameters = {
+        **_two_segment_parameters(),
+        "ram_per_thread_hard_limit_mb": ram_limit_mb,
+    }
+    normalized = _build_parameters_for(ACCELERATED_HNSW_ALGORITHM, parameters)
+    assert normalized["ram_per_thread_hard_limit_mb"] == ram_limit_mb
+    topology = _controlled_build_topology(normalized, 4)
+    assert topology.ram_per_thread_hard_limit_mb == ram_limit_mb
+
+
 def test_gpu_cagra_disallows_force_merge():
     with pytest.raises(
         ValueError, match="requires force_merge_segment_count=0"

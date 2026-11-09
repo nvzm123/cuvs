@@ -614,20 +614,32 @@ def test_search_rejects_a_runtime_result_that_drops_a_query(
     )
 
 
-def test_cagra_search_above_1024_fails_before_issuing_a_query(
+@pytest.mark.parametrize("k", (1024, 1025, 1500, 2000))
+def test_default_cagra_search_uses_multi_partition_query_above_per_leaf_limit(
     tmp_path: Path,
+    k: int,
 ) -> None:
     runtime = RecordingRuntime()
     backend, index, _factory = _backend_and_index(
         tmp_path, CAGRA_ALGORITHM, runtime
     )
-    assert backend.build(_dataset(), [index]).success
+    dataset = Dataset(
+        name="fake-routing-data",
+        training_vectors=np.zeros((2048, 2), dtype=np.float32),
+        query_vectors=np.zeros((1, 2), dtype=np.float32),
+        distance_metric="euclidean",
+    )
+    assert backend.build(dataset, [index]).success
 
-    result = backend.search(_dataset(), [index], k=1025)[0]
+    result = backend.search(dataset, [index], k=k)[0]
 
-    assert not result.success
-    assert "CAGRA search supports k <= 1024" in result.error_message
-    assert runtime.search_calls == []
+    assert result.success, result.error_message
+    call = runtime.search_calls[0]
+    if k > 1024:
+        # Empty controls select the GPU factory's defaults; None means the stock query.
+        assert call["cagra_search_parameters"] == {}
+    else:
+        assert "cagra_search_parameters" not in call
 
 
 def test_invalid_top_k_returns_the_validation_error_without_a_secondary_failure(

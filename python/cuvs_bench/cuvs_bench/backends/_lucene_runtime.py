@@ -51,7 +51,8 @@ _RAM_LIMIT_ALLOW_UNSUPPORTED_KEY = "allow_unsupported_lucene_ram_limit"
 _RAM_LIMIT_APPLICATION_MODE_KEY = "application_mode"
 _PUBLIC_RAM_LIMIT_SETTER_MODE = "public_setter"
 _UNSUPPORTED_RAM_LIMIT_OVERRIDE_MODE = "unsupported_field_override"
-MAX_CAGRA_TOP_K = 1024
+# Ordinary per-segment CAGRA search is capped; multi-partition search is not.
+MAX_PER_SEGMENT_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = LUCENE_COMPATIBILITY.pylucene_version
 
 _ID_FIELD = "id"
@@ -2097,7 +2098,7 @@ class LuceneRuntime:
         client_started = time.perf_counter_ns()
         prepare_started = time.perf_counter_ns()
         java_vector = self._java_vector(vector)
-        if cagra_search_parameters:
+        if cagra_search_parameters is not None:
             query = self._configured_cagra_query(
                 java_vector, k, cagra_search_parameters
             )

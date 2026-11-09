@@ -286,6 +286,7 @@ def normalize_cagra_search_controls(
     parameters: Mapping[str, Any], k: int
 ) -> dict[str, Any]:
     """Keep supplied CAGRA controls distinct from the result count."""
+    _integer(k, "k", 1, _JAVA_INT_MAX)
     unsupported = set(parameters) - CAGRA_SEARCH_KEYS
     if unsupported:
         raise ValueError(
