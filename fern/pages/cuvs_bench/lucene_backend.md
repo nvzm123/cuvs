@@ -179,19 +179,23 @@ allocations. The controls have these meanings:
   build fails if the committed segment/vector counts differ from the request.
 - `force_merge_segment_count` is `0` to retain the segments or `1` to merge
   accelerated-HNSW segments serially. GPU CAGRA requires `0`.
-- Limits from 1 through 2047 MiB use Lucene's public per-thread setter.
-  Values outside this range are rejected. The threshold is a Lucene safety
-  limit, not a guarantee that arbitrary segment sizes are safe. It reserves
-  neither host nor GPU memory.
+- Limits from 1 through 2047 MiB use Lucene's public per-thread setter. Larger
+  values additionally require `allow_unsupported_lucene_ram_limit: [true]` and
+  no final merge. This explicitly unsupported mode overrides a non-public
+  Lucene field and verifies readback. It is qualified only for Lucene 10.2 and
+  fails on an unavailable or incompatible bridge. It bypasses a Lucene safety
+  check; it is not a general promise that arbitrary segment sizes are safe.
+  The threshold reserves neither host nor GPU memory.
 
-The codec/query factories belong to the thin cuVS-Lucene JAR. Configured graph
-builds require an updated JAR containing `AcceleratedHNSWCodecFactory` or
+The codec/query factories and unsupported RAM-limit bridge belong to the thin
+cuVS-Lucene JAR. Configured graph builds require `AcceleratedHNSWCodecFactory` or
 `GPUSearchCodecFactory`; explicit GPU query controls and CAGRA requests with
-`k > 1024` require `GPUKnnFloatVectorQueryFactory`. Missing helpers fail rather
-than silently ignoring the request. Default builds and empty search
-configurations with `k <= 1024` keep the existing path and do not require these
-factories. Java's factory selects the writing codec for its artifact's Lucene
-release; the Python runtime still supports only PyLucene 10.2.0.
+`k > 1024` require `GPUKnnFloatVectorQueryFactory`. Unsupported RAM limits require
+`IndexWriterConfigRAMLimitBridge`. Missing helpers fail rather than silently
+ignoring the request. Default builds and empty search configurations with
+`k <= 1024` keep the existing path and do not require these classes. Java's
+factory selects the writing codec for its artifact's Lucene release; the Python
+runtime still supports only PyLucene 10.2.0.
 
 Configured index names distinguish their build settings; new tuning combinations
 use a stable digest to keep filenames bounded. Their schema-3 manifests
@@ -455,3 +459,24 @@ The above suite also checks configured HNSW builds, retained segment layouts
 for both GPU algorithms, and HNSW force merging. Its real warning controls must
 run alongside tests that rely on warning absence; a failed control invalidates
 that negative evidence until logging or capture is repaired.
+
+Run the larger capacity cases separately in a fresh process:
+
+```bash
+python -m pytest -q -s \
+    python/cuvs_bench/cuvs_bench/tests/test_lucene_large_segment_python_integration.py \
+    --run-lucene-large-segment-e2e
+```
+
+These two cases exercise the unsupported override with one 3 GiB vector payload
+per retained segment, for CAGRA-built HNSW and GPU CAGRA. The generated data has
+eight intrinsic dimensions tiled to 1,024
+stored coordinates; this is a physical-capacity check, not a representative
+high-dimensional ANN-quality benchmark. The cases require a 12 GiB JVM heap,
+at least 16 GiB available host memory and temporary disk space, and
+serial execution without pytest-xdist. A prerequisite runs the real warning
+controls in a separate JVM before generating the payload; failures or skips
+invalidate the capacity run's warning-absence evidence. The cases verify
+persisted layout and mandatory self-matches around the 2 GiB boundary and at
+the final vector, not a universal safe-capacity limit. Temporary generated data
+is removed after the run.

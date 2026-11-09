@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from _lucene_log_capture import (
+    GRAPH_CLAMP_WARNINGS,
     case_used_cpu_hnsw_fallback,
     lucene_case_output,
     lucene_log_case,
@@ -49,11 +50,7 @@ pytestmark = [
 # The absence checks below are trustworthy only while the corresponding live
 # test_native_graph_clamp_warning_reaches_pytest cases pass. Include those cases
 # when selecting warning-sensitive tests with -k; collection alone is not proof.
-_GRAPH_CLAMP_WARNINGS = (
-    "Intermediate graph degree cannot be larger",
-    "cannot be larger than intermediate graph degree",
-    "for nn-descent needs to match cagra intermediate graph degree",
-)
+_GRAPH_CLAMP_WARNINGS = GRAPH_CLAMP_WARNINGS
 _FRESH_PROCESS_TIMEOUT_SECONDS = 600
 _MINIMUM_RECALL = 0.75
 _ARTIFACT_VERSION = maven_artifact_version()

@@ -87,7 +87,10 @@ _CUVS_TOPOLOGY_REQUIRED_KEYS = frozenset(
         "ram_per_thread_hard_limit_mb",
     )
 )
-_CUVS_TOPOLOGY_KEYS = _CUVS_TOPOLOGY_REQUIRED_KEYS
+_ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT = "allow_unsupported_lucene_ram_limit"
+_CUVS_TOPOLOGY_KEYS = frozenset(
+    (*_CUVS_TOPOLOGY_REQUIRED_KEYS, _ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT)
+)
 _ACCELERATED_HNSW_BUILD_KEYS = frozenset(
     (
         "m",
@@ -100,7 +103,8 @@ _CAGRA_BUILD_KEYS = _CUVS_TOPOLOGY_KEYS | CUVS_BUILD_KEYS
 _MIN_HNSW_BUILD_PARAMETER = 1
 _MAX_HNSW_BUILD_PARAMETER = 512
 _GRAPH_DEGREE_SOURCE = "requested_hnsw_same_graph_footprint_derivation"
-_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2047
+_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2_147_483_647
+_FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB = 2048
 _BUILD_ROUTE_POLICY_BY_ALGORITHM = {
     CPU_HNSW_ALGORITHM: "cpu_hnsw",
     ACCELERATED_HNSW_ALGORITHM: "gpu_cagra_or_cpu_hnsw_fallback",
@@ -488,6 +492,15 @@ def _ram_per_thread_hard_limit_mb(value: Any) -> int:
     return value
 
 
+def _allow_unsupported_lucene_ram_limit(value: Any) -> bool:
+    if type(value) is not bool:
+        raise ValueError(
+            "Lucene allow_unsupported_lucene_ram_limit must be a boolean, "
+            f"got {value!r}"
+        )
+    return value
+
+
 def _force_merge_segment_count(value: Any) -> int:
     if type(value) is not int or value not in (0, 1):
         raise ValueError(
@@ -570,6 +583,28 @@ def _build_parameters_for(
             build_params["premerge_segment_count"],
             "premerge_segment_count",
         )
+        allow_unsupported = _allow_unsupported_lucene_ram_limit(
+            build_params.get(_ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT, False)
+        )
+        uses_unsupported_limit = (
+            ram_per_thread_hard_limit_mb
+            >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB
+        )
+        if uses_unsupported_limit and not allow_unsupported:
+            raise ValueError(
+                "Lucene ram_per_thread_hard_limit_mb values of 2048 MiB or "
+                "greater require allow_unsupported_lucene_ram_limit=true"
+            )
+        if allow_unsupported and not uses_unsupported_limit:
+            raise ValueError(
+                "Lucene allow_unsupported_lucene_ram_limit=true requires "
+                "ram_per_thread_hard_limit_mb >= 2048"
+            )
+        if uses_unsupported_limit and force_merge_segment_count != 0:
+            raise ValueError(
+                "Lucene force_merge_segment_count must be 0 when using an "
+                "unsupported per-thread RAM hard limit"
+            )
         if algorithm == CAGRA_ALGORITHM and force_merge_segment_count != 0:
             raise ValueError(
                 "lucene_cuvs_cagra currently requires "
@@ -587,6 +622,8 @@ def _build_parameters_for(
                 "ram_per_thread_hard_limit_mb": (ram_per_thread_hard_limit_mb),
             }
         )
+        if allow_unsupported:
+            normalized[_ALLOW_UNSUPPORTED_LUCENE_RAM_LIMIT] = True
     return normalized
 
 
@@ -626,6 +663,8 @@ def _controlled_index_suffix(controls: Mapping[str, Any]) -> str:
     ):
         if key in controls:
             parts.append(f"{label}{controls[key]}")
+    if controls.get("allow_unsupported_lucene_ram_limit"):
+        parts.append("unsupported")
     # '~' cannot occur in an ordinary algorithm/group label, preventing a
     # controlled base build from aliasing a pre-existing group's index.
     return "~" + "_".join(parts) if parts else ""
@@ -888,6 +927,7 @@ def _validate_manifest_runtime_topology(
     application_mode = topology["ram_per_thread_hard_limit_application"]
     if not isinstance(application_mode, str) or application_mode not in {
         "public_setter",
+        "unsupported_field_override",
     }:
         invalid("unexpected RAM hard-limit application mode")
 
@@ -903,7 +943,13 @@ def _validate_manifest_runtime_topology(
         != build_parameters["ram_per_thread_hard_limit_mb"]
     ):
         invalid("applied RAM hard limit does not match the request")
-    expected_application_mode = "public_setter"
+    requested_hard_limit = build_parameters["ram_per_thread_hard_limit_mb"]
+    expected_application_mode = (
+        "unsupported_field_override"
+        if requested_hard_limit
+        >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB
+        else "public_setter"
+    )
     if application_mode != expected_application_mode:
         invalid("RAM hard-limit application mode does not match the request")
     if topology["ingest_merge_policy"] != "NoMergePolicy":

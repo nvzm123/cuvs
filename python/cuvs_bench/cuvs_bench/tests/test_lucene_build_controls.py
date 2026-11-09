@@ -120,8 +120,26 @@ def test_default_build_does_not_invent_controls_or_change_index_names(
                 **_two_segment_parameters(),
                 "ram_per_thread_hard_limit_mb": 2048,
             },
-            r"integer in \[1, 2047\]",
-            id="public-ram-limit-at-cutoff",
+            "require allow_unsupported",
+            id="large-limit-without-opt-in",
+        ),
+        pytest.param(
+            {
+                **_two_segment_parameters(),
+                "allow_unsupported_lucene_ram_limit": True,
+            },
+            "requires ram_per_thread",
+            id="unused-unsupported-opt-in",
+        ),
+        pytest.param(
+            {
+                **_two_segment_parameters(),
+                "ram_per_thread_hard_limit_mb": 6144,
+                "allow_unsupported_lucene_ram_limit": True,
+                "force_merge_segment_count": 1,
+            },
+            "must be 0",
+            id="unsupported-limit-cannot-merge",
         ),
     ],
 )
