@@ -219,6 +219,7 @@ SPDX-License-Identifier: Apache-2.0
                   <!-- The variant of each adapted Lucene class the module's release needs; see compat/. -->
                   <source>${cuvs.lucene.compat.dir}/${cuvs.lucene.compat.knnVectorsReader}/src/main/java</source>
                   <source>${cuvs.lucene.compat.dir}/${cuvs.lucene.compat.knnFloatVectorQuery}/src/main/java</source>
+                  <source>${cuvs.lucene.compat.dir}/${cuvs.lucene.compat.knnCollectorManager}/src/main/java</source>
                 </sources>
               </configuration>
             </execution>

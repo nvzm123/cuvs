@@ -18,7 +18,10 @@ from cuvs_bench.backends._lucene_runtime import (
     LuceneRuntime,
 )
 from _lucene_test_support import RecordingRuntime, _backend_and_index, _dataset
-from cuvs_bench.backends.lucene import CAGRA_ALGORITHM
+from cuvs_bench.backends.lucene import (
+    ACCELERATED_HNSW_ALGORITHM,
+    CAGRA_ALGORITHM,
+)
 
 
 class FakeJavaMap(dict):
@@ -157,20 +160,26 @@ def test_configured_query_forwards_the_java_vector_and_every_search_control():
 
 
 @pytest.mark.parametrize(
-    "gpu_controls",
+    "gpu_controls,num_entry_points",
     [
-        pytest.param(None, id="stock-hnsw"),
-        pytest.param({"search_width": 32}, id="gpu-cagra"),
+        pytest.param(None, 0, id="stock-hnsw"),
+        pytest.param({"search_width": 32}, 0, id="gpu-cagra"),
+        pytest.param(None, 42, id="random-entry-hnsw"),
     ],
 )
-def test_query_execution_uses_only_the_requested_search_factory(gpu_controls):
+def test_query_execution_uses_only_the_requested_search_factory(
+    gpu_controls,
+    num_entry_points,
+):
     runtime = object.__new__(LuceneRuntime)
     fake_java_vector = object()
     fake_default_query = object()
     fake_gpu_query = object()
+    fake_random_entry_query = object()
     runtime._java_vector = Mock(return_value=fake_java_vector)
     runtime.KnnFloatVectorQuery = Mock(return_value=fake_default_query)
     runtime._configured_cagra_query = Mock(return_value=fake_gpu_query)
+    runtime._base_layer_hnsw_query = Mock(return_value=fake_random_entry_query)
     runtime._search = Mock(return_value=(SimpleNamespace(scoreDocs=[]), 1, 1))
     runtime._materialize_hits = Mock(return_value=[])
     fake_searcher, fake_reader = object(), object()
@@ -182,9 +191,17 @@ def test_query_execution_uses_only_the_requested_search_factory(gpu_controls):
         10,
         64,
         gpu_controls,
+        num_entry_points=num_entry_points,
     )
 
-    if gpu_controls is None:
+    if num_entry_points:
+        runtime._base_layer_hnsw_query.assert_called_once_with(
+            fake_java_vector, 64, 42
+        )
+        runtime.KnnFloatVectorQuery.assert_not_called()
+        runtime._configured_cagra_query.assert_not_called()
+        expected_query = fake_random_entry_query
+    elif gpu_controls is None:
         runtime.KnnFloatVectorQuery.assert_called_once_with(
             "vector", fake_java_vector, 64
         )
@@ -196,7 +213,70 @@ def test_query_execution_uses_only_the_requested_search_factory(gpu_controls):
         )
         runtime.KnnFloatVectorQuery.assert_not_called()
         expected_query = fake_gpu_query
+    if not num_entry_points:
+        runtime._base_layer_hnsw_query.assert_not_called()
     runtime._search.assert_called_once_with(fake_searcher, expected_query, 10)
+
+
+def test_random_entry_factory_receives_the_java_vector_without_conversion():
+    runtime = _runtime_with_fake_scalar_boxing()
+    fake_java_vector = object()
+    fake_java_query = object()
+    runtime._java_base_layer_query_factory = Mock()
+    runtime._java_base_layer_query_factory.apply.return_value = fake_java_query
+    runtime.Query = SimpleNamespace(cast_=lambda value: value)
+
+    query = runtime._base_layer_hnsw_query(fake_java_vector, 100, 42)
+
+    assert query is fake_java_query
+    sent_request = runtime._java_base_layer_query_factory.apply.call_args.args[
+        0
+    ]
+    assert sent_request == {
+        "field": "vector",
+        "target": fake_java_vector,
+        "k": ("Integer", 100),
+        "num_entry_points": ("Integer", 42),
+    }
+
+
+def test_random_entry_sweep_reaches_search_without_rebuilding_the_index(
+    tmp_path,
+):
+    fake_runtime = RecordingRuntime()
+    backend, index, _ = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, fake_runtime
+    )
+    index.search_params = [
+        {"num_candidates": 4},
+        {"num_candidates": 4, "random_entry_points": True},
+        {
+            "num_candidates": 4,
+            "random_entry_points": True,
+            "num_entry_points": 7,
+        },
+    ]
+    dataset = _dataset()
+    build = backend.build(dataset, [index])
+    assert build.success, build.error_message
+
+    results = backend.search(dataset, [index], k=2)
+
+    assert all(result.success for result in results), [
+        result.error_message for result in results
+    ]
+    assert [
+        call.get("num_entry_points", 0) for call in fake_runtime.search_calls
+    ] == [0, 42, 7]
+    assert results[1].search_params == [
+        {
+            "num_candidates": 4,
+            "random_entry_points": True,
+            "num_entry_points": 42,
+        }
+    ]
+    assert results[2].search_params == [index.search_params[2]]
+    assert len(fake_runtime.build_calls) == 1
 
 
 def test_requested_factory_failure_is_not_replaced_by_default_search():

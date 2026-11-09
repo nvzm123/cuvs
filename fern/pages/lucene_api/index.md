@@ -9,6 +9,7 @@ For an introduction to the codecs, configuration, and tuning, see the [Lucene In
 - [AcceleratedHNSWCodecFactory](/api-reference/lucene-api-com-nvidia-cuvs-lucene-acceleratedhnswcodecfactory)
 - [AcceleratedHNSWParams](/api-reference/lucene-api-com-nvidia-cuvs-lucene-acceleratedhnswparams)
 - [AcceleratedHNSWUtils](/api-reference/lucene-api-com-nvidia-cuvs-lucene-acceleratedhnswutils)
+- [BaseLayerKnnFloatVectorQueryFactory](/api-reference/lucene-api-com-nvidia-cuvs-lucene-baselayerknnfloatvectorqueryfactory)
 - [CagraIndexParamsFactory](/api-reference/lucene-api-com-nvidia-cuvs-lucene-cagraindexparamsfactory)
 - [CuVSCodecs](/api-reference/lucene-api-com-nvidia-cuvs-lucene-cuvscodecs)
 - [FilterBitsetCacheConfig](/api-reference/lucene-api-com-nvidia-cuvs-lucene-filterbitsetcacheconfig)
@@ -23,6 +24,7 @@ For an introduction to the codecs, configuration, and tuning, see the [Lucene In
 
 ## Codecs and Formats
 
+- [BaseLayerKnnFloatVectorQuery](/api-reference/lucene-api-com-nvidia-cuvs-lucene-baselayerknnfloatvectorquery)
 - [CuVS2510GPUSearchCodec](/api-reference/lucene-api-com-nvidia-cuvs-lucene-cuvs2510gpusearchcodec)
 - [CuVS2510GPUVectorsFormat](/api-reference/lucene-api-com-nvidia-cuvs-lucene-cuvs2510gpuvectorsformat)
 - [CuVS2510GPUVectorsReader](/api-reference/lucene-api-com-nvidia-cuvs-lucene-cuvs2510gpuvectorsreader)

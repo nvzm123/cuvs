@@ -584,6 +584,59 @@ def test_ef_search_is_a_candidate_budget_alias_not_an_independent_control(
         )
 
 
+@pytest.mark.parametrize("count", [0, 1, 42, 128])
+def test_random_entry_count_is_an_explicit_hnsw_search_setting(count):
+    assert _search_parameters(
+        ACCELERATED_HNSW_ALGORITHM,
+        {"random_entry_points": True, "num_entry_points": count},
+        10,
+    ) == {
+        "num_candidates": 10,
+        "random_entry_points": True,
+        "num_entry_points": count,
+    }
+
+
+def test_random_entry_selection_is_opt_in_with_42_samples_when_enabled():
+    assert _search_parameters(ACCELERATED_HNSW_ALGORITHM, {}, 10) == {
+        "num_candidates": 10,
+    }
+    assert _search_parameters(
+        ACCELERATED_HNSW_ALGORITHM, {"random_entry_points": True}, 10
+    ) == {
+        "num_candidates": 10,
+        "random_entry_points": True,
+        "num_entry_points": 42,
+    }
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"random_entry_points": "true"},
+        {"random_entry_points": 1},
+        {"num_entry_points": 42},
+        {"random_entry_points": False, "num_entry_points": 42},
+        {"random_entry_points": True, "num_entry_points": True},
+        {"random_entry_points": True, "num_entry_points": -1},
+        {"random_entry_points": True, "num_entry_points": 2**31},
+    ],
+)
+def test_random_entry_selection_rejects_ambiguous_or_invalid_settings(
+    parameters,
+):
+    with pytest.raises(ValueError):
+        _search_parameters(ACCELERATED_HNSW_ALGORITHM, parameters, 10)
+
+
+@pytest.mark.parametrize("algorithm", [CPU_HNSW_ALGORITHM, CAGRA_ALGORITHM])
+def test_random_hnsw_entry_setting_cannot_change_the_other_search_routes(
+    algorithm,
+):
+    with pytest.raises(ValueError, match="Unsupported"):
+        _search_parameters(algorithm, {"random_entry_points": True}, 10)
+
+
 def test_build_sweeps_have_distinct_paths_while_search_sweeps_share_an_index(
     tmp_path,
 ):

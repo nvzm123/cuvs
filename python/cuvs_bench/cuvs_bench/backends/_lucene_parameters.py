@@ -11,6 +11,7 @@ import sys
 from typing import Any, Mapping
 
 _JAVA_INT_MAX = 2_147_483_647
+_DEFAULT_HNSW_ENTRY_POINTS = 42
 # These Java-builder defaults are explicit in saved build identities. Keeping
 # them here also permits validation without starting a JVM.
 _IVF_DEFAULTS = {
@@ -61,6 +62,31 @@ CUVS_BUILD_KEYS = frozenset(
 CAGRA_SEARCH_KEYS = frozenset(
     ("itopk", "search_width", "max_iterations", "algo", "thread_block_size")
 )
+
+
+def normalize_hnsw_entry_controls(
+    parameters: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep random entry selection opt-in; a count alone must not enable it."""
+    enabled = parameters.get("random_entry_points", False)
+    if type(enabled) is not bool:
+        raise ValueError("random_entry_points must be a boolean")
+    if not enabled:
+        if "num_entry_points" in parameters:
+            raise ValueError(
+                "num_entry_points requires random_entry_points=true"
+            )
+        return (
+            {"random_entry_points": False}
+            if "random_entry_points" in parameters
+            else {}
+        )
+    count = parameters.get("num_entry_points", _DEFAULT_HNSW_ENTRY_POINTS)
+    if type(count) is not int or not 0 <= count <= _JAVA_INT_MAX:
+        raise ValueError(
+            "num_entry_points must be an integer in [0, 2147483647]"
+        )
+    return {"random_entry_points": True, "num_entry_points": count}
 
 
 def _integer(value: Any, name: str, minimum: int, maximum: int) -> int:
