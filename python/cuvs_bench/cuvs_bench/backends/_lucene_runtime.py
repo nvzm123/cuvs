@@ -34,6 +34,9 @@ CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY = (
 )
 CONFIGURED_CAGRA_CODEC_FACTORY = "com.nvidia.cuvs.lucene.GPUSearchCodecFactory"
 _CAGRA_QUERY_FACTORY = "com.nvidia.cuvs.lucene.GPUKnnFloatVectorQueryFactory"
+_BASE_LAYER_QUERY_FACTORY = (
+    "com.nvidia.cuvs.lucene.BaseLayerKnnFloatVectorQueryFactory"
+)
 INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE = (
     "com.nvidia.cuvs.lucene.IndexWriterConfigRAMLimitBridge"
 )
@@ -1266,6 +1269,7 @@ class LuceneRuntime:
         self._java_configured_codec_factory: Any | None = None
         self._java_cagra_codec_factory: Any | None = None
         self._java_cagra_query_factory: Any | None = None
+        self._java_base_layer_query_factory: Any | None = None
         self._java_ram_limit_bridge: Any | None = None
 
     @classmethod
@@ -2087,6 +2091,8 @@ class LuceneRuntime:
         k: int,
         candidates: int,
         cagra_search_parameters: Mapping[str, Any] | None = None,
+        *,
+        num_entry_points: int = 0,
     ) -> tuple[list[SearchHit], QueryTiming]:
         client_started = time.perf_counter_ns()
         prepare_started = time.perf_counter_ns()
@@ -2094,6 +2100,10 @@ class LuceneRuntime:
         if cagra_search_parameters:
             query = self._configured_cagra_query(
                 java_vector, k, cagra_search_parameters
+            )
+        elif num_entry_points:
+            query = self._base_layer_hnsw_query(
+                java_vector, candidates, num_entry_points
             )
         else:
             query = self.KnnFloatVectorQuery(
@@ -2117,6 +2127,32 @@ class LuceneRuntime:
             result_materialization_ns=result_materialization_ns,
             client_query_ns=time.perf_counter_ns() - client_started,
         )
+
+    def _base_layer_hnsw_query(
+        self, java_vector: Any, candidates: int, num_entry_points: int
+    ) -> Any:
+        """Select a seed inside Java search, without custom PyLucene wrappers."""
+        if self._java_base_layer_query_factory is None:
+            self._java_base_layer_query_factory = self._load_parameter_factory(
+                _BASE_LAYER_QUERY_FACTORY
+            )
+        request = self._parameter_request(
+            {
+                "field": _VECTOR_FIELD,
+                "k": candidates,
+                "num_entry_points": num_entry_points,
+            }
+        )
+        request.put("target", java_vector)
+        try:
+            return self.Query.cast_(
+                self._java_base_layer_query_factory.apply(request)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a random-entry HNSW query: "
+                f"{type(error).__name__}: {error}"
+            ) from error
 
     def _configured_cagra_query(
         self, java_vector: Any, k: int, parameters: Mapping[str, Any]
@@ -2148,6 +2184,7 @@ class LuceneRuntime:
         k: int,
         num_candidates: int,
         cagra_search_parameters: Mapping[str, Any] | None = None,
+        num_entry_points: int = 0,
     ) -> RuntimeSearchResult:
         self.attach_current_thread()
         plan_started = time.perf_counter_ns()
@@ -2204,6 +2241,7 @@ class LuceneRuntime:
                     k,
                     min(num_candidates, document_count),
                     cagra_search_parameters,
+                    num_entry_points=num_entry_points,
                 )
                 all_hits.append(hits)
                 query_timings.append(query_timing)
