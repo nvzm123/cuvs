@@ -46,7 +46,7 @@ from ._lucene_runtime import (
     CAGRA_CODEC,
     CPU_HNSW_CODEC,
     DIRECT_PYLUCENE_DISPATCH,
-    MAX_CAGRA_TOP_K,
+    MAX_PER_SEGMENT_CAGRA_TOP_K,
     LuceneRuntime,
     RuntimeBuildResult,
     RuntimeSearchResult,
@@ -637,10 +637,6 @@ def _search_parameters(
     if not isinstance(parameters, Mapping):
         raise TypeError("Lucene search parameters must be mappings")
     if algorithm == CAGRA_ALGORITHM:
-        if k > MAX_CAGRA_TOP_K:
-            raise ValueError(
-                f"CAGRA search supports k <= {MAX_CAGRA_TOP_K}; received k={k}"
-            )
         return {
             "num_candidates": k,
             **normalize_cagra_search_controls(parameters, k),
@@ -1979,7 +1975,7 @@ class LuceneBackend(BenchmarkBackend):
                         for key, value in parameters.items()
                         if key != "num_candidates"
                     }
-                    if cagra_controls:
+                    if cagra_controls or k > MAX_PER_SEGMENT_CAGRA_TOP_K:
                         search_kwargs["cagra_search_parameters"] = (
                             cagra_controls
                         )

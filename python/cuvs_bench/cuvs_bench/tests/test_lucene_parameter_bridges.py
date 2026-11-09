@@ -163,6 +163,7 @@ def test_configured_query_forwards_the_java_vector_and_every_search_control():
     "gpu_controls,num_entry_points",
     [
         pytest.param(None, 0, id="stock-hnsw"),
+        pytest.param({}, 0, id="gpu-cagra-defaults"),
         pytest.param({"search_width": 32}, 0, id="gpu-cagra"),
         pytest.param(None, 42, id="random-entry-hnsw"),
     ],
