@@ -85,6 +85,41 @@ Choose graph settings for the actual segment sizes. Small segments can cause
 native clamping; larger resource requests are not memory reservations or
 guarantees of successful allocation.
 
+For reproducible segment layouts, both cuVS-backed algorithms also accept
+`premerge_segment_count`, `force_merge_segment_count`, and
+`ram_per_thread_hard_limit_mb` together. For example, add this group to an
+algorithm YAML passed through the existing `--configuration` option:
+
+```yaml
+name: lucene_accelerated_hnsw
+groups:
+  controlled:
+    build:
+      m: [16]
+      beam_width: [100]
+      premerge_segment_count: [1]
+      force_merge_segment_count: [0]
+      ram_per_thread_hard_limit_mb: [1024]
+    search:
+      num_candidates: [100]
+```
+
+The RAM value above is an example, not a dataset-size budget. Choose a value
+appropriate for the segment and leave headroom for JVM, native-host, and device
+allocations. The controls have these meanings:
+
+- `premerge_segment_count` partitions the vectors into equal contiguous groups,
+  ingested sequentially through separate writer lifecycles. It does not request
+  indexing threads. The vector count must be divisible by the partition count.
+- Automatic merges and the ordinary RAM-triggered flush are disabled during
+  controlled ingestion. The per-thread safety threshold still applies. The
+  build fails if the committed segment/vector counts differ from the request.
+- `force_merge_segment_count` is `0` to retain the segments or `1` to merge
+  accelerated-HNSW segments serially. GPU CAGRA requires `0`.
+- Limits from 1 through 2047 MiB use Lucene's public per-thread setter.
+  Values outside this range are rejected. The threshold is a Lucene safety
+  limit, not a guarantee that arbitrary segment sizes are safe.
+
 The codec/query factories belong to the thin cuVS-Lucene JAR. Newly configured
 builds require an updated JAR containing `AcceleratedHNSWCodecFactory` or
 `GPUSearchCodecFactory`; explicit GPU query controls require
@@ -95,15 +130,15 @@ release; the Python runtime still supports only PyLucene 10.2.0.
 
 Configured index names distinguish their build settings; new tuning combinations
 use a stable digest to keep filenames bounded. Their schema-3 manifests
-record the build settings with `runtime_build_topology: null`; they do not
-claim a controlled segment layout. Ordinary builds keep their previous names and
+record the settings and, when topology is controlled, observed segment counts
+and applied RAM-limit mode. Ordinary builds keep their previous names and
 schema-2 manifests; those indexes remain reusable. An index built with different
 settings must be rebuilt with `--build --force`. Saved codec identities remain
 independent of the current writing codec.
 
 This does not add parallel ingestion, Java-side FBIN ingestion, or bounded-memory
 construction. Python still loads the training vectors and sends each document
-through JCC.
+through JCC. A larger flush threshold reserves neither host nor GPU memory.
 
 ## Runtime requirements
 
@@ -319,3 +354,8 @@ GPU; missing prerequisites fail rather than skip. Accelerated-HNSW GPU-intended
 cases fail if the codec logs its CPU-writer fallback. A separate GPU-hidden
 negative control verifies that this warning remains observable and attributable
 to the case that produced it.
+
+The above suite also checks configured HNSW builds, retained segment layouts
+for both GPU algorithms, and HNSW force merging. Its real warning controls must
+run alongside tests that rely on warning absence; a failed control invalidates
+that negative evidence until logging or capture is repaired.

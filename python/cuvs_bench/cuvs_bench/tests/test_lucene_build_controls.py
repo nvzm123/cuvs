@@ -3,12 +3,22 @@
 
 """Build-control contracts without a JVM; live tests establish actual topology."""
 
+import json
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
+import numpy as np
 import pytest
 
 from _lucene_test_support import RecordingRuntime, _backend_and_index, _dataset
 from cuvs_bench.backends import lucene as backend_module
+from cuvs_bench.backends._lucene_runtime import (
+    LuceneRuntime,
+    RuntimeBuildTopology,
+    _controlled_build_topology,
+)
 from cuvs_bench.backends.lucene import (
     ACCELERATED_HNSW_ALGORITHM,
     CAGRA_ALGORITHM,
@@ -21,16 +31,48 @@ from cuvs_bench.backends.lucene import (
 )
 
 
-class FakeControlledRuntime(RecordingRuntime):
-    """Record build arguments, without claiming native parameter execution."""
+def _two_segment_parameters():
+    return {
+        "premerge_segment_count": 2,
+        "force_merge_segment_count": 0,
+        "ram_per_thread_hard_limit_mb": 512,
+    }
 
-    def __init__(self):
+
+def _fake_two_segment_evidence():
+    """Fabricated boundary output, not evidence that Lucene built any segments."""
+    return RuntimeBuildTopology(
+        requested_premerge_segment_count=2,
+        observed_premerge_segment_count=2,
+        requested_force_merge_segment_count=0,
+        premerge_segment_vector_counts=(2, 2),
+        max_buffered_docs=3,
+        applied_ram_per_thread_hard_limit_mb=512,
+        ram_per_thread_hard_limit_application="public_setter",
+        ingest_merge_policy="NoMergePolicy",
+        final_merge_policy=None,
+    )
+
+
+class FakeControlledRuntime(RecordingRuntime):
+    """Supply explicit fake JVM output to test backend forwarding/publication."""
+
+    def __init__(self, *, fake_topology=None):
         super().__init__(pylucene_version="i-am-fake-data")
+        self.fake_topology = fake_topology
         self.received_controls = []
 
-    def build_index(self, path, vectors, codec, build_parameters=None):
+    def build_index(
+        self, index_path, vectors, codec_name, build_parameters=None
+    ):
         self.received_controls.append(build_parameters)
-        return super().build_index(path, vectors, codec)
+        result = super().build_index(index_path, vectors, codec_name)
+        self.segment_count = 2 if self.fake_topology else 1
+        return replace(
+            result,
+            segment_count=self.segment_count,
+            topology=self.fake_topology,
+        )
 
 
 @pytest.mark.parametrize(
@@ -65,6 +107,22 @@ def test_default_build_does_not_invent_controls_or_change_index_names(
             "m must be an integer",
             id="m-above-api-limit",
         ),
+        pytest.param(
+            {"premerge_segment_count": 2}, "missing", id="incomplete-topology"
+        ),
+        pytest.param(
+            {**_two_segment_parameters(), "force_merge_segment_count": 2},
+            "0 .* or 1",
+            id="unsupported-merge-target",
+        ),
+        pytest.param(
+            {
+                **_two_segment_parameters(),
+                "ram_per_thread_hard_limit_mb": 2048,
+            },
+            r"integer in \[1, 2047\]",
+            id="public-ram-limit-at-cutoff",
+        ),
     ],
 )
 def test_invalid_build_controls_fail_before_creating_a_runtime(
@@ -74,11 +132,67 @@ def test_invalid_build_controls_fail_before_creating_a_runtime(
         _build_parameters_for(ACCELERATED_HNSW_ALGORITHM, parameters)
 
 
+@pytest.mark.parametrize("ram_limit_mb", [1, 2047])
+def test_supported_ram_limit_boundaries_reach_runtime_topology(ram_limit_mb):
+    parameters = {
+        **_two_segment_parameters(),
+        "ram_per_thread_hard_limit_mb": ram_limit_mb,
+    }
+    normalized = _build_parameters_for(ACCELERATED_HNSW_ALGORITHM, parameters)
+    assert normalized["ram_per_thread_hard_limit_mb"] == ram_limit_mb
+    topology = _controlled_build_topology(normalized, 4)
+    assert topology.ram_per_thread_hard_limit_mb == ram_limit_mb
+
+
+def test_gpu_cagra_disallows_force_merge():
+    with pytest.raises(
+        ValueError, match="requires force_merge_segment_count=0"
+    ):
+        _build_parameters_for(
+            CAGRA_ALGORITHM,
+            {**_two_segment_parameters(), "force_merge_segment_count": 1},
+        )
+
+
 def test_stock_cpu_hnsw_does_not_silently_accept_accelerated_build_controls():
     with pytest.raises(
         ValueError, match="Unsupported Lucene build parameters"
     ):
         _build_parameters_for(CPU_HNSW_ALGORITHM, {"m": 16, "beam_width": 100})
+
+
+@pytest.mark.parametrize(
+    "vector_count, error", [(3, "equal partitions"), (1, "cannot exceed")]
+)
+def test_controlled_partition_sizes_are_checked_before_opening_a_writer(
+    vector_count, error
+):
+    with pytest.raises(RuntimeError, match=error):
+        _controlled_build_topology(_two_segment_parameters(), vector_count)
+
+
+def test_backend_forwards_and_persists_configured_build_parameters(tmp_path):
+    fake_runtime = FakeControlledRuntime(
+        fake_topology=_fake_two_segment_evidence()
+    )
+    backend, index, _ = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, fake_runtime
+    )
+    controls = {"m": 16, "beam_width": 100, **_two_segment_parameters()}
+    index = replace(index, build_param={**index.build_param, **controls})
+
+    result = backend.build(_dataset(), [index])
+
+    assert result.success, result.error_message
+    assert fake_runtime.received_controls == [controls]
+    manifest = json.loads(
+        (Path(index.file) / ".cuvs-bench-lucene.json").read_text()
+    )
+    assert manifest["build_parameters"] == controls
+    assert manifest["runtime_build_topology"][
+        "premerge_segment_vector_counts"
+    ] == [2, 2]
+    assert result.metadata["pylucene_version"] == "i-am-fake-data"
 
 
 def test_different_build_parameters_cannot_reuse_the_same_index(tmp_path):
@@ -131,6 +245,188 @@ def test_configured_saved_index_remains_usable_when_writer_default_changes(
         reused.metadata["codec"] == searched.metadata["codec"] == saved_codec
     )
     assert len(fake_runtime.build_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "fake_counts",
+    [(4,), (1, 3)],
+    ids=["wrong-segment-count", "unequal-segment-sizes"],
+)
+def test_runtime_rejects_unexpected_committed_partition_layout(fake_counts):
+    runtime = object.__new__(LuceneRuntime)
+    # Only the I/O seams are fake: the production orchestration compares these
+    # independent observed counts with the requested two equal partitions.
+    runtime._write_controlled_chunk = Mock(
+        return_value=(0, 0, 0, "public_setter")
+    )
+    runtime._committed_segment_vector_counts = Mock(return_value=fake_counts)
+    fake_directory = object()
+    fake_codec = object()
+    parameters = _controlled_build_topology(_two_segment_parameters(), 4)
+
+    with pytest.raises(RuntimeError, match="ingest topology mismatch"):
+        runtime._build_controlled_index(
+            fake_directory,
+            np.zeros((4, 2), dtype=np.float32),
+            fake_codec,
+            parameters,
+        )
+
+
+@pytest.mark.parametrize("failed_operation", ["addDocument", "flush"])
+def test_failed_partition_rolls_back_without_committing(failed_operation):
+    fake_writer = Mock(
+        spec=["addDocument", "flush", "commit", "close", "rollback"]
+    )
+    original_error = RuntimeError("deliberately injected writer failure")
+    getattr(fake_writer, failed_operation).side_effect = original_error
+    runtime = object.__new__(LuceneRuntime)
+    runtime.IndexWriter = Mock(return_value=fake_writer)
+    fake_config = object()
+    runtime._controlled_ingest_config = Mock(
+        return_value=(fake_config, "public_setter")
+    )
+    fake_document = object()
+    runtime._document = Mock(return_value=fake_document)
+    fake_directory = object()
+    fake_codec = object()
+
+    with pytest.raises(RuntimeError) as failure:
+        runtime._write_controlled_chunk(
+            fake_directory,
+            np.zeros((1, 2), dtype=np.float32),
+            fake_codec,
+            SimpleNamespace(),
+            start=0,
+            stop=1,
+            create=True,
+        )
+
+    assert failure.value is original_error
+    fake_writer.rollback.assert_called_once_with()
+    fake_writer.commit.assert_not_called()
+    fake_writer.close.assert_not_called()
+
+
+def test_failed_force_merge_rolls_back_without_committing():
+    fake_writer = Mock(spec=["forceMerge", "commit", "close", "rollback"])
+    original_error = RuntimeError("deliberately injected force-merge failure")
+    fake_writer.forceMerge.side_effect = original_error
+    runtime = object.__new__(LuceneRuntime)
+    runtime.IndexWriter = Mock(return_value=fake_writer)
+    fake_config = object()
+    fake_directory = object()
+    fake_codec = object()
+    runtime._controlled_merge_config = Mock(
+        return_value=(fake_config, "public_setter")
+    )
+
+    with pytest.raises(RuntimeError) as failure:
+        runtime._force_merge_controlled_index(
+            fake_directory,
+            fake_codec,
+            SimpleNamespace(force_merge_segment_count=1),
+        )
+
+    assert failure.value is original_error
+    fake_writer.forceMerge.assert_called_once_with(1, True)
+    fake_writer.rollback.assert_called_once_with()
+    fake_writer.commit.assert_not_called()
+    fake_writer.close.assert_not_called()
+
+
+def test_missing_topology_evidence_cannot_replace_a_previous_index(tmp_path):
+    fake_runtime = FakeControlledRuntime()
+    backend, index, _ = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, fake_runtime
+    )
+    assert backend.build(_dataset(), [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    previous_manifest = manifest_path.read_bytes()
+    controlled = replace(
+        index, build_param={**index.build_param, **_two_segment_parameters()}
+    )
+
+    result = backend.build(_dataset(), [controlled], force=True)
+
+    assert not result.success
+    assert "missing evidence" in result.error_message
+    assert manifest_path.read_bytes() == previous_manifest
+
+
+@pytest.mark.parametrize(
+    "field, corrupted_value",
+    [
+        pytest.param(
+            "observed_premerge_segment_count", True, id="boolean-count"
+        ),
+        pytest.param(
+            "premerge_segment_vector_counts", [1, 3], id="unequal-partitions"
+        ),
+        pytest.param("max_buffered_docs", 2, id="flush-threshold-mismatch"),
+        pytest.param(
+            "applied_ram_per_thread_hard_limit_mb", 1024, id="wrong-ram-limit"
+        ),
+        pytest.param(
+            "ram_per_thread_hard_limit_application",
+            "unsupported_field_override",
+            id="wrong-application-mode",
+        ),
+        pytest.param(
+            "final_merge_policy", "TieredMergePolicy", id="unrequested-merge"
+        ),
+    ],
+)
+def test_saved_topology_must_agree_with_requested_controls_before_reuse(
+    tmp_path, field, corrupted_value
+):
+    fake_runtime = FakeControlledRuntime(
+        fake_topology=_fake_two_segment_evidence()
+    )
+    backend, index, _ = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, fake_runtime
+    )
+    index = replace(
+        index, build_param={**index.build_param, **_two_segment_parameters()}
+    )
+    assert backend.build(_dataset(), [index]).success
+    manifest_path = Path(index.file) / ".cuvs-bench-lucene.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["runtime_build_topology"][field] = corrupted_value
+    manifest_path.write_text(json.dumps(manifest))
+
+    reused = backend.build(_dataset(), [index])
+
+    assert not reused.success
+    assert "invalid runtime build topology" in reused.error_message
+    assert len(fake_runtime.build_calls) == 1
+
+
+def test_force_merge_must_produce_the_requested_single_segment():
+    runtime = object.__new__(LuceneRuntime)
+    runtime._write_controlled_chunk = Mock(
+        return_value=(0, 0, 0, "public_setter")
+    )
+    runtime._force_merge_controlled_index = Mock(
+        return_value=(0, 0, 0, "public_setter")
+    )
+    # The fabricated reader reports that the requested merge left both segments intact.
+    runtime._committed_segment_vector_counts = Mock(
+        side_effect=[(2, 2), (2, 2)]
+    )
+    fake_directory = object()
+    fake_codec = object()
+    topology = _controlled_build_topology(
+        {**_two_segment_parameters(), "force_merge_segment_count": 1}, 4
+    )
+
+    with pytest.raises(RuntimeError, match="final topology mismatch"):
+        runtime._build_controlled_index(
+            fake_directory,
+            np.zeros((4, 2), dtype=np.float32),
+            fake_codec,
+            topology,
+        )
 
 
 def test_build_parameter_sweep_assigns_distinct_index_files(tmp_path):
