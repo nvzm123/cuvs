@@ -151,15 +151,26 @@ def test_cagra_build_strategy_does_not_invent_or_drop_settings(
 )
 @pytest.mark.parametrize(
     "supplied",
-    [{}, {"n_lists": 64}, {"n_probes": 1024}, {"n_lists": 10, "n_probes": 10}],
+    [
+        {},
+        {"n_lists": 64},
+        {"n_probes": 1024},
+        {"n_lists": 10, "n_probes": 10},
+        {"refinement_rate": 1},
+        {"refinement_rate": 1.0},
+        {"refinement_rate": 2.5},
+    ],
     ids=[
         "all-defaults",
         "lists-only",
         "probe-all-default-lists",
         "explicit-pair",
+        "explicit-unit-refinement-integer",
+        "explicit-unit-refinement-float",
+        "explicit-expanded-refinement",
     ],
 )
-def test_ivf_normalization_records_java_builder_defaults_and_explicit_overrides(
+def test_ivf_normalization_records_factory_defaults_and_explicit_overrides(
     algorithm, supplied
 ):
     request = {"graph_build_algo": "ivf_pq", **supplied}
@@ -169,6 +180,7 @@ def test_ivf_normalization_records_java_builder_defaults_and_explicit_overrides(
         "pq_dim": 0,
         "kmeans_n_iters": 20,
         "kmeans_trainset_fraction": 0.5,
+        "refinement_rate": 1.0,
         **request,
         "build_strategy": "custom",
     }
@@ -182,9 +194,10 @@ def test_ivf_normalization_records_java_builder_defaults_and_explicit_overrides(
         "pq_dim",
         "kmeans_n_iters",
         "kmeans_trainset_fraction",
+        "refinement_rate",
     ],
 )
-def test_restored_ivf_defaults_are_persisted_and_old_implicit_defaults_are_not_reused(
+def test_ivf_defaults_are_persisted_and_old_implicit_defaults_are_not_reused(
     tmp_path,
     old_implicit_default,
 ):
@@ -201,6 +214,7 @@ def test_restored_ivf_defaults_are_persisted_and_old_implicit_defaults_are_not_r
         "pq_dim": 0,
         "kmeans_n_iters": 20,
         "kmeans_trainset_fraction": 0.5,
+        "refinement_rate": 1.0,
     }
     # Only configuration/persistence is exercised: these fake vectors never reach cuVS.
     dataset = Dataset(
@@ -351,8 +365,12 @@ def test_legacy_manifests_keep_their_original_schema_fields_and_reuse(
             "must be <= 1",
         ),
         (
-            {"graph_build_algo": "ivf_pq", "refinement_rate": 1},
-            "must be finite",
+            {"graph_build_algo": "ivf_pq", "refinement_rate": 0.5},
+            "refinement_rate must be 1",
+        ),
+        (
+            {"graph_build_algo": "ivf_pq", "refinement_rate": 1 - 1e-9},
+            "refinement_rate must be 1",
         ),
         (
             {"graph_build_algo": "ivf_pq", "refinement_rate": 1 + 1e-9},
@@ -421,6 +439,7 @@ def test_ivf_preserves_compatible_distance_and_lookup_table_precisions(
         "pq_dim": 0,
         "kmeans_n_iters": 20,
         "kmeans_trainset_fraction": 0.5,
+        "refinement_rate": 1.0,
         **controls,
     }
 

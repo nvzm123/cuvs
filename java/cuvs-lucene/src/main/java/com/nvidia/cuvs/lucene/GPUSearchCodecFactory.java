@@ -21,10 +21,13 @@ import org.apache.lucene.codecs.Codec;
  * (1..100, NN-descent only), {@code writer_threads} (1..512), and {@code build_quality}
  * (0..Integer.MAX_VALUE, default 7, heuristic only). Counts must be {@link Integer}; enum names are
  * lowercase strings.
- * Explicit geometry, algorithm, iteration or IVF-PQ options infer custom mode. Explicit heuristic
- * mode accepts graph_degree but rejects other custom controls it would ignore. Custom graph degree
- * defaults to 64; intermediate degree defaults to {@code max(128, graph_degree)} and must not be
- * below graph_degree.
+ * Explicit geometry, algorithm, iteration or IVF-PQ options infer custom mode.
+ * For GPU-native CAGRA, explicitly selecting {@code build_strategy=heuristic} allows
+ * {@code graph_degree} while cuVS chooses the remaining construction settings. Accelerated HNSW
+ * instead derives graph degrees from {@code m} ({@code max_conn} in its Java factory).
+ * Heuristic mode rejects other custom controls it would ignore. Custom graph degree defaults to
+ * 64; intermediate degree defaults to {@code max(128, graph_degree)} and must not be below
+ * graph_degree.
  *
  * <p>Build quality is a construction-effort setting, not a percentage or a 0..10 score. Native cuVS
  * describes values below 20 as most practical. Its current dataset heuristic uses
@@ -36,7 +39,7 @@ import org.apache.lucene.codecs.Codec;
  * {@code n_lists}, {@code n_probes}, {@code kmeans_n_iters}, {@code max_train_points_per_pq_code};
  * nonnegative Integer {@code pq_dim} (0 selects the native heuristic); Integer {@code pq_bits}
  * (4..8); Float or Double {@code kmeans_trainset_fraction} (finite, in (0,1]) and
- * {@code refinement_rate} (finite and greater than 1 after conversion to float); Boolean
+ * {@code refinement_rate} (1, or finite and greater than 1 after conversion to float); Boolean
  * {@code force_random_rotation}; {@code codebook_kind} ({@code per_subspace} or {@code per_cluster});
  * {@code lut_dtype} ({@code float32}, {@code float16}, {@code uint8}); and
  * {@code internal_distance_dtype} ({@code float32} or {@code float16}).
@@ -44,6 +47,7 @@ import org.apache.lucene.codecs.Codec;
  * The product {@code pq_dim * pq_bits} must be a multiple of 8, and explicit n_probes must not exceed n_lists.
  * Omitted values retain the generic Java builder defaults: n_lists=1024, n_probes=20,
  * pq_dim=0 (native automatic selection), pq_bits=8, kmeans_n_iters=20, and kmeans_trainset_fraction=0.5.
+ * The exception is refinement_rate=1, matching the native heuristic rather than the Java builder's 2.
  * For tuning, try floor(sqrt(segment vector count)) rather than assuming 1024 is optimal, and
  * compare construction time and final-index recall. A list count below 20 requires an explicit
  * n_probes no greater than that count. These controls do not change the native HEURISTIC strategy.
