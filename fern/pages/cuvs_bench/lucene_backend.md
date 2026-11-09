@@ -51,6 +51,111 @@ flush and merge policies. To configure accelerated HNSW, supply both `m` and
 `ef_construction`). Native cuVS derives its CAGRA build settings through the
 default heuristic; these are not search parameters.
 
+Both cuVS-backed algorithms also accept the following optional build controls.
+Omitting them retains the corresponding Java codec's defaults.
+
+| Controls | Meaning |
+| --- | --- |
+| `build_strategy` | `heuristic` or `custom`. Explicit graph geometry, graph-builder selection, NN-descent iterations or IVF-PQ settings select `custom` unless a strategy is supplied. |
+| `graph_degree`, `intermediate_graph_degree` | Final and intermediate CAGRA graph degrees, in ranges 1–512 and 2–512. Intermediate degree must be at least final degree. Accelerated HNSW additionally requires final degree ≤ `2 * m`. |
+| `graph_build_algo` | `nn_descent` (custom-mode default) or `ivf_pq`, for constructing the initial CAGRA graph—not selecting the final search algorithm. |
+| `nn_descent_n_iters` | NN-descent construction iterations, 1–100; only for the NN-descent graph builder. |
+| `writer_threads` | Calling-thread OpenMP count for native graph build/merge work, 1–512, restored after the operation; not Python ingestion threads or a process-wide cap. Defaults remain 1 for accelerated HNSW and 32 for GPU CAGRA. |
+| `hnsw_layers` | Accelerated HNSW layer limit, 1–99; the graph may have fewer layers on small datasets. |
+| `build_quality` | GPU CAGRA construction-effort setting, not a percentage or a 0–10 score. Default 7; cuVS describes values below 20 as most practical. The binding accepts integers from 0 through 2,147,483,647, but that type limit is not a recommended tuning range or a guarantee of successful construction. Requires heuristic mode. |
+
+Heuristic mode rejects settings it would ignore. The GPU CAGRA dataset heuristic
+does consume `graph_degree`, so use `build_strategy: [heuristic]` explicitly to
+combine that degree with `build_quality`. Accelerated HNSW keeps the
+`SAME_GRAPH_FOOTPRINT` default, with no exposed heuristic selector. It derives
+`graph_degree = 2 * m` and `intermediate_graph_degree = 3 * m`, before any
+dataset-size clamping during construction; `beam_width` tunes construction
+effort. In custom mode, omitted graph
+degree is 64 (capped at `2 * m` for HNSW); omitted intermediate degree is the
+larger of 128 and the final degree. If neither `m` nor `beam_width` is supplied,
+their Java defaults remain 32 and 32.
+
+In the current native dataset heuristic, `build_quality` increases NN-descent's
+maximum iterations to `5 + build_quality` for segments with fewer than one
+million vectors. For larger segments, it increases the temporary IVF-PQ search
+probe count to `round(2 + sqrt(n_lists) / 20 + build_quality)`. Start with the
+default 7; larger values request more construction work, not a proportional
+recall improvement. Very large values can be impractical or fail native limits.
+
+With `graph_build_algo: [ivf_pq]`, these additional **build** controls tune the
+temporary IVF-PQ index used to construct CAGRA. These are the Lucene binding
+factories' custom defaults, not cuVS's native heuristic or its generic Java
+builder defaults. Shape-dependent settings resolve separately for each field's
+segment build; `N` is that field's vector count and `D` its vector dimension:
+
+| Control | Default | Meaning |
+| --- | --- | --- |
+| `n_lists` | `floor(sqrt(N))` | Number of IVF clusters (inverted lists), based on the nonempty segment's vectors rather than the entire corpus. Explicit values must be positive and fit the available training data. |
+| `n_probes` | `min(32, n_lists)` | Number of IVF clusters searched when finding CAGRA construction candidates. Explicit values must be positive and no greater than `n_lists`; it does not control final CAGRA queries. |
+| `kmeans_n_iters` | 10 | Number of k-means training iterations used to find cluster centers. Must be a positive integer. |
+| `kmeans_trainset_fraction` | 0.25 | Fraction of input vectors used for k-means training, in `(0, 1]`; `0.25` requests 25%. Native sampling is rounded and must accommodate `n_lists`, so this is not an exact row-count promise. All input vectors are still indexed. |
+| `pq_dim` | `32 * ceil(D / 128)` | One quarter of the vector dimension, rounded upward to a multiple of 32. Explicit `0` instead selects the native PQ heuristic. Must be nonnegative, and `pq_dim * pq_bits` must be divisible by 8. Does not change the input dimensions or compress the final Lucene vectors. |
+| `pq_bits` | 8 | Bits per product-quantization code in the temporary index. Integer from 4 through 8; the same byte-alignment constraint applies. Does not compress the final Lucene vectors. |
+| `refinement_rate` | 2 | Candidate-expansion factor before exact refinement during graph construction. Must remain finite and greater than 1 after float32 conversion; the underlying CAGRA bridge does not apply rates ≤ 1 as explicit overrides. |
+| `max_train_points_per_pq_code` | 256 | Positive training-sample cap per PQ code when learning codebooks. Separate from the k-means training fraction. |
+| `codebook_kind` | `per_subspace` | How PQ codebooks are organized: one per subspace (`per_subspace`) or one per IVF cluster (`per_cluster`). |
+| `force_random_rotation` | `false` | Whether to apply random rotation even when the input dimension is divisible by `pq_dim`. A boolean; `false` does not disable rotation when native dimensional alignment requires it. |
+| `lut_dtype` | `float32` | Precision of the distance lookup table used by construction-time IVF-PQ searches: `float32`, `float16`, or `uint8`. |
+| `internal_distance_dtype` | `float32` | Precision of distances computed by construction-time IVF-PQ searches: `float32` or `float16`. Using `float16` requires `lut_dtype=float16` or `uint8`. Native overflow handling may promote distance precision. |
+
+For manual tuning, `n_lists ≈ sqrt(N)` is a useful IVF starting point, as described
+in [NVIDIA's IVF tuning guidance](https://developer.nvidia.com/blog/accelerated-vector-search-approximating-with-nvidia-cuvs-ivf-flat/),
+not a universal optimum. Here, `N` is the field's vector count in the segment/build
+being processed, not necessarily the entire corpus or just the training sample. Tune
+`n_lists` together with `n_probes`, measuring construction time and final-index
+recall; the [IVF-PQ tuning guide](https://developer.nvidia.com/blog/accelerating-vector-search-nvidia-cuvs-ivf-pq-performance-tuning-part-2/)
+illustrates how the best choice varies with the dataset and recall target.
+
+In contrast, when the automatic CAGRA heuristic selects IVF-PQ, the
+[current native implementation](https://github.com/NVIDIA/cuvs/blob/b3be92aca7ac095df232732f847f52980b06a30d/cpp/include/cuvs/neighbors/ivf_pq.hpp#L3427)
+uses `n_lists = max(1, floor(N / 2000))`, not these custom defaults.
+
+These custom defaults are tuning starting points, not a promise of better
+performance or recall than the native heuristic. If recall is insufficient,
+also try 64, 96, or 128 probes, provided the list count permits it, and measure
+the added construction work. These probes do not directly control final-index
+query latency.
+
+Multi-layer HNSW reuses the segment's IVF settings for its smaller upper layers;
+the list/probe count clamps do not guarantee enough construction candidates.
+For example, a 65,536-vector, three-layer build with graph degree 32 and
+intermediate degree 64 failed with the default 32 probes; explicitly probing
+all 256 lists passed that test. Tune probes or lists for the smallest layer,
+not just layer 0. This example is not a universal success or recall guarantee.
+
+For example, for a field with 1,000,000 vectors of dimension 96 in one segment,
+the custom defaults give 1,000 lists and a PQ dimension of 32. The following
+example supplies them explicitly; omitting the six IVF-PQ settings uses the
+defaults above instead:
+
+```yaml
+name: lucene_cuvs_cagra
+groups:
+  ivf_pq_build:
+    build:
+      graph_degree: [32]
+      intermediate_graph_degree: [64]
+      graph_build_algo: [ivf_pq]
+      n_lists: [1000]
+      n_probes: [32]
+      pq_bits: [8]
+      pq_dim: [32]
+      kmeans_n_iters: [10]
+      kmeans_trainset_fraction: [0.25]
+    search:
+      itopk: [128]
+      search_width: [16, 32]
+```
+
+Choose graph and training settings for the actual segment sizes. Small segments
+can cause native clamping or training errors; larger resource requests are not
+memory reservations or guarantees of successful allocation.
+
 For reproducible segment layouts, both cuVS-backed algorithms also accept
 `premerge_segment_count`, `force_merge_segment_count`, and
 `ram_per_thread_hard_limit_mb` together. For example, add this group to an
@@ -89,13 +194,14 @@ allocations. The controls have these meanings:
   fails on an unavailable or incompatible bridge. It bypasses a Lucene safety
   check; it is not a general promise that arbitrary segment sizes are safe.
 
-The codec factory and unsupported RAM-limit bridge belong to the thin
-cuVS-Lucene JAR. Configured HNSW builds need the updated factory; the unsupported
-limit needs the updated RAM bridge. Default builds and searches do not require
-these new classes. Java's factory selects the writing codec for its artifact's
+The codec/query factories and unsupported RAM-limit bridge belong to the thin
+cuVS-Lucene JAR. Newly configured builds and GPU queries need the updated
+factories; the unsupported limit needs the RAM bridge. Default builds and
+searches do not require these new classes. Java's factory selects the writing codec for its artifact's
 Lucene release; the Python runtime still supports only PyLucene 10.2.0.
 
-Configured index names include their build settings. Their schema-3 manifests
+Configured index names distinguish their build settings; new tuning combinations
+use a stable digest to keep filenames bounded. Their schema-3 manifests
 record the settings and, when topology is controlled, observed segment counts
 and applied RAM-limit mode. Ordinary builds keep their previous names and
 schema-2 manifests; those indexes remain reusable. An index built with different
@@ -129,12 +235,30 @@ classpath inconsistent.
 
 The initial backend accepts nonempty, finite, `float32` Euclidean/L2 vectors
 and supports latency-mode sweeps. The CPU HNSW algorithm accepts at most 1024
-dimensions; both cuVS-backed algorithms accept at most 4096. CAGRA uses the
-codec's fixed defaults and supports `k <= 1024`. The backend validates the
+dimensions; both cuVS-backed algorithms accept at most 4096. CAGRA supports
+`k <= 1024`. The backend validates the
 physical segment codec and every persisted vector field before searching, and
 fails if CAGRA construction silently produced a brute-force index. Both HNSW
 algorithms support an explicit `num_candidates` value greater than or equal to
 `k`; their CPU search path is not subject to CAGRA's `k <= 1024` limit.
+
+### Search controls
+
+Result count remains the common CLI `-k` option. For HNSW search, `ef_search`
+is accepted as an alias for `num_candidates`; it is the candidate count passed
+to Lucene's vector query, not an independent hnswlib-style search parameter.
+If both names are supplied, they must agree.
+
+GPU CAGRA search optionally accepts `itopk` (internal candidate budget, at least
+`k`), `search_width` (entry points per search iteration, not query batch size),
+`max_iterations` (`0` = automatic), `algo` (`auto`, `single_cta`, `multi_cta`),
+and `thread_block_size` (`0` = automatic, or 64/128/256/512/1024). Single-CTA
+search requires an effective `itopk` no larger than 512. Resource requirements
+depend on the combination; accepted integer ranges do not guarantee sufficient
+device memory. Defaults are `itopk=k`, width 1, automatic iterations/block size
+and algorithm. Explicit controls construct `GPUKnnFloatVectorQuery` through the
+thin-JAR bridge; an empty search configuration retains the existing query path.
+Search sweeps reuse one index: these settings do not change its build identity.
 
 ### Build PyLucene 10.2.0 from source
 

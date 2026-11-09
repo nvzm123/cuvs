@@ -33,6 +33,12 @@ from ._lucene_compat import (
     PERSISTED_CODEC_KINDS,
     SAVED_CUVS_LUCENE_ARTIFACT_IDS,
 )
+from ._lucene_parameters import (
+    CUVS_BUILD_KEYS,
+    normalize_cagra_search_controls,
+    normalize_cuvs_build_controls,
+    validate_cagra_build_dataset,
+)
 from ._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
     CAGRA_CODEC,
@@ -87,10 +93,11 @@ _ACCELERATED_HNSW_BUILD_KEYS = frozenset(
     (
         "m",
         "beam_width",
+        *CUVS_BUILD_KEYS,
         *_CUVS_TOPOLOGY_KEYS,
     )
 )
-_CAGRA_BUILD_KEYS = _CUVS_TOPOLOGY_KEYS
+_CAGRA_BUILD_KEYS = _CUVS_TOPOLOGY_KEYS | CUVS_BUILD_KEYS
 _MIN_HNSW_BUILD_PARAMETER = 1
 _MAX_HNSW_BUILD_PARAMETER = 512
 _GRAPH_DEGREE_SOURCE = "requested_hnsw_same_graph_footprint_derivation"
@@ -550,6 +557,11 @@ def _build_parameters_for(
                 ),
             }
         )
+    normalized.update(
+        normalize_cuvs_build_controls(
+            build_params, hnsw=algorithm == ACCELERATED_HNSW_ALGORITHM
+        )
+    )
     configured_topology = set(build_params) & _CUVS_TOPOLOGY_KEYS
     if configured_topology:
         missing_topology = sorted(
@@ -632,6 +644,16 @@ def _build_controls(
 
 
 def _controlled_index_suffix(controls: Mapping[str, Any]) -> str:
+    if CUVS_BUILD_KEYS & controls.keys():
+        # Hash the complete canonical build identity, not just new settings.
+        # Keep the filename bounded even for a full IVF-PQ parameter sweep.
+        encoded = json.dumps(
+            dict(controls),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return "~cfg-" + hashlib.sha256(encoded).hexdigest()[:24]
     parts = []
     for key, label in (
         ("m", "m"),
@@ -651,32 +673,42 @@ def _controlled_index_suffix(controls: Mapping[str, Any]) -> str:
 
 def _search_parameters(
     algorithm: str, parameters: Mapping[str, Any], k: int
-) -> dict[str, int]:
+) -> dict[str, Any]:
     if not isinstance(parameters, Mapping):
         raise TypeError("Lucene search parameters must be mappings")
     if algorithm == CAGRA_ALGORITHM:
-        if parameters:
-            raise ValueError(
-                "lucene_cuvs_cagra currently uses the codec's fixed search "
-                "defaults and accepts no search parameters"
-            )
         if k > MAX_CAGRA_TOP_K:
             raise ValueError(
                 f"CAGRA search supports k <= {MAX_CAGRA_TOP_K}; received k={k}"
             )
-        return {"num_candidates": k}
-    unsupported = set(parameters) - {"num_candidates"}
+        return {
+            "num_candidates": k,
+            **normalize_cagra_search_controls(parameters, k),
+        }
+    unsupported = set(parameters) - {"num_candidates", "ef_search"}
     if unsupported:
         raise ValueError(
             "Unsupported Lucene search parameters: "
             + ", ".join(sorted(str(name) for name in unsupported))
         )
-    candidates = parameters.get("num_candidates", k)
+    candidates = parameters.get(
+        "num_candidates", parameters.get("ef_search", k)
+    )
     if type(candidates) is not int or candidates < k:
         raise ValueError(
             f"num_candidates must be an integer >= k ({k}), got {candidates!r}"
         )
-    return {"num_candidates": candidates}
+    normalized = {"num_candidates": candidates}
+    if "ef_search" in parameters:
+        alias = parameters["ef_search"]
+        if type(alias) is not int or alias != candidates:
+            raise ValueError(
+                "ef_search must equal num_candidates when both are supplied"
+            )
+        # This is only an alias for Lucene's candidate budget, not a separate
+        # native HNSW ef control. Retain it so result rows identify the input.
+        normalized["ef_search"] = alias
+    return normalized
 
 
 def _source_identity(dataset: Dataset) -> dict[str, Any]:
@@ -1063,6 +1095,10 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
         saved_parameters = payload["build_parameters"]
         try:
             canonical = _build_controls(payload["algorithm"], saved_parameters)
+            if payload["algorithm"] == CAGRA_ALGORITHM:
+                validate_cagra_build_dataset(
+                    canonical, payload["dataset"]["vector_count"]
+                )
         except (ValueError, TypeError) as error:
             raise RuntimeError(
                 f"Invalid Lucene manifest build parameters: {path}"
@@ -1611,6 +1647,9 @@ class LuceneBackend(BenchmarkBackend):
             dataset_prepare_ns = (
                 time.perf_counter_ns() - dataset_prepare_started
             )
+            controls = _build_controls(self.algorithm, index.build_param)
+            if self.algorithm == CAGRA_ALGORITHM:
+                validate_cagra_build_dataset(controls, int(vectors.shape[0]))
             if path.exists() and (path.is_symlink() or not path.is_dir()):
                 raise ValueError(
                     f"Lucene index path must be a directory: {path}"
@@ -1631,7 +1670,6 @@ class LuceneBackend(BenchmarkBackend):
             )
             try:
                 build_started = time.perf_counter_ns()
-                controls = _build_controls(self.algorithm, index.build_param)
                 if controls:
                     runtime_build = runtime.build_index(
                         staged, vectors, self.codec, controls
@@ -1795,7 +1833,7 @@ class LuceneBackend(BenchmarkBackend):
     def _successful_search(
         self,
         runtime_result: RuntimeSearchResult,
-        parameters: dict[str, int],
+        parameters: dict[str, Any],
         *,
         k: int,
         batch_size: int,
@@ -1831,7 +1869,13 @@ class LuceneBackend(BenchmarkBackend):
             recall=0.0,
             algorithm=self.algorithm,
             search_params=[
-                {} if self.algorithm == CAGRA_ALGORITHM else parameters
+                {
+                    key: value
+                    for key, value in parameters.items()
+                    if key != "num_candidates"
+                }
+                if self.algorithm == CAGRA_ALGORITHM
+                else parameters
             ],
             latency_percentiles={
                 "p50": float(np.percentile(latency_samples_ms, 50)),
@@ -1972,11 +2016,23 @@ class LuceneBackend(BenchmarkBackend):
             for parameters in validated_parameters:
                 search_plan_started = time.perf_counter_ns()
                 prewarm = _prewarm_index_files(path)
+                search_kwargs = {}
+                if self.algorithm == CAGRA_ALGORITHM:
+                    cagra_controls = {
+                        key: value
+                        for key, value in parameters.items()
+                        if key != "num_candidates"
+                    }
+                    if cagra_controls:
+                        search_kwargs["cagra_search_parameters"] = (
+                            cagra_controls
+                        )
                 runtime_result = runtime.search_index(
                     path,
                     queries,
                     k=k,
                     num_candidates=parameters["num_candidates"],
+                    **search_kwargs,
                 )
                 result = self._successful_search(
                     runtime_result,

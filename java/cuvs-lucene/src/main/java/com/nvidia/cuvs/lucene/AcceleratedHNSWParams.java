@@ -82,6 +82,7 @@ public class AcceleratedHNSWParams {
   private final int beamWidth;
   private final CagraGraphBuildAlgo cagraGraphBuildAlgo;
   private final CuVSIvfPqParams cuVSIvfPqParams;
+  private final IvfPqBuildOptions ivfPqBuildOptions;
   private final int numMergeWorkers;
   private final ExecutorService mergeExec;
   private final Strategy strategy;
@@ -122,7 +123,8 @@ public class AcceleratedHNSWParams {
       Strategy strategy,
       CuvsDistanceType cuvsDistanceType,
       int nnDescentNumIterations,
-      HnswHeuristicType hnswHeuristicType) {
+      HnswHeuristicType hnswHeuristicType,
+      IvfPqBuildOptions ivfPqBuildOptions) {
     super();
     this.writerThreads = writerThreads;
     this.intermediateGraphDegree = intermediateGraphDegree;
@@ -132,6 +134,7 @@ public class AcceleratedHNSWParams {
     this.beamWidth = beamWidth;
     this.cagraGraphBuildAlgo = cagraGraphBuildAlgo;
     this.cuVSIvfPqParams = cuVSIvfPqParams;
+    this.ivfPqBuildOptions = ivfPqBuildOptions;
     this.numMergeWorkers = numMergeWorkers;
     this.mergeExec = mergeExec;
     this.strategy = strategy;
@@ -210,6 +213,10 @@ public class AcceleratedHNSWParams {
    */
   public CuVSIvfPqParams getCuVSIvfPqParams() {
     return cuVSIvfPqParams;
+  }
+
+  CuVSIvfPqParams resolveIvfPqParams(long rows, long dimension) {
+    return ivfPqBuildOptions == null ? cuVSIvfPqParams : ivfPqBuildOptions.resolve(rows, dimension);
   }
 
   /**
@@ -317,6 +324,7 @@ public class AcceleratedHNSWParams {
     private CagraGraphBuildAlgo cagraGraphBuildAlgo = DEFAULT_CAGRA_GRAPH_BUILD_ALGO;
     private int numMergeWorkers = DEFAULT_NUM_MERGE_WORKERS;
     private CuVSIvfPqParams cuVSIvfPqParams = null;
+    private IvfPqBuildOptions ivfPqBuildOptions;
     private ExecutorService mergeExec = null;
     private Strategy strategy = DEFAULT_STRATEGY;
     private CuvsDistanceType cuvsDistanceType = DEFAULT_CUVS_DISTANCE_TYPE;
@@ -430,6 +438,11 @@ public class AcceleratedHNSWParams {
      */
     public Builder withCuVSIvfPqParams(CuVSIvfPqParams cuVSIvfPqParams) {
       this.cuVSIvfPqParams = cuVSIvfPqParams;
+      return this;
+    }
+
+    Builder withIvfPqBuildOptions(IvfPqBuildOptions options) {
+      this.ivfPqBuildOptions = options;
       return this;
     }
 
@@ -604,7 +617,8 @@ public class AcceleratedHNSWParams {
           strategy,
           cuvsDistanceType,
           nnDescentNumIterations,
-          hnswHeuristicType);
+          hnswHeuristicType,
+          ivfPqBuildOptions);
     }
   }
 }

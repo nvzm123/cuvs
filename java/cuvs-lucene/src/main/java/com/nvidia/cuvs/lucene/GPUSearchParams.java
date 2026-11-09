@@ -65,6 +65,7 @@ public class GPUSearchParams {
   private final CagraGraphBuildAlgo cagraGraphBuildAlgo;
   private final IndexType indexType;
   private final CuVSIvfPqParams cuVSIvfPqParams;
+  private final IvfPqBuildOptions ivfPqBuildOptions;
   private final Strategy strategy;
   private final CuvsDistanceType cuvsDistanceType;
   private final int nnDescentNumIterations;
@@ -94,7 +95,8 @@ public class GPUSearchParams {
       Strategy strategy,
       CuvsDistanceType cuvsDistanceType,
       int nnDescentNumIterations,
-      int buildQuality) {
+      int buildQuality,
+      IvfPqBuildOptions ivfPqBuildOptions) {
     super();
     this.writerThreads = writerThreads;
     this.intermediateGraphDegree = intermediateGraphDegree;
@@ -102,6 +104,7 @@ public class GPUSearchParams {
     this.cagraGraphBuildAlgo = cagraGraphBuildAlgo;
     this.indexType = indexType;
     this.cuVSIvfPqParams = cuVSIvfPqParams;
+    this.ivfPqBuildOptions = ivfPqBuildOptions;
     this.strategy = strategy;
     this.cuvsDistanceType = cuvsDistanceType;
     this.nnDescentNumIterations = nnDescentNumIterations;
@@ -160,6 +163,16 @@ public class GPUSearchParams {
    */
   public CuVSIvfPqParams getCuVSIvfPqParams() {
     return cuVSIvfPqParams;
+  }
+
+  CuVSIvfPqParams resolveIvfPqParams(long rows, long dimension) {
+    return ivfPqBuildOptions == null ? cuVSIvfPqParams : ivfPqBuildOptions.resolve(rows, dimension);
+  }
+
+  void validateIvfPqBuildShape(long rows, long dimension) {
+    if (ivfPqBuildOptions != null) {
+      ivfPqBuildOptions.resolve(rows, dimension);
+    }
   }
 
   /**
@@ -239,6 +252,7 @@ public class GPUSearchParams {
     private CagraGraphBuildAlgo cagraGraphBuildAlgo = DEFAULT_CAGRA_GRAPH_BUILD_ALGO;
     private IndexType indexType = DEFAULT_INDEX_TYPE;
     private CuVSIvfPqParams cuVSIvfPqParams = null;
+    private IvfPqBuildOptions ivfPqBuildOptions;
     private Strategy strategy = DEFAULT_STRATEGY;
     private CuvsDistanceType cuvsDistanceType = DEFAULT_CUVS_DISTANCE_TYPE;
     private int nnDescentNumIterations = DEFAULT_NN_DESCENT_NUM_ITERATIONS;
@@ -315,6 +329,11 @@ public class GPUSearchParams {
      */
     public Builder withCuVSIvfPqParams(CuVSIvfPqParams cuVSIvfPqParams) {
       this.cuVSIvfPqParams = cuVSIvfPqParams;
+      return this;
+    }
+
+    Builder withIvfPqBuildOptions(IvfPqBuildOptions options) {
+      this.ivfPqBuildOptions = options;
       return this;
     }
 
@@ -432,7 +451,8 @@ public class GPUSearchParams {
           strategy,
           cuvsDistanceType,
           nnDescentNumIterations,
-          buildQuality);
+          buildQuality,
+          ivfPqBuildOptions);
     }
   }
 }

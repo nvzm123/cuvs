@@ -195,6 +195,7 @@ class RecordingRuntime:
         *,
         k: int,
         num_candidates: int,
+        cagra_search_parameters: Mapping[str, Any] | None = None,
     ) -> RuntimeSearchResult:
         self.search_calls.append(
             {
@@ -204,6 +205,10 @@ class RecordingRuntime:
                 "num_candidates": num_candidates,
             }
         )
+        if cagra_search_parameters is not None:
+            self.search_calls[-1]["cagra_search_parameters"] = dict(
+                cagra_search_parameters
+            )
         if self.search_error is not None:
             raise self.search_error
         if self.search_result is not None:
