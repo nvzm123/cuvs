@@ -10,6 +10,12 @@ import pytest
 def pytest_addoption(parser):
     """Add the explicit opt-in for live Lucene integration tests."""
     parser.addoption(
+        "--run-lucene-large-segment-e2e",
+        action="store_true",
+        default=False,
+        help="run the separate 3 GiB Lucene capacity suite in a fresh serial process",
+    )
+    parser.addoption(
         "--run-lucene-e2e",
         action="store_true",
         default=False,
@@ -22,12 +28,20 @@ def pytest_addoption(parser):
 
 def pytest_collection_modifyitems(config, items):
     """Skip live Lucene cases unless the suite was selected explicitly."""
-    if config.getoption("--run-lucene-e2e"):
-        return
-    skip = pytest.mark.skip(reason="requires --run-lucene-e2e")
     for item in items:
-        if "lucene_e2e" in item.keywords:
-            item.add_marker(skip)
+        if "lucene_large_segment_e2e" in item.keywords:
+            if not config.getoption("--run-lucene-large-segment-e2e"):
+                item.add_marker(
+                    pytest.mark.skip(
+                        reason="requires --run-lucene-large-segment-e2e in a fresh process"
+                    )
+                )
+        elif "lucene_e2e" in item.keywords and not config.getoption(
+            "--run-lucene-e2e"
+        ):
+            item.add_marker(
+                pytest.mark.skip(reason="requires --run-lucene-e2e")
+            )
 
 
 def pytest_configure(config):

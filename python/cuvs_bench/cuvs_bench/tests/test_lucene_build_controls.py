@@ -120,8 +120,26 @@ def test_default_build_does_not_invent_controls_or_change_index_names(
                 **_two_segment_parameters(),
                 "ram_per_thread_hard_limit_mb": 2048,
             },
-            r"integer in \[1, 2047\]",
-            id="public-ram-limit-at-cutoff",
+            "require allow_unsupported",
+            id="large-limit-without-opt-in",
+        ),
+        pytest.param(
+            {
+                **_two_segment_parameters(),
+                "allow_unsupported_lucene_ram_limit": True,
+            },
+            "requires ram_per_thread",
+            id="unused-unsupported-opt-in",
+        ),
+        pytest.param(
+            {
+                **_two_segment_parameters(),
+                "ram_per_thread_hard_limit_mb": 6144,
+                "allow_unsupported_lucene_ram_limit": True,
+                "force_merge_segment_count": 1,
+            },
+            "must be 0",
+            id="unsupported-limit-cannot-merge",
         ),
     ],
 )
@@ -130,18 +148,6 @@ def test_invalid_build_controls_fail_before_creating_a_runtime(
 ):
     with pytest.raises(ValueError, match=error):
         _build_parameters_for(ACCELERATED_HNSW_ALGORITHM, parameters)
-
-
-@pytest.mark.parametrize("ram_limit_mb", [1, 2047])
-def test_supported_ram_limit_boundaries_reach_runtime_topology(ram_limit_mb):
-    parameters = {
-        **_two_segment_parameters(),
-        "ram_per_thread_hard_limit_mb": ram_limit_mb,
-    }
-    normalized = _build_parameters_for(ACCELERATED_HNSW_ALGORITHM, parameters)
-    assert normalized["ram_per_thread_hard_limit_mb"] == ram_limit_mb
-    topology = _controlled_build_topology(normalized, 4)
-    assert topology.ram_per_thread_hard_limit_mb == ram_limit_mb
 
 
 def test_gpu_cagra_disallows_force_merge():

@@ -37,11 +37,20 @@ _CAGRA_QUERY_FACTORY = "com.nvidia.cuvs.lucene.GPUKnnFloatVectorQueryFactory"
 _BASE_LAYER_QUERY_FACTORY = (
     "com.nvidia.cuvs.lucene.BaseLayerKnnFloatVectorQueryFactory"
 )
+INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE = (
+    "com.nvidia.cuvs.lucene.IndexWriterConfigRAMLimitBridge"
+)
 _CONFIGURED_CODEC_RESPONSE_KEY = "codec"
 _HNSW_MAX_CONN_REQUEST_KEY = "max_conn"
 _HNSW_BEAM_WIDTH_REQUEST_KEY = "beam_width"
-_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2047
+_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2_147_483_647
+_FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB = 2048
+_RAM_LIMIT_CONFIG_KEY = "config"
+_RAM_LIMIT_VALUE_KEY = "per_thread_hard_limit_mb"
+_RAM_LIMIT_ALLOW_UNSUPPORTED_KEY = "allow_unsupported_lucene_ram_limit"
+_RAM_LIMIT_APPLICATION_MODE_KEY = "application_mode"
 _PUBLIC_RAM_LIMIT_SETTER_MODE = "public_setter"
+_UNSUPPORTED_RAM_LIMIT_OVERRIDE_MODE = "unsupported_field_override"
 MAX_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = LUCENE_COMPATIBILITY.pylucene_version
 
@@ -1048,6 +1057,7 @@ class _ControlledBuildTopology:
     premerge_segment_count: int
     force_merge_segment_count: int
     ram_per_thread_hard_limit_mb: int
+    allow_unsupported_lucene_ram_limit: bool
     chunk_size: int
     max_buffered_docs: int
 
@@ -1061,8 +1071,9 @@ def _controlled_build_topology(
         "force_merge_segment_count",
         "ram_per_thread_hard_limit_mb",
     }
+    allow_key = "allow_unsupported_lucene_ram_limit"
     parameters = build_parameters or {}
-    present = required & set(parameters)
+    present = (required | {allow_key}) & set(parameters)
     if not present:
         return None
     missing_required = required - set(parameters)
@@ -1088,6 +1099,12 @@ def _controlled_build_topology(
             "ram_per_thread_hard_limit_mb must be in range [1, "
             f"{_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {hard_limit}"
         )
+    allow_unsupported = parameters.get(allow_key, False)
+    if type(allow_unsupported) is not bool:
+        raise RuntimeError(
+            "Controlled Lucene build parameter "
+            "allow_unsupported_lucene_ram_limit must be a boolean"
+        )
     force_merge_value = values["force_merge_segment_count"]
     if type(force_merge_value) is not int or force_merge_value not in (0, 1):
         raise RuntimeError(
@@ -1095,6 +1112,25 @@ def _controlled_build_topology(
             "must be 0 (disabled) or 1"
         )
     force_merge = force_merge_value
+    uses_unsupported_limit = (
+        hard_limit >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB
+    )
+    if uses_unsupported_limit and not allow_unsupported:
+        raise RuntimeError(
+            "Controlled Lucene ram_per_thread_hard_limit_mb values of 2048 "
+            "MiB or greater require "
+            "allow_unsupported_lucene_ram_limit=true"
+        )
+    if allow_unsupported and not uses_unsupported_limit:
+        raise RuntimeError(
+            "Controlled Lucene allow_unsupported_lucene_ram_limit=true "
+            "requires ram_per_thread_hard_limit_mb >= 2048"
+        )
+    if uses_unsupported_limit and force_merge != 0:
+        raise RuntimeError(
+            "Controlled Lucene force_merge_segment_count must be 0 when "
+            "using an unsupported per-thread RAM hard limit"
+        )
     if premerge > vector_count:
         raise RuntimeError(
             "premerge_segment_count cannot exceed the vector count: "
@@ -1117,6 +1153,7 @@ def _controlled_build_topology(
         premerge_segment_count=premerge,
         force_merge_segment_count=force_merge,
         ram_per_thread_hard_limit_mb=hard_limit,
+        allow_unsupported_lucene_ram_limit=allow_unsupported,
         chunk_size=chunk_size,
         max_buffered_docs=max_buffered_docs,
     )
@@ -1233,6 +1270,7 @@ class LuceneRuntime:
         self._java_cagra_codec_factory: Any | None = None
         self._java_cagra_query_factory: Any | None = None
         self._java_base_layer_query_factory: Any | None = None
+        self._java_ram_limit_bridge: Any | None = None
 
     @classmethod
     def create(cls, config: Mapping[str, Any]) -> "LuceneRuntime":
@@ -1275,6 +1313,21 @@ class LuceneRuntime:
                 f"{type(error).__name__}: {error}"
             ) from error
 
+    def _load_java_ram_limit_bridge(self) -> Any:
+        """Load the RAM-limit bridge through JCC's wrapped Function."""
+        try:
+            instance = self.Class.forName(
+                INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE
+            ).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                "Could not load or adapt "
+                f"{INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE} through "
+                "PyLucene/JCC: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
     def _load_parameter_factory(self, class_name: str) -> Any:
         """Load an opt-in factory only when a run requests its controls."""
         try:
@@ -1306,6 +1359,8 @@ class LuceneRuntime:
         self,
         config: Any,
         requested_mb: int,
+        *,
+        allow_unsupported: bool,
     ) -> str:
         if type(requested_mb) is not int or not (
             1 <= requested_mb <= _MAX_RAM_PER_THREAD_HARD_LIMIT_MB
@@ -1313,6 +1368,14 @@ class LuceneRuntime:
             raise RuntimeError(
                 "Lucene per-thread RAM hard limit must be in range [1, "
                 f"{_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {requested_mb}"
+            )
+        if type(allow_unsupported) is not bool:
+            raise RuntimeError(
+                "Lucene allow_unsupported_lucene_ram_limit must be a boolean"
+            )
+        if requested_mb >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB:
+            return self._set_unsupported_ram_per_thread_hard_limit_mb(
+                config, requested_mb, allow_unsupported
             )
         try:
             config.setRAMPerThreadHardLimitMB(requested_mb)
@@ -1330,6 +1393,58 @@ class LuceneRuntime:
                 f"reported {observed}"
             )
         return _PUBLIC_RAM_LIMIT_SETTER_MODE
+
+    def _set_unsupported_ram_per_thread_hard_limit_mb(
+        self, config: Any, requested_mb: int, allow_unsupported: bool
+    ) -> str:
+        """Apply an explicitly authorized limit through the thin-JAR bridge."""
+        if not allow_unsupported:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard limits of 2048 MiB or greater "
+                "require allow_unsupported_lucene_ram_limit=true"
+            )
+        bridge = self._java_ram_limit_bridge
+        if bridge is None:
+            bridge = self._load_java_ram_limit_bridge()
+            self._java_ram_limit_bridge = bridge
+        request = self.HashMap()
+        request.put(_RAM_LIMIT_CONFIG_KEY, config)
+        request.put(_RAM_LIMIT_VALUE_KEY, self.Integer.valueOf(requested_mb))
+        request.put(
+            _RAM_LIMIT_ALLOW_UNSUPPORTED_KEY,
+            self.Boolean.valueOf(allow_unsupported),
+        )
+        try:
+            response = self.Map.cast_(bridge.apply(request))
+            applied = int(
+                self.Integer.cast_(
+                    response.get(_RAM_LIMIT_VALUE_KEY)
+                ).intValue()
+            )
+            application_mode = str(
+                self.String.cast_(
+                    response.get(_RAM_LIMIT_APPLICATION_MODE_KEY)
+                )
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not apply the explicitly authorized unsupported "
+                "Lucene per-thread RAM hard limit: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        observed = int(config.getRAMPerThreadHardLimitMB())
+        if applied != requested_mb or observed != requested_mb:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard-limit bridge did not retain the "
+                f"requested value: requested {requested_mb}, bridge returned "
+                f"{applied}, config reported {observed}"
+            )
+        if application_mode != _UNSUPPORTED_RAM_LIMIT_OVERRIDE_MODE:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard-limit bridge returned an "
+                f"unexpected application mode: {application_mode!r}"
+            )
+        return application_mode
 
     @property
     def pylucene_version(self) -> str:
@@ -1521,6 +1636,7 @@ class LuceneRuntime:
         application_mode = self._set_ram_per_thread_hard_limit_mb(
             config,
             topology.ram_per_thread_hard_limit_mb,
+            allow_unsupported=(topology.allow_unsupported_lucene_ram_limit),
         )
         return config, application_mode
 
@@ -1542,6 +1658,7 @@ class LuceneRuntime:
         application_mode = self._set_ram_per_thread_hard_limit_mb(
             config,
             topology.ram_per_thread_hard_limit_mb,
+            allow_unsupported=(topology.allow_unsupported_lucene_ram_limit),
         )
         return config, application_mode
 
