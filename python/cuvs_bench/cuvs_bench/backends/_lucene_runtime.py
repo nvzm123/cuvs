@@ -28,6 +28,7 @@ from ._lucene_runtime_config import (
 CPU_HNSW_CODEC = LUCENE_COMPATIBILITY.cpu_hnsw_codec
 ACCELERATED_HNSW_CODEC = LUCENE_COMPATIBILITY.accelerated_hnsw_codec
 CAGRA_CODEC = LUCENE_COMPATIBILITY.cagra_codec
+_CAGRA_QUERY_FACTORY = "com.nvidia.cuvs.lucene.GPUKnnFloatVectorQueryFactory"
 MAX_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = LUCENE_COMPATIBILITY.pylucene_version
 
@@ -1012,7 +1013,7 @@ class LuceneRuntime:
     """Own the generated bindings and the narrow Lucene operations Bench uses."""
 
     def __init__(self, lucene: Any):
-        from java.lang import Class, Integer, Long
+        from java.lang import Boolean, Class, Double, Integer, Long, String
         from java.nio.file import Paths
         from java.util import HashMap, Map
         from java.util.function import Function
@@ -1035,13 +1036,17 @@ class LuceneRuntime:
         from org.apache.lucene.search import (
             IndexSearcher,
             KnnFloatVectorQuery,
+            Query,
             TopDocs,
         )
         from org.apache.lucene.store import FSDirectory, IOContext
 
         self.lucene = lucene
+        self.Boolean = Boolean
+        self.String = String
         self.Class = Class
         self.Integer = Integer
+        self.Double = Double
         self.Long = Long
         self.HashMap = HashMap
         self.Map = Map
@@ -1062,6 +1067,7 @@ class LuceneRuntime:
         self.VectorSimilarityFunction = VectorSimilarityFunction
         self.IndexSearcher = IndexSearcher
         self.KnnFloatVectorQuery = KnnFloatVectorQuery
+        self.Query = Query
         self.TopDocs = TopDocs
         self.FSDirectory = FSDirectory
         self.IOContext = IOContext
@@ -1071,6 +1077,7 @@ class LuceneRuntime:
         self.artifact_provenance: dict[str, str] = {}
         self._artifact_tokens: dict[str, tuple[int, ...]] = {}
         self._java_search_timer: Any | None = None
+        self._java_cagra_query_factory: Any | None = None
 
     @classmethod
     def create(cls, config: Mapping[str, Any]) -> "LuceneRuntime":
@@ -1097,6 +1104,33 @@ class LuceneRuntime:
                 "through PyLucene/JCC: "
                 f"{type(error).__name__}: {error}"
             ) from error
+
+    def _load_parameter_factory(self, class_name: str) -> Any:
+        """Load an opt-in factory only when a run requests its controls."""
+        try:
+            instance = self.Class.forName(class_name).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not load or adapt {class_name} through PyLucene/JCC. "
+                "These controls require an updated thin cuVS-Lucene JAR: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _parameter_request(self, parameters: Mapping[str, Any]) -> Any:
+        """Box scalar controls explicitly; Java must not guess numeric types."""
+        request = self.HashMap()
+        for key, value in parameters.items():
+            if type(value) is bool:
+                value = self.Boolean.valueOf(value)
+            elif type(value) is int:
+                value = self.Integer.valueOf(value)
+            elif type(value) is float:
+                value = self.Double.valueOf(value)
+            elif type(value) is not str:
+                raise TypeError(f"Unsupported Java parameter {key}: {value!r}")
+            request.put(key, value)
+        return request
 
     @property
     def pylucene_version(self) -> str:
@@ -1321,12 +1355,19 @@ class LuceneRuntime:
         vector: np.ndarray,
         k: int,
         candidates: int,
+        cagra_search_parameters: Mapping[str, Any] | None = None,
     ) -> tuple[list[SearchHit], QueryTiming]:
         client_started = time.perf_counter_ns()
         prepare_started = time.perf_counter_ns()
-        query = self.KnnFloatVectorQuery(
-            _VECTOR_FIELD, self._java_vector(vector), candidates
-        )
+        java_vector = self._java_vector(vector)
+        if cagra_search_parameters:
+            query = self._configured_cagra_query(
+                java_vector, k, cagra_search_parameters
+            )
+        else:
+            query = self.KnnFloatVectorQuery(
+                _VECTOR_FIELD, java_vector, candidates
+            )
         query_prepare_ns = time.perf_counter_ns() - prepare_started
 
         top_docs, pylucene_search_dispatch_ns, java_search_ns = self._search(
@@ -1346,6 +1387,28 @@ class LuceneRuntime:
             client_query_ns=time.perf_counter_ns() - client_started,
         )
 
+    def _configured_cagra_query(
+        self, java_vector: Any, k: int, parameters: Mapping[str, Any]
+    ) -> Any:
+        """Construct the GPU query without requiring custom JCC wrappers."""
+        if self._java_cagra_query_factory is None:
+            self._java_cagra_query_factory = self._load_parameter_factory(
+                _CAGRA_QUERY_FACTORY
+            )
+        request = self._parameter_request(
+            {**parameters, "field": _VECTOR_FIELD, "k": k}
+        )
+        request.put("target", java_vector)
+        try:
+            return self.Query.cast_(
+                self._java_cagra_query_factory.apply(request)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured GPU CAGRA query: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
     def search_index(
         self,
         index_path: Path,
@@ -1353,6 +1416,7 @@ class LuceneRuntime:
         *,
         k: int,
         num_candidates: int,
+        cagra_search_parameters: Mapping[str, Any] | None = None,
     ) -> RuntimeSearchResult:
         self.attach_current_thread()
         plan_started = time.perf_counter_ns()
@@ -1408,6 +1472,7 @@ class LuceneRuntime:
                     vector,
                     k,
                     min(num_candidates, document_count),
+                    cagra_search_parameters,
                 )
                 all_hits.append(hits)
                 query_timings.append(query_timing)

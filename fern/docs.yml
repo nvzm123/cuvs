@@ -596,6 +596,8 @@ navigation:
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-filtercuvsserviceprovider.md"
           - page: "GPUIndex"
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-gpuindex.md"
+          - page: "GPUKnnFloatVectorQueryFactory"
+            path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-gpuknnfloatvectorqueryfactory.md"
           - page: "GPUSearchParams"
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-gpusearchparams.md"
           - page: "IndexSearcherTimingBridge"

@@ -463,6 +463,73 @@ def test_cagra_build_and_search_verify_persisted_index_and_search_behavior(
         assert warning.casefold() not in output.casefold()
 
 
+def test_cagra_query_controls_preserve_search_quality(
+    tmp_path, capfd, request
+):
+    dataset, query_ids = _case(CAGRA_ALGORITHM, 128)
+    search_plans = [
+        {
+            "itopk": 64,
+            "search_width": 16,
+            "max_iterations": 64,
+            "algo": "single_cta",
+            "thread_block_size": 128,
+        },
+        {"itopk": 128, "search_width": 32, "algo": "multi_cta"},
+    ]
+    backend, index = _backend_and_index(
+        tmp_path, CAGRA_ALGORITHM, CAGRA_CODEC, search_plans
+    )
+
+    case_name = request.node.nodeid
+    capfd.readouterr()
+
+    with lucene_log_case(case_name):
+        build = backend.build(dataset, [index])
+        assert build.success, build.error_message
+        results = backend.search(dataset, [index], k=10)
+        reused = backend.build(dataset, [index])
+
+    captured = capfd.readouterr()
+
+    for warning in _GRAPH_CLAMP_WARNINGS:
+        assert (
+            warning.casefold() not in (captured.out + captured.err).casefold()
+        )
+    assert build.metadata["persisted_index_kind"] == "gpu_cagra_only"
+    assert build.metadata["field_count"] == 1
+    assert build.metadata["vector_count"] == len(dataset.training_vectors)
+    assert build.metadata["dimensions"] == 128
+    _assert_artifact_provenance(build.metadata, "build_runtime")
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"]
+
+    assert len(results) == len(search_plans)
+    for result in results:
+        assert result.success, result.error_message
+        assert result.metadata["expected_search_route"] == "gpu_cagra"
+        _assert_artifact_provenance(result.metadata, "search_runtime")
+        np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+        assert all(
+            len(set(row)) == len(row) for row in result.neighbors.tolist()
+        )
+        assert (
+            _recall(result.neighbors, dataset.groundtruth_neighbors)
+            >= _MINIMUM_RECALL
+        )
+        expected_distances = np.sum(
+            (
+                dataset.training_vectors[result.neighbors]
+                - dataset.query_vectors[:, None, :]
+            )
+            ** 2,
+            axis=2,
+        )
+        np.testing.assert_allclose(
+            result.distances, expected_distances, rtol=1e-4, atol=1e-4
+        )
+
+
 def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path):
     """Prove the CPU control does not inherit a cuVS-capable process JVM."""
     child_flag = "CUVS_BENCH_LUCENE_CPU_PROBE"

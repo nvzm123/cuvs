@@ -66,12 +66,35 @@ classpath inconsistent.
 
 The initial backend accepts nonempty, finite, `float32` Euclidean/L2 vectors
 and supports latency-mode sweeps. The CPU HNSW algorithm accepts at most 1024
-dimensions; both cuVS-backed algorithms accept at most 4096. CAGRA uses the
-codec's fixed defaults and supports `k <= 1024`. The backend validates the
-physical segment codec and every persisted vector field before searching, and
-fails if CAGRA construction silently produced a brute-force index. Both HNSW
-algorithms support an explicit `num_candidates` value greater than or equal to
-`k`; their CPU search path is not subject to CAGRA's `k <= 1024` limit.
+dimensions; both cuVS-backed algorithms accept at most 4096. CAGRA supports
+`k <= 1024`. The backend validates the physical segment codec and every
+persisted vector field before searching, and fails if CAGRA construction
+silently produced a brute-force index. Both HNSW algorithms support an explicit
+`num_candidates` value greater than or equal to `k`; their CPU search path is
+not subject to CAGRA's `k <= 1024` limit.
+
+### Search controls
+
+Result count remains the common CLI `-k` option. For HNSW search, `ef_search`
+is accepted as an alias for `num_candidates`; it is the candidate count passed
+to Lucene's vector query, not an independent hnswlib-style search parameter.
+If both names are supplied, they must agree.
+
+GPU CAGRA search optionally accepts `itopk` (internal candidate budget, at least
+`k`), `search_width` (entry points per search iteration, not query batch size),
+`max_iterations` (`0` = automatic), `algo` (`auto`, `single_cta`, `multi_cta`),
+and `thread_block_size` (`0` = automatic, or 64/128/256/512/1024). Single-CTA
+search requires an effective `itopk` no larger than 512. Resource requirements
+depend on the combination; accepted integer ranges do not guarantee sufficient
+device memory. Defaults are `itopk=k`, width 1, automatic iterations/block size
+and algorithm. Explicit controls construct `GPUKnnFloatVectorQuery` through the
+thin-JAR bridge; an empty search configuration retains the existing query path.
+Search sweeps reuse one index: these settings do not change its build identity.
+
+Explicit GPU query controls require an updated thin cuVS-Lucene JAR containing
+`GPUKnnFloatVectorQueryFactory`; a missing helper fails rather than silently
+ignoring the request. Empty search configurations retain the existing query
+path and do not require this new class.
 
 ### Build PyLucene 10.2.0 from source
 
