@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 _JAVA_INT_MAX = 2_147_483_647
 _DEFAULT_HNSW_ENTRY_POINTS = 42
-# These Java-builder defaults are explicit in saved build identities. Keeping
+# These Java-factory defaults are explicit in saved build identities. Keeping
 # them here also permits validation without starting a JVM.
 _IVF_DEFAULTS = {
     "n_lists": 1024,
@@ -20,6 +20,7 @@ _IVF_DEFAULTS = {
     "pq_dim": 0,
     "kmeans_n_iters": 20,
     "kmeans_trainset_fraction": 0.5,
+    "refinement_rate": 1.0,
 }
 
 
@@ -203,20 +204,22 @@ def normalize_cuvs_build_controls(
             raise ValueError("kmeans_trainset_fraction must be <= 1")
         controls["kmeans_trainset_fraction"] = fraction
     if "refinement_rate" in controls:
-        rate = _positive_real(
-            controls["refinement_rate"], "refinement_rate", minimum=1.0
-        )
-        # The Java builder stores a float. Check its actual representation so
-        # rounding to 1.0 cannot silently disable graph refinement.
+        rate = _positive_real(controls["refinement_rate"], "refinement_rate")
+        # Exactly 1 retains native heuristic refinement. A larger request must
+        # remain above 1 after conversion to the Java builder's float.
         try:
             native_rate = struct.unpack("f", struct.pack("f", rate))[0]
         except OverflowError as error:
             raise ValueError(
                 "refinement_rate must fit a finite float32"
             ) from error
-        if not math.isfinite(native_rate) or native_rate <= 1.0:
+        if (
+            not math.isfinite(native_rate)
+            or rate < 1.0
+            or (rate > 1.0 and native_rate == 1.0)
+        ):
             raise ValueError(
-                "refinement_rate must remain finite and > 1 in float32"
+                "refinement_rate must be 1 or remain finite and > 1 in float32"
             )
         controls["refinement_rate"] = rate
     if (
