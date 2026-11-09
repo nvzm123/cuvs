@@ -225,11 +225,11 @@ classpath inconsistent.
 The initial backend accepts nonempty, finite, `float32` Euclidean/L2 vectors
 and supports latency-mode sweeps. The CPU HNSW algorithm accepts at most 1024
 dimensions; both cuVS-backed algorithms accept at most 4096. CAGRA supports
-`k <= 1024`. The backend validates the
-physical segment codec and every persisted vector field before searching, and
-fails if CAGRA construction silently produced a brute-force index. Both HNSW
-algorithms support an explicit `num_candidates` value greater than or equal to
-`k`; their CPU search path is not subject to CAGRA's `k <= 1024` limit.
+`k <= 1024`. The backend validates the physical segment codec and every
+persisted vector field before searching, and fails if CAGRA construction
+silently produced a brute-force index. Both HNSW algorithms support an explicit
+`num_candidates` value greater than or equal to `k`; their CPU search path is
+not subject to CAGRA's `k <= 1024` limit.
 
 ### Search controls
 
