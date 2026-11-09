@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -386,19 +385,22 @@ def _validate_metric(dataset: Dataset) -> None:
         )
 
 
-def _score_to_squared_euclidean(score: float) -> float:
+def _scores_to_squared_euclidean(scores: np.ndarray) -> np.ndarray:
     """Invert Lucene's ``score = 1 / (1 + squared_distance)`` transform."""
-    if (
-        not math.isfinite(score)
-        or score <= 0.0
-        or score > 1.0 + _SCORE_ROUNDOFF_TOLERANCE
-    ):
+    invalid = (
+        ~np.isfinite(scores)
+        | (scores <= 0.0)
+        | (scores > 1.0 + _SCORE_ROUNDOFF_TOLERANCE)
+    )
+    if invalid.any():
         raise RuntimeError(
-            f"Lucene returned an invalid Euclidean score: {score}"
+            f"Lucene returned an invalid Euclidean score: {scores[invalid][0]}"
         )
     # Admit one float32 ULP defensively at the mathematical upper boundary.
-    score = min(score, 1.0)
-    return max(0.0, (1.0 / score) - 1.0)
+    # The old scalar path used Python floats. Preserve its double-precision
+    # reciprocal and only round to the public float32 distance dtype at the end.
+    bounded_scores = np.minimum(scores.astype(np.float64), 1.0)
+    return np.maximum(0.0, 1.0 / bounded_scores - 1.0).astype(np.float32)
 
 
 def _format_exception(error: BaseException) -> str:
@@ -1364,25 +1366,36 @@ class LuceneBackend(BenchmarkBackend):
     def _validate_hits(
         result: RuntimeSearchResult, k: int, expected_query_count: int
     ) -> None:
-        if len(result.hits) != expected_query_count:
+        if result.neighbors.ndim != 2 or result.scores.ndim != 2:
             raise RuntimeError(
-                f"Lucene returned results for {len(result.hits)} queries, "
+                "Lucene result arrays must be query-by-rank matrices"
+            )
+        if (
+            result.neighbors.dtype != np.int64
+            or result.scores.dtype != np.float32
+        ):
+            raise RuntimeError(
+                "Lucene result arrays must contain int64 IDs and float32 scores"
+            )
+        if len(result.neighbors) != expected_query_count:
+            raise RuntimeError(
+                f"Lucene returned results for {len(result.neighbors)} queries, "
                 f"expected {expected_query_count}"
             )
-        for query_number, hits in enumerate(result.hits):
-            if len(hits) != k:
+        if result.scores.shape != result.neighbors.shape:
+            raise RuntimeError(
+                "Lucene ID and score arrays have different shapes"
+            )
+        for query_number, ids in enumerate(result.neighbors):
+            if len(ids) != k:
                 raise RuntimeError(
-                    f"Lucene query {query_number} returned {len(hits)} hits, expected {k}"
+                    f"Lucene query {query_number} returned {len(ids)} hits, expected {k}"
                 )
-            ids = [hit.document_id for hit in hits]
-            if len(ids) != len(set(ids)):
+            if len(np.unique(ids)) != len(ids):
                 raise RuntimeError(
                     f"Lucene query {query_number} returned duplicate IDs"
                 )
-            if any(
-                identifier < 0 or identifier >= result.document_count
-                for identifier in ids
-            ):
+            if ((ids < 0) | (ids >= result.document_count)).any():
                 raise RuntimeError(
                     f"Lucene query {query_number} returned an invalid ID"
                 )
@@ -1403,25 +1416,13 @@ class LuceneBackend(BenchmarkBackend):
             runtime_result, expected_query_count
         )
         conversion_started = time.perf_counter_ns()
-        neighbors = np.asarray(
-            [
-                [hit.document_id for hit in hits]
-                for hits in runtime_result.hits
-            ],
-            dtype=np.int64,
-        )
-        distances = np.asarray(
-            [
-                [_score_to_squared_euclidean(hit.score) for hit in hits]
-                for hits in runtime_result.hits
-            ],
-            dtype=np.float32,
-        )
+        neighbors = runtime_result.neighbors
+        distances = _scores_to_squared_euclidean(runtime_result.scores)
         result_array_conversion_ms = _nanoseconds_to_milliseconds(
             time.perf_counter_ns() - conversion_started
         )
         elapsed_ms = _nanoseconds_to_milliseconds(sum(latency_samples_ns))
-        query_count = len(runtime_result.hits)
+        query_count = len(neighbors)
         query_corpus_seconds = _nanoseconds_to_seconds(
             runtime_result.timing.query_corpus_wall_ns
         )
@@ -1463,6 +1464,9 @@ class LuceneBackend(BenchmarkBackend):
                 "query_count": query_count,
                 "warmup_query_count": 0,
                 "result_array_conversion_ms": result_array_conversion_ms,
+                "result_materialization_kind": (
+                    runtime_result.timing.result_materialization_kind
+                ),
                 **timing_metadata,
                 **metadata,
             },

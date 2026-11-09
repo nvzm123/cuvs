@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,7 +27,6 @@ from cuvs_bench.backends._lucene_runtime import (
     RuntimeBuildTiming,
     RuntimeSearchResult,
     RuntimeSearchTiming,
-    SearchHit,
     TIMED_BRIDGE_PYLUCENE_DISPATCH,
 )
 from cuvs_bench.backends._lucene_runtime_config import maven_artifact_version
@@ -53,6 +53,16 @@ ALGORITHM_CASES = (
     pytest.param(CAGRA_ALGORITHM, CAGRA_CODEC, "gpu_cagra", id="cagra"),
 )
 _ARTIFACT_VERSION = maven_artifact_version()
+
+
+@dataclass(frozen=True)
+class FakeSearchHit:
+    """Explicit synthetic result data used to describe backend test scenarios."""
+
+    document_id: int
+    score: float
+
+
 # Current-runtime fixture; historical coordinates stay explicit in their tests.
 _FAKE_ARTIFACT_PROVENANCE = {
     "cuvs_java_coordinates": (
@@ -200,7 +210,7 @@ class RecordingRuntime:
             return self.search_result
         hits = [
             [
-                SearchHit(
+                FakeSearchHit(
                     document_id=rank,
                     score=1.0 / (1.0 + float(rank)),
                 )
@@ -221,7 +231,13 @@ class RecordingRuntime:
             for _query in queries
         )
         return RuntimeSearchResult(
-            hits=hits,
+            neighbors=np.asarray(
+                [[hit.document_id for hit in row] for row in hits],
+                dtype=np.int64,
+            ),
+            scores=np.asarray(
+                [[hit.score for hit in row] for row in hits], dtype=np.float32
+            ),
             timing=RuntimeSearchTiming(
                 directory_open_ns=250_000,
                 reader_searcher_setup_ns=750_000,
@@ -254,7 +270,7 @@ class RecordingRuntimeFactory:
 
 
 def _runtime_search_result(
-    hits: list[list[SearchHit]],
+    hits: list[list[FakeSearchHit]],
     *,
     search_dispatch_ns: tuple[int, ...] | None = None,
     java_search_ns: tuple[int, ...] | None = None,
@@ -303,7 +319,12 @@ def _runtime_search_result(
         else sum(item.client_query_ns for item in query_timings)
     )
     return RuntimeSearchResult(
-        hits=hits,
+        neighbors=np.asarray(
+            [[hit.document_id for hit in row] for row in hits], dtype=np.int64
+        ),
+        scores=np.asarray(
+            [[hit.score for hit in row] for row in hits], dtype=np.float32
+        ),
         timing=RuntimeSearchTiming(
             directory_open_ns=directory_open_ns,
             reader_searcher_setup_ns=reader_searcher_setup_ns,
