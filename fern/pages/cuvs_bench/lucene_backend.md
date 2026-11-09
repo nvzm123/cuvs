@@ -101,10 +101,6 @@ schema-2 manifests; those indexes remain reusable. An index built with different
 settings must be rebuilt with `--build --force`. Saved codec identities remain
 independent of the current writing codec.
 
-This does not add parallel ingestion, Java-side FBIN ingestion, or bounded-memory
-construction. Python still loads the training vectors and sends each document
-through JCC.
-
 ## Runtime requirements
 
 The Lucene backend is opt-in because its runtime is not provisioned by the
