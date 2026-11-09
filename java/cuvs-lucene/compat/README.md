@@ -21,6 +21,8 @@ on. Directories are named `<class>-<release>-<change>`:
 | | `knn-vectors-reader-103-acceptdocs` | 10.3, 10.4 | `search` takes `AcceptDocs`; readers also report `getOffHeapByteSize`; merge methods throw `IOException` |
 | `cuvs.lucene.compat.knnFloatVectorQuery` | `knn-float-vector-query-102-bits` | 10.2 | `approximateSearch` takes `Bits` |
 | | `knn-float-vector-query-103-acceptdocs` | 10.3, 10.4 | `approximateSearch` takes `AcceptDocs`; filtered segment searches must return `perLeafTopK` hits, often more than `k` |
+| `cuvs.lucene.compat.knnCollectorManager` | `knn-collector-manager-102-basic` | 10.2 | Delegates per-leaf collector creation before adding an optional entry-point strategy |
+| | `knn-collector-manager-103-optimistic` | 10.3, 10.4 | Also delegates optimistic collector creation and its per-leaf result budget |
 | `cuvs.lucene.compat.leafReader` (tests only) | `leaf-reader-102-bits` | 10.2 | `searchNearestVectors` takes `Bits` |
 | | `leaf-reader-103-acceptdocs` | 10.3, 10.4 | `searchNearestVectors` takes `AcceptDocs` |
 

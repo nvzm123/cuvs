@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from ._lucene_compat import LUCENE_COMPATIBILITY, PERSISTED_CODEC_KINDS
+from ._lucene_parameters import CUVS_BUILD_KEYS
 from ._lucene_runtime_config import (
     CUVS_LUCENE_ARTIFACT_ID,
     maven_artifact_version,
@@ -28,6 +29,28 @@ from ._lucene_runtime_config import (
 CPU_HNSW_CODEC = LUCENE_COMPATIBILITY.cpu_hnsw_codec
 ACCELERATED_HNSW_CODEC = LUCENE_COMPATIBILITY.accelerated_hnsw_codec
 CAGRA_CODEC = LUCENE_COMPATIBILITY.cagra_codec
+CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY = (
+    "com.nvidia.cuvs.lucene.AcceleratedHNSWCodecFactory"
+)
+CONFIGURED_CAGRA_CODEC_FACTORY = "com.nvidia.cuvs.lucene.GPUSearchCodecFactory"
+_CAGRA_QUERY_FACTORY = "com.nvidia.cuvs.lucene.GPUKnnFloatVectorQueryFactory"
+_BASE_LAYER_QUERY_FACTORY = (
+    "com.nvidia.cuvs.lucene.BaseLayerKnnFloatVectorQueryFactory"
+)
+INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE = (
+    "com.nvidia.cuvs.lucene.IndexWriterConfigRAMLimitBridge"
+)
+_CONFIGURED_CODEC_RESPONSE_KEY = "codec"
+_HNSW_MAX_CONN_REQUEST_KEY = "max_conn"
+_HNSW_BEAM_WIDTH_REQUEST_KEY = "beam_width"
+_MAX_RAM_PER_THREAD_HARD_LIMIT_MB = 2_147_483_647
+_FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB = 2048
+_RAM_LIMIT_CONFIG_KEY = "config"
+_RAM_LIMIT_VALUE_KEY = "per_thread_hard_limit_mb"
+_RAM_LIMIT_ALLOW_UNSUPPORTED_KEY = "allow_unsupported_lucene_ram_limit"
+_RAM_LIMIT_APPLICATION_MODE_KEY = "application_mode"
+_PUBLIC_RAM_LIMIT_SETTER_MODE = "public_setter"
+_UNSUPPORTED_RAM_LIMIT_OVERRIDE_MODE = "unsupported_field_override"
 MAX_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = LUCENE_COMPATIBILITY.pylucene_version
 
@@ -967,12 +990,173 @@ class RuntimeBuildTiming:
     post_build_reader_ns: int
     directory_close_ns: int
     runtime_build_wall_ns: int
+    force_merge_ns: int = 0
 
 
 @dataclass(frozen=True)
 class RuntimeBuildResult:
     segment_count: int
     timing: RuntimeBuildTiming
+    topology: "RuntimeBuildTopology | None" = None
+
+
+@dataclass(frozen=True)
+class RuntimeBuildTopology:
+    """Requested and observed topology for a controlled Lucene build."""
+
+    requested_premerge_segment_count: int
+    observed_premerge_segment_count: int
+    requested_force_merge_segment_count: int
+    premerge_segment_vector_counts: tuple[int, ...]
+    max_buffered_docs: int
+    applied_ram_per_thread_hard_limit_mb: int
+    ram_per_thread_hard_limit_application: str
+    ingest_merge_policy: str
+    final_merge_policy: str | None
+
+    def manifest(self) -> dict[str, Any]:
+        """Return structured, JSON-safe evidence for index reuse."""
+        return {
+            "requested_premerge_segment_count": self.requested_premerge_segment_count,
+            "observed_premerge_segment_count": (
+                self.observed_premerge_segment_count
+            ),
+            "requested_force_merge_segment_count": (
+                self.requested_force_merge_segment_count
+            ),
+            "premerge_segment_vector_counts": list(
+                self.premerge_segment_vector_counts
+            ),
+            "max_buffered_docs": self.max_buffered_docs,
+            "applied_ram_per_thread_hard_limit_mb": (
+                self.applied_ram_per_thread_hard_limit_mb
+            ),
+            "ram_per_thread_hard_limit_application": (
+                self.ram_per_thread_hard_limit_application
+            ),
+            "ingest_merge_policy": self.ingest_merge_policy,
+            "final_merge_policy": self.final_merge_policy,
+        }
+
+
+@dataclass(frozen=True)
+class _IndexBuildPhase:
+    """Measured result of one Lucene index-construction strategy."""
+
+    writer_setup_ns: int
+    document_ingest_ns: int
+    force_merge_ns: int
+    writer_commit_close_ns: int
+    post_build_reader_ns: int
+    segment_count: int
+    topology: RuntimeBuildTopology | None = None
+
+
+@dataclass(frozen=True)
+class _ControlledBuildTopology:
+    premerge_segment_count: int
+    force_merge_segment_count: int
+    ram_per_thread_hard_limit_mb: int
+    allow_unsupported_lucene_ram_limit: bool
+    chunk_size: int
+    max_buffered_docs: int
+
+
+def _controlled_build_topology(
+    build_parameters: Mapping[str, Any] | None, vector_count: int
+) -> _ControlledBuildTopology | None:
+    """Validate the fail-closed topology contract at the JVM boundary."""
+    required = {
+        "premerge_segment_count",
+        "force_merge_segment_count",
+        "ram_per_thread_hard_limit_mb",
+    }
+    allow_key = "allow_unsupported_lucene_ram_limit"
+    parameters = build_parameters or {}
+    present = (required | {allow_key}) & set(parameters)
+    if not present:
+        return None
+    missing_required = required - set(parameters)
+    if missing_required:
+        missing = ", ".join(sorted(missing_required))
+        raise RuntimeError(
+            "Controlled Lucene builds require all topology parameters; "
+            f"missing: {missing}"
+        )
+    values = {name: parameters[name] for name in required}
+    for name in ("premerge_segment_count", "ram_per_thread_hard_limit_mb"):
+        value = values[name]
+        if type(value) is not int or value < 1:
+            raise RuntimeError(
+                f"Controlled Lucene build parameter {name} must be a "
+                f"positive integer, got {value!r}"
+            )
+    premerge = int(values["premerge_segment_count"])
+    hard_limit = int(values["ram_per_thread_hard_limit_mb"])
+    if hard_limit > _MAX_RAM_PER_THREAD_HARD_LIMIT_MB:
+        raise RuntimeError(
+            "Controlled Lucene build parameter "
+            "ram_per_thread_hard_limit_mb must be in range [1, "
+            f"{_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {hard_limit}"
+        )
+    allow_unsupported = parameters.get(allow_key, False)
+    if type(allow_unsupported) is not bool:
+        raise RuntimeError(
+            "Controlled Lucene build parameter "
+            "allow_unsupported_lucene_ram_limit must be a boolean"
+        )
+    force_merge_value = values["force_merge_segment_count"]
+    if type(force_merge_value) is not int or force_merge_value not in (0, 1):
+        raise RuntimeError(
+            "Controlled Lucene build parameter force_merge_segment_count "
+            "must be 0 (disabled) or 1"
+        )
+    force_merge = force_merge_value
+    uses_unsupported_limit = (
+        hard_limit >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB
+    )
+    if uses_unsupported_limit and not allow_unsupported:
+        raise RuntimeError(
+            "Controlled Lucene ram_per_thread_hard_limit_mb values of 2048 "
+            "MiB or greater require "
+            "allow_unsupported_lucene_ram_limit=true"
+        )
+    if allow_unsupported and not uses_unsupported_limit:
+        raise RuntimeError(
+            "Controlled Lucene allow_unsupported_lucene_ram_limit=true "
+            "requires ram_per_thread_hard_limit_mb >= 2048"
+        )
+    if uses_unsupported_limit and force_merge != 0:
+        raise RuntimeError(
+            "Controlled Lucene force_merge_segment_count must be 0 when "
+            "using an unsupported per-thread RAM hard limit"
+        )
+    if premerge > vector_count:
+        raise RuntimeError(
+            "premerge_segment_count cannot exceed the vector count: "
+            f"{premerge} > {vector_count}"
+        )
+    if vector_count % premerge:
+        raise RuntimeError(
+            "Controlled Lucene builds require equal partitions: vector count "
+            f"{vector_count} is not divisible by premerge_segment_count "
+            f"{premerge}"
+        )
+    chunk_size = vector_count // premerge
+    max_buffered_docs = chunk_size + 1
+    if max_buffered_docs > 2_147_483_647:
+        raise RuntimeError(
+            "Controlled Lucene segment exceeds IndexWriter's integer "
+            f"maxBufferedDocs range: {max_buffered_docs}"
+        )
+    return _ControlledBuildTopology(
+        premerge_segment_count=premerge,
+        force_merge_segment_count=force_merge,
+        ram_per_thread_hard_limit_mb=hard_limit,
+        allow_unsupported_lucene_ram_limit=allow_unsupported,
+        chunk_size=chunk_size,
+        max_buffered_docs=max_buffered_docs,
+    )
 
 
 @dataclass(frozen=True)
@@ -1012,7 +1196,7 @@ class LuceneRuntime:
     """Own the generated bindings and the narrow Lucene operations Bench uses."""
 
     def __init__(self, lucene: Any):
-        from java.lang import Class, Integer, Long
+        from java.lang import Boolean, Class, Double, Integer, Long, String
         from java.nio.file import Paths
         from java.util import HashMap, Map
         from java.util.function import Function
@@ -1027,6 +1211,9 @@ class LuceneRuntime:
             FieldInfo,
             IndexWriter,
             IndexWriterConfig,
+            NoMergePolicy,
+            SerialMergeScheduler,
+            TieredMergePolicy,
             SegmentCommitInfo,
             SegmentInfos,
             VectorEncoding,
@@ -1035,13 +1222,20 @@ class LuceneRuntime:
         from org.apache.lucene.search import (
             IndexSearcher,
             KnnFloatVectorQuery,
+            Query,
             TopDocs,
         )
         from org.apache.lucene.store import FSDirectory, IOContext
 
         self.lucene = lucene
+        self.Boolean = Boolean
+        self.String = String
+        self.NoMergePolicy = NoMergePolicy
+        self.SerialMergeScheduler = SerialMergeScheduler
+        self.TieredMergePolicy = TieredMergePolicy
         self.Class = Class
         self.Integer = Integer
+        self.Double = Double
         self.Long = Long
         self.HashMap = HashMap
         self.Map = Map
@@ -1062,6 +1256,7 @@ class LuceneRuntime:
         self.VectorSimilarityFunction = VectorSimilarityFunction
         self.IndexSearcher = IndexSearcher
         self.KnnFloatVectorQuery = KnnFloatVectorQuery
+        self.Query = Query
         self.TopDocs = TopDocs
         self.FSDirectory = FSDirectory
         self.IOContext = IOContext
@@ -1071,6 +1266,11 @@ class LuceneRuntime:
         self.artifact_provenance: dict[str, str] = {}
         self._artifact_tokens: dict[str, tuple[int, ...]] = {}
         self._java_search_timer: Any | None = None
+        self._java_configured_codec_factory: Any | None = None
+        self._java_cagra_codec_factory: Any | None = None
+        self._java_cagra_query_factory: Any | None = None
+        self._java_base_layer_query_factory: Any | None = None
+        self._java_ram_limit_bridge: Any | None = None
 
     @classmethod
     def create(cls, config: Mapping[str, Any]) -> "LuceneRuntime":
@@ -1097,6 +1297,154 @@ class LuceneRuntime:
                 "through PyLucene/JCC: "
                 f"{type(error).__name__}: {error}"
             ) from error
+
+    def _load_java_configured_codec_factory(self) -> Any:
+        """Load the codec factory through JCC's wrapped Function interface."""
+        try:
+            instance = self.Class.forName(
+                CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY
+            ).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                "Could not load or adapt "
+                f"{CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY} "
+                "through PyLucene/JCC: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _load_java_ram_limit_bridge(self) -> Any:
+        """Load the RAM-limit bridge through JCC's wrapped Function."""
+        try:
+            instance = self.Class.forName(
+                INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE
+            ).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                "Could not load or adapt "
+                f"{INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE} through "
+                "PyLucene/JCC: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _load_parameter_factory(self, class_name: str) -> Any:
+        """Load an opt-in factory only when a run requests its controls."""
+        try:
+            instance = self.Class.forName(class_name).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not load or adapt {class_name} through PyLucene/JCC. "
+                "These controls require an updated thin cuVS-Lucene JAR: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _parameter_request(self, parameters: Mapping[str, Any]) -> Any:
+        """Box scalar controls explicitly; Java must not guess numeric types."""
+        request = self.HashMap()
+        for key, value in parameters.items():
+            if type(value) is bool:
+                value = self.Boolean.valueOf(value)
+            elif type(value) is int:
+                value = self.Integer.valueOf(value)
+            elif type(value) is float:
+                value = self.Double.valueOf(value)
+            elif type(value) is not str:
+                raise TypeError(f"Unsupported Java parameter {key}: {value!r}")
+            request.put(key, value)
+        return request
+
+    def _set_ram_per_thread_hard_limit_mb(
+        self,
+        config: Any,
+        requested_mb: int,
+        *,
+        allow_unsupported: bool,
+    ) -> str:
+        if type(requested_mb) is not int or not (
+            1 <= requested_mb <= _MAX_RAM_PER_THREAD_HARD_LIMIT_MB
+        ):
+            raise RuntimeError(
+                "Lucene per-thread RAM hard limit must be in range [1, "
+                f"{_MAX_RAM_PER_THREAD_HARD_LIMIT_MB}], got {requested_mb}"
+            )
+        if type(allow_unsupported) is not bool:
+            raise RuntimeError(
+                "Lucene allow_unsupported_lucene_ram_limit must be a boolean"
+            )
+        if requested_mb >= _FIRST_UNSUPPORTED_RAM_PER_THREAD_HARD_LIMIT_MB:
+            return self._set_unsupported_ram_per_thread_hard_limit_mb(
+                config, requested_mb, allow_unsupported
+            )
+        try:
+            config.setRAMPerThreadHardLimitMB(requested_mb)
+        except Exception as error:
+            raise RuntimeError(
+                "Could not apply Lucene's supported per-thread RAM hard "
+                "limit: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        observed = int(config.getRAMPerThreadHardLimitMB())
+        if observed != requested_mb:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard limit did not retain the "
+                f"requested value: requested {requested_mb}, config "
+                f"reported {observed}"
+            )
+        return _PUBLIC_RAM_LIMIT_SETTER_MODE
+
+    def _set_unsupported_ram_per_thread_hard_limit_mb(
+        self, config: Any, requested_mb: int, allow_unsupported: bool
+    ) -> str:
+        """Apply an explicitly authorized limit through the thin-JAR bridge."""
+        if not allow_unsupported:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard limits of 2048 MiB or greater "
+                "require allow_unsupported_lucene_ram_limit=true"
+            )
+        bridge = self._java_ram_limit_bridge
+        if bridge is None:
+            bridge = self._load_java_ram_limit_bridge()
+            self._java_ram_limit_bridge = bridge
+        request = self.HashMap()
+        request.put(_RAM_LIMIT_CONFIG_KEY, config)
+        request.put(_RAM_LIMIT_VALUE_KEY, self.Integer.valueOf(requested_mb))
+        request.put(
+            _RAM_LIMIT_ALLOW_UNSUPPORTED_KEY,
+            self.Boolean.valueOf(allow_unsupported),
+        )
+        try:
+            response = self.Map.cast_(bridge.apply(request))
+            applied = int(
+                self.Integer.cast_(
+                    response.get(_RAM_LIMIT_VALUE_KEY)
+                ).intValue()
+            )
+            application_mode = str(
+                self.String.cast_(
+                    response.get(_RAM_LIMIT_APPLICATION_MODE_KEY)
+                )
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not apply the explicitly authorized unsupported "
+                "Lucene per-thread RAM hard limit: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        observed = int(config.getRAMPerThreadHardLimitMB())
+        if applied != requested_mb or observed != requested_mb:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard-limit bridge did not retain the "
+                f"requested value: requested {requested_mb}, bridge returned "
+                f"{applied}, config reported {observed}"
+            )
+        if application_mode != _UNSUPPORTED_RAM_LIMIT_OVERRIDE_MODE:
+            raise RuntimeError(
+                "Lucene per-thread RAM hard-limit bridge returned an "
+                f"unexpected application mode: {application_mode!r}"
+            )
+        return application_mode
 
     @property
     def pylucene_version(self) -> str:
@@ -1135,6 +1483,92 @@ class LuceneRuntime:
         self._codecs[name] = codec
         return codec
 
+    def resolve_configured_hnsw_codec(
+        self,
+        max_conn: int,
+        beam_width: int,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Construct an accelerated-HNSW codec from one atomic request."""
+        self.attach_current_thread()
+        factory = self._java_configured_codec_factory
+        if factory is None:
+            factory = self._load_java_configured_codec_factory()
+            self._java_configured_codec_factory = factory
+        request = self._parameter_request(
+            {
+                **(parameters or {}),
+                _HNSW_MAX_CONN_REQUEST_KEY: max_conn,
+                _HNSW_BEAM_WIDTH_REQUEST_KEY: beam_width,
+            }
+        )
+        try:
+            raw_response = factory.apply(request)
+            response = self.Map.cast_(raw_response)
+            codec = self.Codec.cast_(
+                response.get(_CONFIGURED_CODEC_RESPONSE_KEY)
+            )
+            applied_max_conn = int(
+                self.Integer.cast_(
+                    response.get(_HNSW_MAX_CONN_REQUEST_KEY)
+                ).intValue()
+            )
+            applied_beam_width = int(
+                self.Integer.cast_(
+                    response.get(_HNSW_BEAM_WIDTH_REQUEST_KEY)
+                ).intValue()
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured accelerated-HNSW codec "
+                f"through {CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+        self._validate_codec(codec, ACCELERATED_HNSW_CODEC)
+        if (applied_max_conn, applied_beam_width) != (max_conn, beam_width):
+            raise RuntimeError(
+                "Configured accelerated-HNSW codec did not retain the "
+                "requested parameters: requested "
+                f"({max_conn}, {beam_width}), applied "
+                f"({applied_max_conn}, {applied_beam_width})"
+            )
+        return codec
+
+    def resolve_configured_cagra_codec(
+        self, parameters: Mapping[str, Any]
+    ) -> Any:
+        self.attach_current_thread()
+        if self._java_cagra_codec_factory is None:
+            self._java_cagra_codec_factory = self._load_parameter_factory(
+                CONFIGURED_CAGRA_CODEC_FACTORY
+            )
+        try:
+            response = self.Map.cast_(
+                self._java_cagra_codec_factory.apply(
+                    self._parameter_request(parameters)
+                )
+            )
+            codec = self.Codec.cast_(
+                response.get(_CONFIGURED_CODEC_RESPONSE_KEY)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured GPU CAGRA codec: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        self._validate_codec(codec, CAGRA_CODEC)
+        return codec
+
+    @staticmethod
+    def _validate_codec(codec: Any, name: str) -> None:
+        if str(codec.getName()) != name:
+            raise RuntimeError(
+                f"Requested codec {name}, resolved {codec.getName()}"
+            )
+        if codec.knnVectorsFormat() is None:
+            raise RuntimeError(f"{name} did not initialize a vector format")
+
     def _java_vector(self, vector: np.ndarray) -> Any:
         return self.lucene.JArray("float")(vector.tolist())
 
@@ -1150,20 +1584,367 @@ class LuceneRuntime:
         )
         return document
 
+    def _resolve_build_codec(
+        self,
+        codec_name: str,
+        build_parameters: Mapping[str, Any] | None,
+    ) -> Any:
+        parameters = build_parameters or {}
+        codec_controls = {
+            key: value
+            for key, value in parameters.items()
+            if key in CUVS_BUILD_KEYS
+        }
+        if codec_name == CAGRA_CODEC and codec_controls:
+            return self.resolve_configured_cagra_codec(codec_controls)
+        if codec_name == ACCELERATED_HNSW_CODEC and (
+            codec_controls or {"m", "beam_width"}.issubset(parameters)
+        ):
+            # Match AcceleratedHNSWParams' defaults when only a new control
+            # (for example, hnsw_layers) is supplied.
+            return self.resolve_configured_hnsw_codec(
+                int(parameters.get("m", 32)),
+                int(parameters.get("beam_width", 32)),
+                codec_controls,
+            )
+        return self.resolve_codec(codec_name)
+
+    def _controlled_ingest_config(
+        self,
+        codec: Any,
+        topology: _ControlledBuildTopology,
+        *,
+        create: bool,
+    ) -> tuple[Any, str]:
+        config = self.IndexWriterConfig()
+        config.setOpenMode(
+            self.IndexWriterConfig.OpenMode.CREATE
+            if create
+            else self.IndexWriterConfig.OpenMode.APPEND
+        )
+        config.setCodec(codec)
+        config.setUseCompoundFile(False)
+        config.setCommitOnClose(False)
+        config.setMergePolicy(self.NoMergePolicy.INSTANCE)
+        config.setMergeScheduler(self.SerialMergeScheduler())
+        # Lucene requires one automatic flush trigger to remain enabled. Set
+        # maxBufferedDocs first, then disable the RAM trigger deliberately.
+        config.setMaxBufferedDocs(topology.max_buffered_docs)
+        config.setRAMBufferSizeMB(
+            float(self.IndexWriterConfig.DISABLE_AUTO_FLUSH)
+        )
+        application_mode = self._set_ram_per_thread_hard_limit_mb(
+            config,
+            topology.ram_per_thread_hard_limit_mb,
+            allow_unsupported=(topology.allow_unsupported_lucene_ram_limit),
+        )
+        return config, application_mode
+
+    def _tiered_merge_policy(self) -> Any:
+        merge_policy = self.TieredMergePolicy()
+        merge_policy.setNoCFSRatio(0.0)
+        return merge_policy
+
+    def _controlled_merge_config(
+        self, codec: Any, topology: _ControlledBuildTopology
+    ) -> tuple[Any, str]:
+        config = self.IndexWriterConfig()
+        config.setOpenMode(self.IndexWriterConfig.OpenMode.APPEND)
+        config.setCodec(codec)
+        config.setUseCompoundFile(False)
+        config.setCommitOnClose(False)
+        config.setMergeScheduler(self.SerialMergeScheduler())
+        config.setMergePolicy(self._tiered_merge_policy())
+        application_mode = self._set_ram_per_thread_hard_limit_mb(
+            config,
+            topology.ram_per_thread_hard_limit_mb,
+            allow_unsupported=(topology.allow_unsupported_lucene_ram_limit),
+        )
+        return config, application_mode
+
+    def _reader_segment_vector_counts(self, reader: Any) -> tuple[int, ...]:
+        if int(reader.numDocs()) != int(reader.maxDoc()):
+            raise RuntimeError(
+                "Controlled Lucene build unexpectedly contains deletions"
+            )
+        counts = []
+        document_count = 0
+        for leaf in reader.leaves():
+            leaf_reader = leaf.reader()
+            leaf_documents = int(leaf_reader.numDocs())
+            if leaf_documents != int(leaf_reader.maxDoc()):
+                raise RuntimeError(
+                    "Controlled Lucene segment unexpectedly contains deletions"
+                )
+            values = leaf_reader.getFloatVectorValues(_VECTOR_FIELD)
+            if values is None:
+                raise RuntimeError(
+                    "Controlled Lucene segment is missing vector values"
+                )
+            vector_count = int(values.size())
+            if vector_count != leaf_documents:
+                raise RuntimeError(
+                    "Controlled Lucene segment vector and document counts "
+                    f"differ: {vector_count} != {leaf_documents}"
+                )
+            counts.append(vector_count)
+            document_count += leaf_documents
+        if document_count != int(reader.numDocs()):
+            raise RuntimeError(
+                "Controlled Lucene leaf document counts do not match the "
+                f"reader: {document_count} != {reader.numDocs()}"
+            )
+        return tuple(counts)
+
+    def _committed_segment_vector_counts(
+        self, directory: Any
+    ) -> tuple[int, ...]:
+        reader = self.DirectoryReader.open(directory)
+        with _CleanupStack() as cleanups:
+            cleanups.add("close Lucene topology reader", reader.close)
+            return self._reader_segment_vector_counts(reader)
+
+    def _write_controlled_chunk(
+        self,
+        directory: Any,
+        vectors: np.ndarray,
+        codec: Any,
+        topology: _ControlledBuildTopology,
+        *,
+        start: int,
+        stop: int,
+        create: bool,
+    ) -> tuple[int, int, int, str]:
+        setup_started = time.perf_counter_ns()
+        config, application_mode = self._controlled_ingest_config(
+            codec, topology, create=create
+        )
+        writer = self.IndexWriter(directory, config)
+        setup_ns = time.perf_counter_ns() - setup_started
+        try:
+            ingest_started = time.perf_counter_ns()
+            for document_id in range(start, stop):
+                writer.addDocument(
+                    self._document(document_id, vectors[document_id])
+                )
+            ingest_ns = time.perf_counter_ns() - ingest_started
+            commit_started = time.perf_counter_ns()
+            writer.flush()
+            writer.commit()
+            writer.close()
+            commit_close_ns = time.perf_counter_ns() - commit_started
+        except BaseException as error:
+            _rollback_writer(writer, error)
+            raise
+        return setup_ns, ingest_ns, commit_close_ns, application_mode
+
+    def _force_merge_controlled_index(
+        self,
+        directory: Any,
+        codec: Any,
+        topology: _ControlledBuildTopology,
+    ) -> tuple[int, int, int, str]:
+        setup_started = time.perf_counter_ns()
+        config, application_mode = self._controlled_merge_config(
+            codec, topology
+        )
+        writer = self.IndexWriter(directory, config)
+        setup_ns = time.perf_counter_ns() - setup_started
+        try:
+            merge_started = time.perf_counter_ns()
+            writer.forceMerge(topology.force_merge_segment_count, True)
+            force_merge_ns = time.perf_counter_ns() - merge_started
+            commit_started = time.perf_counter_ns()
+            writer.commit()
+            writer.close()
+            commit_close_ns = time.perf_counter_ns() - commit_started
+        except BaseException as error:
+            _rollback_writer(writer, error)
+            raise
+        return setup_ns, force_merge_ns, commit_close_ns, application_mode
+
+    def _build_ordinary_index(
+        self,
+        directory: Any,
+        vectors: np.ndarray,
+        codec: Any,
+    ) -> _IndexBuildPhase:
+        setup_started = time.perf_counter_ns()
+        config = self.IndexWriterConfig()
+        config.setOpenMode(self.IndexWriterConfig.OpenMode.CREATE)
+        config.setCodec(codec)
+        writer = self.IndexWriter(directory, config)
+        writer_setup_ns = time.perf_counter_ns() - setup_started
+        try:
+            ingest_started = time.perf_counter_ns()
+            for document_id, vector in enumerate(vectors):
+                writer.addDocument(self._document(document_id, vector))
+            document_ingest_ns = time.perf_counter_ns() - ingest_started
+            commit_started = time.perf_counter_ns()
+            writer.commit()
+            writer.close()
+            writer_commit_close_ns = time.perf_counter_ns() - commit_started
+        except BaseException as error:
+            _rollback_writer(writer, error)
+            raise
+
+        post_build_started = time.perf_counter_ns()
+        reader = self.DirectoryReader.open(directory)
+        with _CleanupStack() as reader_cleanups:
+            reader_cleanups.add("close Lucene reader", reader.close)
+            segment_count = int(reader.leaves().size())
+        return _IndexBuildPhase(
+            writer_setup_ns=writer_setup_ns,
+            document_ingest_ns=document_ingest_ns,
+            force_merge_ns=0,
+            writer_commit_close_ns=writer_commit_close_ns,
+            post_build_reader_ns=(time.perf_counter_ns() - post_build_started),
+            segment_count=segment_count,
+        )
+
+    def _build_controlled_index(
+        self,
+        directory: Any,
+        vectors: np.ndarray,
+        codec: Any,
+        controlled: _ControlledBuildTopology,
+    ) -> _IndexBuildPhase:
+        writer_setup_ns = 0
+        document_ingest_ns = 0
+        force_merge_ns = 0
+        writer_commit_close_ns = 0
+        post_build_reader_ns = 0
+        ram_limit_application_modes: set[str] = set()
+
+        # Separate writer lifecycles make the requested serial partitions
+        # explicit and keep their physical topology independently verifiable.
+        for chunk_number in range(controlled.premerge_segment_count):
+            start = chunk_number * controlled.chunk_size
+            stop = start + controlled.chunk_size
+            setup_ns, ingest_ns, commit_close_ns, application_mode = (
+                self._write_controlled_chunk(
+                    directory,
+                    vectors,
+                    codec,
+                    controlled,
+                    start=start,
+                    stop=stop,
+                    create=chunk_number == 0,
+                )
+            )
+            writer_setup_ns += setup_ns
+            document_ingest_ns += ingest_ns
+            writer_commit_close_ns += commit_close_ns
+            ram_limit_application_modes.add(application_mode)
+
+        post_build_started = time.perf_counter_ns()
+        observed_premerge_counts = self._committed_segment_vector_counts(
+            directory
+        )
+        post_build_reader_ns += time.perf_counter_ns() - post_build_started
+        expected_premerge_counts = (
+            controlled.chunk_size,
+        ) * controlled.premerge_segment_count
+        if observed_premerge_counts != expected_premerge_counts:
+            raise RuntimeError(
+                "Controlled Lucene ingest topology mismatch: expected "
+                "pre-merge segment vector counts "
+                f"{expected_premerge_counts}, observed "
+                f"{observed_premerge_counts}"
+            )
+
+        final_merge_policy = None
+        final_counts = observed_premerge_counts
+        if (
+            controlled.force_merge_segment_count == 1
+            and controlled.premerge_segment_count > 1
+        ):
+            setup_ns, merge_ns, commit_close_ns, application_mode = (
+                self._force_merge_controlled_index(
+                    directory, codec, controlled
+                )
+            )
+            writer_setup_ns += setup_ns
+            force_merge_ns += merge_ns
+            writer_commit_close_ns += commit_close_ns
+            ram_limit_application_modes.add(application_mode)
+            post_build_started = time.perf_counter_ns()
+            final_counts = self._committed_segment_vector_counts(directory)
+            post_build_reader_ns += time.perf_counter_ns() - post_build_started
+            final_merge_policy = "TieredMergePolicy"
+        expected_final_counts = (
+            (int(vectors.shape[0]),)
+            if controlled.force_merge_segment_count == 1
+            else observed_premerge_counts
+        )
+        if final_counts != expected_final_counts:
+            raise RuntimeError(
+                "Controlled Lucene final topology mismatch: expected "
+                f"segment vector counts {expected_final_counts}, "
+                f"observed {final_counts}"
+            )
+        if len(ram_limit_application_modes) != 1:
+            raise RuntimeError(
+                "Controlled Lucene writers used inconsistent per-thread RAM "
+                f"limit mechanisms: {sorted(ram_limit_application_modes)}"
+            )
+        ram_limit_application = ram_limit_application_modes.pop()
+        return _IndexBuildPhase(
+            writer_setup_ns=writer_setup_ns,
+            document_ingest_ns=document_ingest_ns,
+            force_merge_ns=force_merge_ns,
+            writer_commit_close_ns=writer_commit_close_ns,
+            post_build_reader_ns=post_build_reader_ns,
+            segment_count=len(final_counts),
+            topology=RuntimeBuildTopology(
+                requested_premerge_segment_count=(
+                    controlled.premerge_segment_count
+                ),
+                observed_premerge_segment_count=len(observed_premerge_counts),
+                requested_force_merge_segment_count=(
+                    controlled.force_merge_segment_count
+                ),
+                premerge_segment_vector_counts=observed_premerge_counts,
+                max_buffered_docs=controlled.max_buffered_docs,
+                applied_ram_per_thread_hard_limit_mb=(
+                    controlled.ram_per_thread_hard_limit_mb
+                ),
+                ram_per_thread_hard_limit_application=(ram_limit_application),
+                ingest_merge_policy="NoMergePolicy",
+                final_merge_policy=final_merge_policy,
+            ),
+        )
+
     def build_index(
-        self, index_path: Path, vectors: np.ndarray, codec_name: str
+        self,
+        index_path: Path,
+        vectors: np.ndarray,
+        codec_name: str,
+        build_parameters: Mapping[str, Any] | None = None,
     ) -> RuntimeBuildResult:
         self.attach_current_thread()
         runtime_started = time.perf_counter_ns()
+        controlled = _controlled_build_topology(
+            build_parameters, int(vectors.shape[0])
+        )
+        controlled_codecs = {ACCELERATED_HNSW_CODEC, CAGRA_CODEC}
+        if controlled is not None and codec_name not in controlled_codecs:
+            raise RuntimeError(
+                "Controlled segment topology is only supported for cuVS-backed "
+                "Lucene builds"
+            )
+        if (
+            controlled is not None
+            and codec_name == CAGRA_CODEC
+            and controlled.force_merge_segment_count != 0
+        ):
+            raise RuntimeError(
+                "Controlled CAGRA builds require force_merge_segment_count=0"
+            )
         directory_open_started = time.perf_counter_ns()
         directory = self.FSDirectory.open(self.Paths.get(str(index_path)))
         directory_open_ns = time.perf_counter_ns() - directory_open_started
         directory_close_ns = 0
-        writer_setup_ns = 0
-        document_ingest_ns = 0
-        writer_commit_close_ns = 0
-        post_build_reader_ns = 0
-        segment_count = 0
 
         def close_directory() -> None:
             nonlocal directory_close_ns
@@ -1176,42 +1957,30 @@ class LuceneRuntime:
         with _CleanupStack() as cleanups:
             cleanups.add("close Lucene directory", close_directory)
             writer_setup_started = time.perf_counter_ns()
-            config = self.IndexWriterConfig()
-            config.setOpenMode(self.IndexWriterConfig.OpenMode.CREATE)
-            config.setCodec(self.resolve_codec(codec_name))
-            writer = self.IndexWriter(directory, config)
-            writer_setup_ns = time.perf_counter_ns() - writer_setup_started
-            try:
-                ingest_started = time.perf_counter_ns()
-                for document_id, vector in enumerate(vectors):
-                    writer.addDocument(self._document(document_id, vector))
-                document_ingest_ns = time.perf_counter_ns() - ingest_started
-                commit_started = time.perf_counter_ns()
-                writer.commit()
-                writer.close()
-                writer_commit_close_ns = (
-                    time.perf_counter_ns() - commit_started
+            codec = self._resolve_build_codec(codec_name, build_parameters)
+            codec_setup_ns = time.perf_counter_ns() - writer_setup_started
+            if controlled is None:
+                phase = self._build_ordinary_index(directory, vectors, codec)
+            else:
+                phase = self._build_controlled_index(
+                    directory,
+                    vectors,
+                    codec,
+                    controlled,
                 )
-            except BaseException as error:
-                _rollback_writer(writer, error)
-                raise
-            post_build_started = time.perf_counter_ns()
-            reader = self.DirectoryReader.open(directory)
-            with _CleanupStack() as reader_cleanups:
-                reader_cleanups.add("close Lucene reader", reader.close)
-                segment_count = int(reader.leaves().size())
-            post_build_reader_ns = time.perf_counter_ns() - post_build_started
         return RuntimeBuildResult(
-            segment_count=segment_count,
+            segment_count=phase.segment_count,
             timing=RuntimeBuildTiming(
                 directory_open_ns=directory_open_ns,
-                writer_setup_ns=writer_setup_ns,
-                document_ingest_ns=document_ingest_ns,
-                writer_commit_close_ns=writer_commit_close_ns,
-                post_build_reader_ns=post_build_reader_ns,
+                writer_setup_ns=codec_setup_ns + phase.writer_setup_ns,
+                document_ingest_ns=phase.document_ingest_ns,
+                force_merge_ns=phase.force_merge_ns,
+                writer_commit_close_ns=phase.writer_commit_close_ns,
+                post_build_reader_ns=phase.post_build_reader_ns,
                 directory_close_ns=directory_close_ns,
                 runtime_build_wall_ns=time.perf_counter_ns() - runtime_started,
             ),
+            topology=phase.topology,
         )
 
     @staticmethod
@@ -1321,12 +2090,25 @@ class LuceneRuntime:
         vector: np.ndarray,
         k: int,
         candidates: int,
+        cagra_search_parameters: Mapping[str, Any] | None = None,
+        *,
+        num_entry_points: int = 0,
     ) -> tuple[list[SearchHit], QueryTiming]:
         client_started = time.perf_counter_ns()
         prepare_started = time.perf_counter_ns()
-        query = self.KnnFloatVectorQuery(
-            _VECTOR_FIELD, self._java_vector(vector), candidates
-        )
+        java_vector = self._java_vector(vector)
+        if cagra_search_parameters:
+            query = self._configured_cagra_query(
+                java_vector, k, cagra_search_parameters
+            )
+        elif num_entry_points:
+            query = self._base_layer_hnsw_query(
+                java_vector, candidates, num_entry_points
+            )
+        else:
+            query = self.KnnFloatVectorQuery(
+                _VECTOR_FIELD, java_vector, candidates
+            )
         query_prepare_ns = time.perf_counter_ns() - prepare_started
 
         top_docs, pylucene_search_dispatch_ns, java_search_ns = self._search(
@@ -1346,6 +2128,54 @@ class LuceneRuntime:
             client_query_ns=time.perf_counter_ns() - client_started,
         )
 
+    def _base_layer_hnsw_query(
+        self, java_vector: Any, candidates: int, num_entry_points: int
+    ) -> Any:
+        """Select a seed inside Java search, without custom PyLucene wrappers."""
+        if self._java_base_layer_query_factory is None:
+            self._java_base_layer_query_factory = self._load_parameter_factory(
+                _BASE_LAYER_QUERY_FACTORY
+            )
+        request = self._parameter_request(
+            {
+                "field": _VECTOR_FIELD,
+                "k": candidates,
+                "num_entry_points": num_entry_points,
+            }
+        )
+        request.put("target", java_vector)
+        try:
+            return self.Query.cast_(
+                self._java_base_layer_query_factory.apply(request)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a random-entry HNSW query: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _configured_cagra_query(
+        self, java_vector: Any, k: int, parameters: Mapping[str, Any]
+    ) -> Any:
+        """Construct the GPU query without requiring custom JCC wrappers."""
+        if self._java_cagra_query_factory is None:
+            self._java_cagra_query_factory = self._load_parameter_factory(
+                _CAGRA_QUERY_FACTORY
+            )
+        request = self._parameter_request(
+            {**parameters, "field": _VECTOR_FIELD, "k": k}
+        )
+        request.put("target", java_vector)
+        try:
+            return self.Query.cast_(
+                self._java_cagra_query_factory.apply(request)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured GPU CAGRA query: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
     def search_index(
         self,
         index_path: Path,
@@ -1353,6 +2183,8 @@ class LuceneRuntime:
         *,
         k: int,
         num_candidates: int,
+        cagra_search_parameters: Mapping[str, Any] | None = None,
+        num_entry_points: int = 0,
     ) -> RuntimeSearchResult:
         self.attach_current_thread()
         plan_started = time.perf_counter_ns()
@@ -1408,6 +2240,8 @@ class LuceneRuntime:
                     vector,
                     k,
                     min(num_candidates, document_count),
+                    cagra_search_parameters,
+                    num_entry_points=num_entry_points,
                 )
                 all_hits.append(hits)
                 query_timings.append(query_timing)

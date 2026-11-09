@@ -75,7 +75,7 @@ def test_backend_rejects_mismatched_algorithm_and_codec(
 
 
 @pytest.mark.parametrize(("algorithm", "codec", "_path"), ALGORITHM_CASES)
-def test_build_parameters_accept_only_the_fixed_codec(
+def test_build_parameters_require_the_owned_codec_and_reject_unknown_keys(
     algorithm: str, codec: str, _path: str
 ) -> None:
     assert _codec_for(algorithm, {}) == codec
@@ -84,7 +84,7 @@ def test_build_parameters_accept_only_the_fixed_codec(
     with pytest.raises(
         ValueError, match="Unsupported Lucene build parameters"
     ):
-        _codec_for(algorithm, {"codec": codec, "graph_degree": 32})
+        _codec_for(algorithm, {"codec": codec, "unknown_build_knob": 32})
 
 
 @pytest.mark.parametrize(
@@ -132,15 +132,17 @@ def test_hnsw_search_parameter_validation_rejects_invalid_budgets(
         _search_parameters(algorithm, parameters, 3)
 
 
-def test_cagra_search_accepts_only_fixed_parameters_within_its_route_limit() -> (
+def test_cagra_search_retains_default_candidate_count_and_its_route_limit() -> (
     None
 ):
     assert _search_parameters(CAGRA_ALGORITHM, {}, 1024) == {
         "num_candidates": 1024
     }
 
-    with pytest.raises(ValueError, match="accepts no search parameters"):
-        _search_parameters(CAGRA_ALGORITHM, {"search_width": 16}, 10)
+    assert _search_parameters(CAGRA_ALGORITHM, {"search_width": 16}, 10) == {
+        "num_candidates": 10,
+        "search_width": 16,
+    }
     with pytest.raises(ValueError, match=r"supports k <= 1024"):
         _search_parameters(CAGRA_ALGORITHM, {}, 1025)
 
