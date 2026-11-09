@@ -75,7 +75,7 @@ def test_backend_rejects_mismatched_algorithm_and_codec(
 
 
 @pytest.mark.parametrize(("algorithm", "codec", "_path"), ALGORITHM_CASES)
-def test_build_parameters_accept_only_the_fixed_codec(
+def test_build_parameters_require_the_owned_codec_and_reject_unknown_keys(
     algorithm: str, codec: str, _path: str
 ) -> None:
     assert _codec_for(algorithm, {}) == codec
@@ -84,7 +84,7 @@ def test_build_parameters_accept_only_the_fixed_codec(
     with pytest.raises(
         ValueError, match="Unsupported Lucene build parameters"
     ):
-        _codec_for(algorithm, {"codec": codec, "graph_degree": 32})
+        _codec_for(algorithm, {"codec": codec, "unknown_build_knob": 32})
 
 
 @pytest.mark.parametrize(

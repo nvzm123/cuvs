@@ -34,7 +34,11 @@ from ._lucene_compat import (
     PERSISTED_CODEC_KINDS,
     SAVED_CUVS_LUCENE_ARTIFACT_IDS,
 )
-from ._lucene_parameters import normalize_cagra_search_controls
+from ._lucene_parameters import (
+    CUVS_BUILD_KEYS,
+    normalize_cagra_search_controls,
+    normalize_cuvs_build_controls,
+)
 from ._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
     CAGRA_CODEC,
@@ -74,6 +78,17 @@ _MAX_DIMENSIONS_BY_ALGORITHM = {
     CAGRA_ALGORITHM: MAX_CAGRA_DIMENSIONS,
 }
 _CUVS_ALGORITHMS = frozenset((ACCELERATED_HNSW_ALGORITHM, CAGRA_ALGORITHM))
+_ACCELERATED_HNSW_BUILD_KEYS = frozenset(
+    (
+        "m",
+        "beam_width",
+        *CUVS_BUILD_KEYS,
+    )
+)
+_CAGRA_BUILD_KEYS = CUVS_BUILD_KEYS
+_MIN_HNSW_BUILD_PARAMETER = 1
+_MAX_HNSW_BUILD_PARAMETER = 512
+_GRAPH_DEGREE_SOURCE = "requested_hnsw_same_graph_footprint_derivation"
 _BUILD_ROUTE_POLICY_BY_ALGORITHM = {
     CPU_HNSW_ALGORITHM: "cpu_hnsw",
     ACCELERATED_HNSW_ALGORITHM: "gpu_cagra_or_cpu_hnsw_fallback",
@@ -86,6 +101,8 @@ _SEARCH_ROUTE_BY_ALGORITHM = {
 }
 _MANIFEST_FILE = ".cuvs-bench-lucene.json"
 _MANIFEST_SCHEMA = 2
+_CONTROLLED_MANIFEST_SCHEMA = 3
+
 _SAFE_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _RUNTIME_KEYS = (
     "cuvs_java_jar",
@@ -414,14 +431,35 @@ def _safe_label(value: str, kind: str) -> str:
     return value
 
 
-def _codec_for(algorithm: str, build_params: Mapping[str, Any]) -> str:
+def _bounded_hnsw_build_parameter(value: Any, name: str) -> int:
+    if type(value) is not int or not (
+        _MIN_HNSW_BUILD_PARAMETER <= value <= _MAX_HNSW_BUILD_PARAMETER
+    ):
+        raise ValueError(
+            f"Lucene {name} must be an integer in "
+            f"[{_MIN_HNSW_BUILD_PARAMETER}, {_MAX_HNSW_BUILD_PARAMETER}], "
+            f"got {value!r}"
+        )
+    return value
+
+
+def _build_parameters_for(
+    algorithm: str, build_params: Mapping[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(build_params, Mapping):
+        raise TypeError("Lucene build parameters must be a mapping")
     try:
         expected = _CODEC_BY_ALGORITHM[algorithm]
     except KeyError as error:
         raise ValueError(
             f"Unsupported Lucene algorithm: {algorithm!r}"
         ) from error
-    unsupported = set(build_params) - {"codec"}
+    allowed = {"codec"}
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        allowed.update(_ACCELERATED_HNSW_BUILD_KEYS)
+    elif algorithm == CAGRA_ALGORITHM:
+        allowed.update(_CAGRA_BUILD_KEYS)
+    unsupported = set(build_params) - allowed
     if unsupported:
         raise ValueError(
             "Unsupported Lucene build parameters: "
@@ -432,7 +470,69 @@ def _codec_for(algorithm: str, build_params: Mapping[str, Any]) -> str:
         raise ValueError(
             f"{algorithm} requires codec {expected!r}, got {actual!r}"
         )
-    return expected
+    normalized: dict[str, Any] = {"codec": expected}
+    configured_hnsw = set(build_params) & {"m", "beam_width"}
+    if configured_hnsw and configured_hnsw != {"m", "beam_width"}:
+        missing = ", ".join(sorted({"m", "beam_width"} - configured_hnsw))
+        raise ValueError(
+            "Configured accelerated-HNSW builds require both m and "
+            f"beam_width; missing: {missing}"
+        )
+    if configured_hnsw:
+        m = build_params["m"]
+        beam_width = build_params["beam_width"]
+        normalized.update(
+            {
+                "m": _bounded_hnsw_build_parameter(m, "m"),
+                "beam_width": _bounded_hnsw_build_parameter(
+                    beam_width, "beam_width"
+                ),
+            }
+        )
+    normalized.update(
+        normalize_cuvs_build_controls(
+            build_params, hnsw=algorithm == ACCELERATED_HNSW_ALGORITHM
+        )
+    )
+    return normalized
+
+
+def _codec_for(algorithm: str, build_params: Mapping[str, Any]) -> str:
+    return str(_build_parameters_for(algorithm, build_params)["codec"])
+
+
+def _build_controls(
+    algorithm: str, parameters: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Keep persisted build settings independent of the writing codec generation."""
+    return {
+        key: value
+        for key, value in _build_parameters_for(algorithm, parameters).items()
+        if key != "codec"
+    }
+
+
+def _controlled_index_suffix(controls: Mapping[str, Any]) -> str:
+    if CUVS_BUILD_KEYS & controls.keys():
+        # Hash the complete canonical build identity, not just new settings.
+        # Keep the filename bounded even for a full parameter sweep.
+        encoded = json.dumps(
+            dict(controls),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return "~cfg-" + hashlib.sha256(encoded).hexdigest()[:24]
+    parts = []
+    for key, label in (
+        ("m", "m"),
+        ("beam_width", "bw"),
+    ):
+        if key in controls:
+            parts.append(f"{label}{controls[key]}")
+    # '~' cannot occur in an ordinary algorithm/group label, preventing a
+    # controlled base build from aliasing a pre-existing group's index.
+    return "~" + "_".join(parts) if parts else ""
 
 
 def _search_parameters(
@@ -579,8 +679,11 @@ def _manifest_payload(
     codec: str,
     segment_count: int,
     build_runtime_artifacts: Mapping[str, str],
+    *,
+    build_controls: Mapping[str, Any] | None = None,
+    runtime_build_topology: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": _MANIFEST_SCHEMA,
         "algorithm": algorithm,
         "codec": codec,
@@ -588,6 +691,13 @@ def _manifest_payload(
         "segment_count": segment_count,
         "build_runtime_artifacts": dict(build_runtime_artifacts),
     }
+    if build_controls:
+        payload.update(
+            schema_version=_CONTROLLED_MANIFEST_SCHEMA,
+            build_parameters=dict(build_controls),
+            runtime_build_topology=runtime_build_topology,
+        )
+    return payload
 
 
 def _artifact_metadata(
@@ -608,6 +718,17 @@ def _write_manifest(index_path: Path, payload: Mapping[str, Any]) -> None:
 
 def _is_manifest_integer(value: Any, *, minimum: int = 0) -> bool:
     return type(value) is int and value >= minimum
+
+
+def _validate_manifest_runtime_topology(
+    payload: Mapping[str, Any], path: Path
+) -> None:
+    """Uncontrolled builds must not claim segment-layout evidence."""
+    if payload["runtime_build_topology"] is not None:
+        raise RuntimeError(
+            "Lucene index manifest has invalid runtime build topology "
+            f"(unexpected evidence for an uncontrolled build): {path}"
+        )
 
 
 def _validate_manifest_dataset(dataset: Any, path: Path) -> None:
@@ -690,7 +811,8 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
     if (
         not isinstance(payload, dict)
         or type(payload.get("schema_version")) is not int
-        or payload["schema_version"] != _MANIFEST_SCHEMA
+        or payload["schema_version"]
+        not in (_MANIFEST_SCHEMA, _CONTROLLED_MANIFEST_SCHEMA)
     ):
         raise RuntimeError(
             f"Unsupported Lucene index manifest: {path}; rerun with --force"
@@ -703,6 +825,8 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
         "segment_count",
         "build_runtime_artifacts",
     }
+    if payload["schema_version"] == _CONTROLLED_MANIFEST_SCHEMA:
+        required.update(("build_parameters", "runtime_build_topology"))
     if set(payload) != required:
         raise RuntimeError(f"Lucene index manifest has invalid fields: {path}")
     if not isinstance(payload["algorithm"], str) or not isinstance(
@@ -722,6 +846,19 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
             "Lucene index manifest has invalid build-runtime artifact "
             f"provenance: {path}"
         )
+    if payload["schema_version"] == _CONTROLLED_MANIFEST_SCHEMA:
+        saved_parameters = payload["build_parameters"]
+        try:
+            canonical = _build_controls(payload["algorithm"], saved_parameters)
+        except (ValueError, TypeError) as error:
+            raise RuntimeError(
+                f"Invalid Lucene manifest build parameters: {path}"
+            ) from error
+        if not canonical or canonical != saved_parameters:
+            raise RuntimeError(
+                f"Invalid Lucene manifest build parameters: {path}"
+            )
+        _validate_manifest_runtime_topology(payload, path)
     return payload
 
 
@@ -849,12 +986,18 @@ class LuceneConfigLoader(ConfigLoader):
             _safe_label(algorithm, "algorithm")
             _safe_label(group, "group")
             for build_params in build_combos:
-                codec = _codec_for(algorithm, build_params)
+                canonical_parameters = _build_parameters_for(
+                    algorithm, build_params
+                )
+                codec = canonical_parameters["codec"]
                 name = algorithm if group == "base" else f"{algorithm}_{group}"
+                name += _controlled_index_suffix(
+                    _build_controls(algorithm, canonical_parameters)
+                )
                 index = IndexConfig(
                     name=name,
                     algo=algorithm,
-                    build_param={"codec": codec},
+                    build_param=canonical_parameters,
                     search_params=[dict(item) for item in search_combos],
                     file=str(root / name),
                 )
@@ -969,7 +1112,10 @@ class LuceneBackend(BenchmarkBackend):
         )
 
     def _validate_manifest_identity(
-        self, payload: Mapping[str, Any], dataset_identity: Mapping[str, Any]
+        self,
+        payload: Mapping[str, Any],
+        dataset_identity: Mapping[str, Any],
+        build_parameters: Mapping[str, Any] | None = None,
     ) -> str:
         """Validate saved identity independently of the default writing codec."""
         build_runtime_artifacts = payload.get("build_runtime_artifacts")
@@ -1044,8 +1190,15 @@ class LuceneBackend(BenchmarkBackend):
                 "Existing Lucene index does not match this dataset and configuration; "
                 "rerun with --force"
             )
+        requested_controls = _build_controls(
+            self.algorithm, build_parameters or {}
+        )
+        if payload.get("build_parameters", {}) != requested_controls:
+            raise RuntimeError(
+                "Existing Lucene index has different build parameters; rerun with --force"
+            )
         expected_without_segment_count = {
-            "schema_version": _MANIFEST_SCHEMA,
+            "schema_version": payload["schema_version"],
             "algorithm": self.algorithm,
             "codec": saved_codec,
             "dataset": dict(dataset_identity),
@@ -1053,6 +1206,8 @@ class LuceneBackend(BenchmarkBackend):
         }
         actual_without_segment_count = dict(payload)
         actual_without_segment_count.pop("segment_count", None)
+        actual_without_segment_count.pop("build_parameters", None)
+        actual_without_segment_count.pop("runtime_build_topology", None)
         if actual_without_segment_count != expected_without_segment_count:
             raise RuntimeError(
                 "Existing Lucene index does not match this dataset and configuration; "
@@ -1202,7 +1357,7 @@ class LuceneBackend(BenchmarkBackend):
                     self._search_dataset_identity(dataset, payload)
                 )
                 saved_codec = self._validate_manifest_identity(
-                    payload, dataset_identity
+                    payload, dataset_identity, index.build_param
                 )
                 runtime = self._get_runtime()
                 runtime.verify_artifacts()
@@ -1243,6 +1398,7 @@ class LuceneBackend(BenchmarkBackend):
             dataset_prepare_ns = (
                 time.perf_counter_ns() - dataset_prepare_started
             )
+            controls = _build_controls(self.algorithm, index.build_param)
             if path.exists() and (path.is_symlink() or not path.is_dir()):
                 raise ValueError(
                     f"Lucene index path must be a directory: {path}"
@@ -1263,9 +1419,14 @@ class LuceneBackend(BenchmarkBackend):
             )
             try:
                 build_started = time.perf_counter_ns()
-                runtime_build = runtime.build_index(
-                    staged, vectors, self.codec
-                )
+                if controls:
+                    runtime_build = runtime.build_index(
+                        staged, vectors, self.codec, controls
+                    )
+                else:
+                    runtime_build = runtime.build_index(
+                        staged, vectors, self.codec
+                    )
                 build_elapsed_ns = time.perf_counter_ns() - build_started
 
                 validation_started = time.perf_counter_ns()
@@ -1290,7 +1451,11 @@ class LuceneBackend(BenchmarkBackend):
                     self.codec,
                     observed_segments,
                     runtime.artifact_provenance,
+                    build_controls=controls,
+                    runtime_build_topology=None,
                 )
+                if controls:
+                    _validate_manifest_runtime_topology(payload, staged)
                 _write_manifest(staged, payload)
                 validation_elapsed_ns = (
                     time.perf_counter_ns() - validation_started
@@ -1358,6 +1523,7 @@ class LuceneBackend(BenchmarkBackend):
                     "group": self.group,
                     "index_name": index.name,
                     "pylucene_version": runtime.pylucene_version,
+                    "build_controls": controls,
                     **_artifact_metadata(
                         "build_runtime", runtime.artifact_provenance
                     ),
@@ -1555,7 +1721,7 @@ class LuceneBackend(BenchmarkBackend):
                 self._search_dataset_identity(dataset, payload)
             )
             saved_codec = self._validate_manifest_identity(
-                payload, dataset_identity
+                payload, dataset_identity, index.build_param
             )
             if int(queries.shape[1]) != dimensions:
                 raise ValueError(
