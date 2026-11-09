@@ -247,17 +247,17 @@ public class GPUKnnFloatVectorQuery extends CompatKnnFloatVectorQuery {
     for (LeafReaderContext ctx : leaves) {
       CuVS2510GPUVectorsReader gpuReader = unwrapGpuReader(ctx, field);
       if (gpuReader == null) {
-        return super.rewrite(indexSearcher);
+        return rewritePerLeaf(indexSearcher);
       }
       CagraIndex cagraIndex = gpuReader.getCagraIndexForField(field);
       if (cagraIndex == null) {
-        return super.rewrite(indexSearcher);
+        return rewritePerLeaf(indexSearcher);
       }
       long graphDegree = cagraIndex.getGraphDegree();
       if (commonGraphDegree == -1) {
         commonGraphDegree = graphDegree;
       } else if (graphDegree != commonGraphDegree) {
-        return super.rewrite(indexSearcher);
+        return rewritePerLeaf(indexSearcher);
       }
       gpuReaders.add(gpuReader);
     }
@@ -304,7 +304,7 @@ public class GPUKnnFloatVectorQuery extends CompatKnnFloatVectorQuery {
           totalCardinality += cached.cardinality();
           if (cached.cardinality() > 0
               && cached.cardinality() <= Math.max(k, perLeafTopK(leaves.get(i)))) {
-            return super.rewrite(indexSearcher);
+            return rewritePerLeaf(indexSearcher);
           }
         }
       }
@@ -353,7 +353,7 @@ public class GPUKnnFloatVectorQuery extends CompatKnnFloatVectorQuery {
         // k in max(k, perLeafTopK) above), so k hits must exist once the filtered corpus holds at
         // least k; a short result means the approximate search missed them.
         if (hasExplicitFilter && totalCardinality >= k && results.count() < k) {
-          return super.rewrite(indexSearcher);
+          return rewritePerLeaf(indexSearcher);
         }
 
         if (results.count() == 0) {
@@ -404,6 +404,11 @@ public class GPUKnnFloatVectorQuery extends CompatKnnFloatVectorQuery {
   // -------------------------------------------------------------------------
   // Per-segment fallback path (used when rewrite cannot search all segments at once)
   // -------------------------------------------------------------------------
+
+  // Allows binding-created queries to reject fallback when its per-segment cap is unsafe.
+  Query rewritePerLeaf(IndexSearcher indexSearcher) throws IOException {
+    return super.rewrite(indexSearcher);
+  }
 
   @Override
   KnnCollector newPerLeafCollector(int leafK, int visitedLimit) {

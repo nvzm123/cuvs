@@ -29,7 +29,8 @@ CPU_HNSW_CODEC = LUCENE_COMPATIBILITY.cpu_hnsw_codec
 ACCELERATED_HNSW_CODEC = LUCENE_COMPATIBILITY.accelerated_hnsw_codec
 CAGRA_CODEC = LUCENE_COMPATIBILITY.cagra_codec
 _CAGRA_QUERY_FACTORY = "com.nvidia.cuvs.lucene.GPUKnnFloatVectorQueryFactory"
-MAX_CAGRA_TOP_K = 1024
+# Ordinary per-segment CAGRA search is capped; multi-partition search is not.
+MAX_PER_SEGMENT_CAGRA_TOP_K = 1024
 REQUIRED_PYLUCENE_VERSION = LUCENE_COMPATIBILITY.pylucene_version
 
 _ID_FIELD = "id"
@@ -1360,7 +1361,7 @@ class LuceneRuntime:
         client_started = time.perf_counter_ns()
         prepare_started = time.perf_counter_ns()
         java_vector = self._java_vector(vector)
-        if cagra_search_parameters:
+        if cagra_search_parameters is not None:
             query = self._configured_cagra_query(
                 java_vector, k, cagra_search_parameters
             )

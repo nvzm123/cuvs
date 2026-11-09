@@ -92,6 +92,7 @@ def test_configured_query_forwards_the_java_vector_and_every_search_control():
     "gpu_controls",
     [
         pytest.param(None, id="stock-hnsw"),
+        pytest.param({}, id="gpu-cagra-defaults"),
         pytest.param({"search_width": 32}, id="gpu-cagra"),
     ],
 )

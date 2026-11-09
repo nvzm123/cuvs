@@ -13,7 +13,7 @@ public final class GPUKnnFloatVectorQueryFactory implements Function<Map<String,
 Constructs a GPU vector query through types exposed by standard generated Java bindings.
 
 The request requires `field` (`String`), `target` (`float[]`), and
-`k` (`Integer`, 1 through 1024). Optional integer entries are `itopk` (defaults
+`k` (a positive `Integer`). Optional integer entries are `itopk` (defaults
 to `k`), `search_width` (1), `max_iterations` (0, automatic), and
 `thread_block_size` (0, automatic). The optional `algo` string is one of `auto`
 (default), `single_cta`, or `multi_cta`. No other entries are accepted.
@@ -21,8 +21,9 @@ to `k`), `search_width` (1), `max_iterations` (0, automatic), and
 An explicit `itopk` must be at least `k`; this bridge rejects a request that the
 query would otherwise silently raise to `k`. Other search-parameter limits are enforced by
 `GPUKnnFloatVectorQuery`. In particular, SINGLE_CTA supports at most 512 intermediate
-results. The 1024 result-count limit is distinct from the `itopk` limit: the latter's Java
-integer range is only representational, not a promise that native CAGRA can execute every
+results. Requests above 1024 results require the optimized multi-partition CAGRA path and fail
+if the index would require per-segment fallback (for example, unequal graph degrees). Accepted
+integer ranges are only representational, not a promise that native CAGRA can execute every
 accepted combination. Native limits also depend on the index and other search parameters.
 
 The factory is stateless and returns the base Lucene `Query` type, so callers can use
@@ -55,6 +56,6 @@ the configured query, exposed as a base Lucene query
 | --- | --- |
 | `IllegalArgumentException` | if the request has unknown keys, missing required values, incorrect types, invalid search parameters, or non-finite vector values |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUKnnFloatVectorQueryFactory.java:63`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUKnnFloatVectorQueryFactory.java:65`_
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUKnnFloatVectorQueryFactory.java:35`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/GPUKnnFloatVectorQueryFactory.java:37`_
