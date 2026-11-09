@@ -471,6 +471,107 @@ def test_cagra_build_and_search_verify_persisted_index_and_search_behavior(
         assert warning.casefold() not in output.casefold()
 
 
+@pytest.mark.parametrize(
+    "algorithm, codec, segments, merge_to",
+    [
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            1,
+            0,
+            id="gpu-built-hnsw-one-segment",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            4,
+            0,
+            id="gpu-built-hnsw-four-segments",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            4,
+            1,
+            id="gpu-built-hnsw-four-merged-to-one",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM, CAGRA_CODEC, 1, 0, id="gpu-cagra-one-segment"
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM, CAGRA_CODEC, 4, 0, id="gpu-cagra-four-segments"
+        ),
+    ],
+)
+def test_controlled_build_retains_requested_segments_and_search_quality(
+    tmp_path, capfd, request, algorithm, codec, segments, merge_to
+):
+    dataset, query_ids = _case(algorithm, 128)
+    search_parameters = (
+        [{"num_candidates": 128}]
+        if algorithm == ACCELERATED_HNSW_ALGORITHM
+        else [{}]
+    )
+    backend, index = _backend_and_index(
+        tmp_path, algorithm, codec, search_parameters
+    )
+    index.build_param.update(
+        premerge_segment_count=segments,
+        force_merge_segment_count=merge_to,
+        ram_per_thread_hard_limit_mb=512,
+    )
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        index.build_param.update(m=32, beam_width=100)
+    case_name = request.node.nodeid
+    capfd.readouterr()
+
+    with lucene_log_case(case_name):
+        build = backend.build(dataset, [index])
+        assert build.success, build.error_message
+        result = backend.search(dataset, [index], k=10)[0]
+        reused = backend.build(dataset, [index])
+
+    captured = capfd.readouterr()
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        assert not case_used_cpu_hnsw_fallback(captured.err, case_name), (
+            lucene_case_output(captured.err, case_name)
+        )
+    for warning in _GRAPH_CLAMP_WARNINGS:
+        assert (
+            warning.casefold() not in (captured.out + captured.err).casefold()
+        )
+    assert build.metadata["segment_count"] == (merge_to or segments)
+    assert build.metadata["observed_premerge_segment_count"] == segments
+    assert build.metadata["applied_ram_per_thread_hard_limit_mb"] == 512
+    assert (
+        build.metadata["ram_per_thread_hard_limit_application"]
+        == "public_setter"
+    )
+    assert build.metadata["persisted_index_kind"] == (
+        "hnsw" if algorithm == ACCELERATED_HNSW_ALGORITHM else "gpu_cagra_only"
+    )
+    assert result.success, result.error_message
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"]
+    np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+    assert all(len(set(row)) == len(row) for row in result.neighbors.tolist())
+    assert (
+        _recall(result.neighbors, dataset.groundtruth_neighbors)
+        >= _MINIMUM_RECALL
+    )
+    expected_distances = np.sum(
+        (
+            dataset.training_vectors[result.neighbors]
+            - dataset.query_vectors[:, None, :]
+        )
+        ** 2,
+        axis=2,
+    )
+    np.testing.assert_allclose(
+        result.distances, expected_distances, rtol=1e-4, atol=1e-4
+    )
+
+
 _CUSTOM_GRAPH_BUILD = {
     "graph_degree": 32,
     "intermediate_graph_degree": 64,
@@ -478,35 +579,94 @@ _CUSTOM_GRAPH_BUILD = {
 }
 
 
+def _persisted_hnsw_layer_counts(runtime, index_path):
+    """Inspect the saved graphs through stock PyLucene, not requested settings."""
+    from org.apache.lucene.codecs.hnsw import HnswGraphProvider
+    from org.apache.lucene.codecs.perfield import PerFieldKnnVectorsFormat
+    from org.apache.lucene.index import SegmentReader
+
+    directory = runtime.FSDirectory.open(runtime.Paths.get(str(index_path)))
+    try:
+        reader = runtime.DirectoryReader.open(directory)
+        try:
+            layer_counts = []
+            for leaf in reader.leaves():
+                vectors_reader = SegmentReader.cast_(
+                    leaf.reader()
+                ).getVectorReader()
+                if PerFieldKnnVectorsFormat.FieldsReader.instance_(
+                    vectors_reader
+                ):
+                    vectors_reader = (
+                        PerFieldKnnVectorsFormat.FieldsReader.cast_(
+                            vectors_reader
+                        ).getFieldReader("vector")
+                    )
+                graph = HnswGraphProvider.cast_(vectors_reader).getGraph(
+                    "vector"
+                )
+                layer_counts.append(int(graph.numLevels()))
+            return layer_counts
+        finally:
+            reader.close()
+    finally:
+        directory.close()
+
+
 @pytest.mark.parametrize(
-    "build_controls",
+    "algorithm,codec,build_controls,document_count",
     [
-        pytest.param({}, id="default-build"),
         pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            {
+                **_CUSTOM_GRAPH_BUILD,
+                "nn_descent_n_iters": 15,
+                "hnsw_layers": 3,
+            },
+            # With degree 32, the layer sampling factor is 16. 32768 rows leave
+            # 128 on the third layer, above intermediate degree 64: no clamping.
+            32768,
+            id="nn-descent-hnsw-three-layers",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
             {**_CUSTOM_GRAPH_BUILD, "nn_descent_n_iters": 15},
-            id="custom-nn-descent-build",
+            1024,
+            id="nn-descent-gpu-search",
         ),
     ],
 )
-def test_cagra_query_controls_preserve_search_quality(
-    tmp_path, capfd, request, build_controls
+def test_custom_graph_build_and_query_controls_preserve_search_quality(
+    tmp_path, capfd, request, algorithm, codec, build_controls, document_count
 ):
-    dataset, query_ids = _case(CAGRA_ALGORITHM, 128)
-    search_plans = [
-        {
-            "itopk": 64,
-            "search_width": 16,
-            "max_iterations": 64,
-            "algo": "single_cta",
-            "thread_block_size": 128,
-        },
-        {"itopk": 128, "search_width": 32, "algo": "multi_cta"},
-    ]
+    dataset, query_ids = _case(algorithm, 128, document_count=document_count)
+    search_plans = (
+        [{"num_candidates": 128}]
+        if algorithm == ACCELERATED_HNSW_ALGORITHM
+        else [
+            {
+                "itopk": 64,
+                "search_width": 16,
+                "max_iterations": 64,
+                "algo": "single_cta",
+                "thread_block_size": 128,
+            },
+            {"itopk": 128, "search_width": 32, "algo": "multi_cta"},
+        ]
+    )
     backend, index = _backend_and_index(
-        tmp_path, CAGRA_ALGORITHM, CAGRA_CODEC, search_plans
+        tmp_path, algorithm, codec, search_plans
     )
     index.build_param.update(build_controls)
-
+    index.build_param.update(
+        premerge_segment_count=1,
+        force_merge_segment_count=0,
+        ram_per_thread_hard_limit_mb=512,
+    )
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        index.build_param.update(m=16, beam_width=100)
     case_name = request.node.nodeid
     capfd.readouterr()
 
@@ -517,24 +677,26 @@ def test_cagra_query_controls_preserve_search_quality(
         reused = backend.build(dataset, [index])
 
     captured = capfd.readouterr()
-
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        assert not case_used_cpu_hnsw_fallback(captured.err, case_name), (
+            captured.err
+        )
     for warning in _GRAPH_CLAMP_WARNINGS:
         assert (
             warning.casefold() not in (captured.out + captured.err).casefold()
         )
-    assert build.metadata["persisted_index_kind"] == "gpu_cagra_only"
-    assert build.metadata["field_count"] == 1
-    assert build.metadata["vector_count"] == len(dataset.training_vectors)
-    assert build.metadata["dimensions"] == 128
-    _assert_artifact_provenance(build.metadata, "build_runtime")
+    assert build.metadata["persisted_index_kind"] == (
+        "hnsw" if algorithm == ACCELERATED_HNSW_ALGORITHM else "gpu_cagra_only"
+    )
     assert reused.success, reused.error_message
     assert reused.metadata["skipped"]
-
-    assert len(results) == len(search_plans)
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        expected_layers = build_controls.get("hnsw_layers", 1)
+        assert _persisted_hnsw_layer_counts(
+            backend._get_runtime(), index.file
+        ) == [expected_layers]
     for result in results:
         assert result.success, result.error_message
-        assert result.metadata["expected_search_route"] == "gpu_cagra"
-        _assert_artifact_provenance(result.metadata, "search_runtime")
         np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
         assert all(
             len(set(row)) == len(row) for row in result.neighbors.tolist()

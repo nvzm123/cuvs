@@ -14,6 +14,7 @@ import pytest
 from cuvs_bench.backends._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
     CAGRA_CODEC,
+    CPU_HNSW_CODEC,
     LuceneRuntime,
 )
 from _lucene_test_support import RecordingRuntime, _backend_and_index, _dataset
@@ -58,6 +59,26 @@ def test_parameter_requests_preserve_boolean_integer_and_fraction_types():
     }
 
 
+@pytest.mark.parametrize(
+    "codec", [CPU_HNSW_CODEC, ACCELERATED_HNSW_CODEC, CAGRA_CODEC]
+)
+def test_topology_only_build_does_not_require_a_parameter_factory(codec):
+    runtime = object.__new__(LuceneRuntime)
+    fake_default_codec = object()
+    runtime.resolve_codec = Mock(return_value=fake_default_codec)
+    runtime.resolve_configured_hnsw_codec = Mock()
+    runtime.resolve_configured_cagra_codec = Mock()
+
+    selected = runtime._resolve_build_codec(
+        codec, {"premerge_segment_count": 1, "force_merge_segment_count": 0}
+    )
+
+    assert selected is fake_default_codec
+    runtime.resolve_codec.assert_called_once_with(codec)
+    runtime.resolve_configured_hnsw_codec.assert_not_called()
+    runtime.resolve_configured_cagra_codec.assert_not_called()
+
+
 def test_hnsw_codec_request_keeps_topology_out_of_algorithm_controls():
     runtime = object.__new__(LuceneRuntime)
     fake_configured_codec = object()
@@ -72,6 +93,7 @@ def test_hnsw_codec_request_keeps_topology_out_of_algorithm_controls():
             "beam_width": 100,
             "hnsw_layers": 3,
             "writer_threads": 2,
+            "premerge_segment_count": 4,
         },
     )
 
