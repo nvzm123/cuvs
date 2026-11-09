@@ -59,8 +59,11 @@ _GPU_HIDDEN_FALLBACK_CASE = (
 )
 
 
-def _case(algorithm: str, dimensions: int) -> tuple[Dataset, np.ndarray]:
-    document_count = 1024 if algorithm != CPU_HNSW_ALGORITHM else 512
+def _case(
+    algorithm: str, dimensions: int, *, document_count: int | None = None
+) -> tuple[Dataset, np.ndarray]:
+    if document_count is None:
+        document_count = 1024 if algorithm != CPU_HNSW_ALGORITHM else 512
     rng = np.random.default_rng(174 + dimensions)
     vectors = rng.standard_normal((document_count, dimensions)).astype(
         np.float32
@@ -561,6 +564,211 @@ def test_controlled_build_retains_requested_segments_and_search_quality(
     )
 
 
+_CUSTOM_GRAPH_BUILD = {
+    "graph_degree": 32,
+    "intermediate_graph_degree": 64,
+    "writer_threads": 1,
+}
+_IVF_PQ_GRAPH_BUILD = {
+    **_CUSTOM_GRAPH_BUILD,
+    "graph_build_algo": "ivf_pq",
+    "n_lists": 32,
+    "n_probes": 16,
+    "kmeans_n_iters": 10,
+    "kmeans_trainset_fraction": 0.5,
+    "pq_dim": 16,
+    "pq_bits": 4,
+    "refinement_rate": 2.0,
+    "max_train_points_per_pq_code": 128,
+    "codebook_kind": "per_subspace",
+    "force_random_rotation": True,
+    "lut_dtype": "float16",
+    "internal_distance_dtype": "float16",
+}
+
+
+def _persisted_hnsw_layer_counts(runtime, index_path):
+    """Inspect the saved graphs through stock PyLucene, not requested settings."""
+    from org.apache.lucene.codecs.hnsw import HnswGraphProvider
+    from org.apache.lucene.codecs.perfield import PerFieldKnnVectorsFormat
+    from org.apache.lucene.index import SegmentReader
+
+    directory = runtime.FSDirectory.open(runtime.Paths.get(str(index_path)))
+    try:
+        reader = runtime.DirectoryReader.open(directory)
+        try:
+            layer_counts = []
+            for leaf in reader.leaves():
+                vectors_reader = SegmentReader.cast_(
+                    leaf.reader()
+                ).getVectorReader()
+                if PerFieldKnnVectorsFormat.FieldsReader.instance_(
+                    vectors_reader
+                ):
+                    vectors_reader = (
+                        PerFieldKnnVectorsFormat.FieldsReader.cast_(
+                            vectors_reader
+                        ).getFieldReader("vector")
+                    )
+                graph = HnswGraphProvider.cast_(vectors_reader).getGraph(
+                    "vector"
+                )
+                layer_counts.append(int(graph.numLevels()))
+            return layer_counts
+        finally:
+            reader.close()
+    finally:
+        directory.close()
+
+
+@pytest.mark.parametrize(
+    "algorithm,codec,build_controls,document_count",
+    [
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            {
+                **_CUSTOM_GRAPH_BUILD,
+                "nn_descent_n_iters": 15,
+                "hnsw_layers": 3,
+            },
+            # With degree 32, the layer sampling factor is 16. 32768 rows leave
+            # 128 on the third layer, above intermediate degree 64: no clamping.
+            32768,
+            id="nn-descent-hnsw-three-layers",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            _IVF_PQ_GRAPH_BUILD,
+            4096,
+            id="ivf-pq-hnsw",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            {**_CUSTOM_GRAPH_BUILD, "nn_descent_n_iters": 15},
+            1024,
+            id="nn-descent-gpu-search",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            _IVF_PQ_GRAPH_BUILD,
+            4096,
+            id="ivf-pq-gpu-search",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            {**_CUSTOM_GRAPH_BUILD, "graph_build_algo": "ivf_pq"},
+            4096,
+            id="ivf-pq-hnsw-segment-defaults",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            {**_CUSTOM_GRAPH_BUILD, "graph_build_algo": "ivf_pq"},
+            4096,
+            id="ivf-pq-gpu-search-segment-defaults",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            {
+                **_CUSTOM_GRAPH_BUILD,
+                "graph_build_algo": "ivf_pq",
+                "hnsw_layers": 3,
+                # Upper layers reuse 256 segment-derived lists. Probe all of them:
+                # 32 probes failed upper-layer graph construction on the 256-row top layer.
+                "n_probes": 256,
+            },
+            # Three layers retain 65536, 4096, then 256 vectors: enough for 8-bit PQ training.
+            65536,
+            id="ivf-pq-hnsw-three-layers-tuned-probes",
+        ),
+    ],
+)
+def test_custom_graph_build_and_query_controls_preserve_search_quality(
+    tmp_path, capfd, request, algorithm, codec, build_controls, document_count
+):
+    dataset, query_ids = _case(algorithm, 128, document_count=document_count)
+    search_plans = (
+        [{"num_candidates": 128}]
+        if algorithm == ACCELERATED_HNSW_ALGORITHM
+        else [
+            {
+                "itopk": 64,
+                "search_width": 16,
+                "max_iterations": 64,
+                "algo": "single_cta",
+                "thread_block_size": 128,
+            },
+            {"itopk": 128, "search_width": 32, "algo": "multi_cta"},
+        ]
+    )
+    backend, index = _backend_and_index(
+        tmp_path, algorithm, codec, search_plans
+    )
+    index.build_param.update(build_controls)
+    index.build_param.update(
+        premerge_segment_count=1,
+        force_merge_segment_count=0,
+        ram_per_thread_hard_limit_mb=512,
+    )
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        index.build_param.update(m=16, beam_width=100)
+    case_name = request.node.nodeid
+    capfd.readouterr()
+
+    with lucene_log_case(case_name):
+        build = backend.build(dataset, [index])
+        assert build.success, build.error_message
+        results = backend.search(dataset, [index], k=10)
+        reused = backend.build(dataset, [index])
+
+    captured = capfd.readouterr()
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        assert not case_used_cpu_hnsw_fallback(captured.err, case_name), (
+            captured.err
+        )
+    for warning in _GRAPH_CLAMP_WARNINGS:
+        assert (
+            warning.casefold() not in (captured.out + captured.err).casefold()
+        )
+    assert build.metadata["persisted_index_kind"] == (
+        "hnsw" if algorithm == ACCELERATED_HNSW_ALGORITHM else "gpu_cagra_only"
+    )
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"]
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        expected_layers = build_controls.get("hnsw_layers", 1)
+        assert _persisted_hnsw_layer_counts(
+            backend._get_runtime(), index.file
+        ) == [expected_layers]
+    for result in results:
+        assert result.success, result.error_message
+        np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+        assert all(
+            len(set(row)) == len(row) for row in result.neighbors.tolist()
+        )
+        assert (
+            _recall(result.neighbors, dataset.groundtruth_neighbors)
+            >= _MINIMUM_RECALL
+        )
+        expected_distances = np.sum(
+            (
+                dataset.training_vectors[result.neighbors]
+                - dataset.query_vectors[:, None, :]
+            )
+            ** 2,
+            axis=2,
+        )
+        np.testing.assert_allclose(
+            result.distances, expected_distances, rtol=1e-4, atol=1e-4
+        )
+
+
 def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path):
     """Prove the CPU control does not inherit a cuVS-capable process JVM."""
     child_flag = "CUVS_BENCH_LUCENE_CPU_PROBE"
@@ -843,6 +1051,31 @@ def test_public_cli_builds_searches_and_exports_cpu_hnsw(tmp_path):
     assert row["effective_search_batch_size"] == "1"
     assert row["client_query_count"] == "3"
     assert int(row["index_prewarm_bytes"]) > 0
+
+
+def test_cagra_rejects_probes_above_segment_derived_lists_without_brute_force_fallback(
+    tmp_path,
+):
+    dataset, _ = _case(CAGRA_ALGORITHM, 128, document_count=1024)
+    backend, index = _backend_and_index(
+        tmp_path, CAGRA_ALGORITHM, CAGRA_CODEC, [{}]
+    )
+    # This segment derives 32 lists. Only Java knows the final segment shape.
+    index.build_param.update(
+        **_CUSTOM_GRAPH_BUILD,
+        graph_build_algo="ivf_pq",
+        n_probes=33,
+    )
+
+    build = backend.build(dataset, [index])
+
+    assert not build.success
+    # The configuration error must surface, not become a persisted brute-force rejection later.
+    assert (
+        "n_probes must not exceed n_lists for this segment"
+        in build.error_message
+    )
+    assert not Path(index.file).exists()
 
 
 def test_cagra_build_rejects_lucenes_one_document_brute_force_fallback(

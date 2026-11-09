@@ -4,7 +4,6 @@
  */
 package com.nvidia.cuvs.lucene;
 
-import com.nvidia.cuvs.CagraIndexParams.HnswHeuristicType;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Function;
@@ -14,14 +13,29 @@ import org.apache.lucene.codecs.Codec;
  * Constructs an accelerated HNSW codec from one self-contained parameter request.
  *
  * <p>The standard {@link Function} and {@link Map} types form a narrow bridge for generated Java
- * bindings that do not wrap parameterized constructors. The request has exactly two entries,
- * max_conn and beam_width. Both must be {@link Integer} values in the inclusive range 1 through
- * 512. The response contains the configured {@code codec} and the verified applied values under the
+ * bindings that do not wrap parameterized constructors. The required entries, max_conn and
+ * beam_width, must be {@link Integer} values in the inclusive range 1 through 512.
+ * The response contains the configured {@code codec} and the applied values under the
  * same parameter keys. Invalid requests throw {@link IllegalArgumentException}; codec construction
  * or initialization failures throw {@link IllegalStateException}.
  *
  * <p>The factory is stateless. In particular, it does not use JVM system properties, so concurrent
  * callers cannot observe or overwrite one another's configuration.
+ *
+ * <p>Optional build controls are {@code build_strategy} ({@code heuristic} or {@code custom}),
+ * {@code graph_degree} (1..512), {@code intermediate_graph_degree} (2..512),
+ * {@code graph_build_algo} ({@code nn_descent} or {@code ivf_pq}), {@code nn_descent_n_iters}
+ * (1..100, NN-descent only), {@code hnsw_layers} (1..99), and {@code writer_threads} (1..512).
+ * Counts must be Integer values; enum names are lowercase strings.
+ *
+ * <p>Supplying geometry, algorithm, iteration or IVF-PQ controls selects custom mode unless an
+ * explicit strategy is supplied. Heuristic mode rejects controls it would ignore. Custom mode
+ * defaults to graph degree {@code min(64, 2 * max_conn)} and intermediate degree
+ * {@code max(128, graph_degree)}; the graph degree must not exceed {@code 2 * max_conn} or the
+ * intermediate degree. Heuristic mode retains the SAME_GRAPH_FOOTPRINT default: cuVS derives
+ * {@code graph_degree = 2 * max_conn} and {@code intermediate_graph_degree = 3 * max_conn}.
+ * This factory does not expose a heuristic selector.
+ * IVF-PQ controls follow the contract documented on {@link GPUSearchCodecFactory}.
  *
  * @since 26.12
  */
@@ -34,31 +48,27 @@ public final class AcceleratedHNSWCodecFactory
   /**
    * Constructs one codec from the complete request.
    *
-   * @param request exactly the {@code max_conn} and {@code beam_width} integer entries
+   * @param request the required {@code max_conn} and {@code beam_width} entries and optional controls
    * @return the codec and its verified applied parameter values
-   * @throws IllegalArgumentException if the request is null, incomplete, has extra keys, contains
-   *     non-integer values, or contains values outside the inclusive range 1 through 512
+   * @throws IllegalArgumentException if the request is null, incomplete, or contains unknown,
+   *     incorrectly typed, out-of-range or incompatible options
    * @throws IllegalStateException if codec construction or vector-format initialization fails
    */
   @Override
   public Map<String, Object> apply(Map<String, Object> request) {
     int maxConn =
-        requiredInteger(
+        CagraBuildOptions.requiredInteger(
             request,
             MAX_CONN_KEY,
             AcceleratedHNSWParams.MIN_MAX_CONN,
             AcceleratedHNSWParams.MAX_MAX_CONN);
     int beamWidth =
-        requiredInteger(
+        CagraBuildOptions.requiredInteger(
             request,
             BEAM_WIDTH_KEY,
             AcceleratedHNSWParams.MIN_BEAM_WIDTH,
             AcceleratedHNSWParams.MAX_BEAM_WIDTH);
-    if (request.size() != 2) {
-      throw new IllegalArgumentException(
-          "request must contain only " + MAX_CONN_KEY + " and " + BEAM_WIDTH_KEY);
-    }
-    AcceleratedHNSWParams parameters = createParameters(maxConn, beamWidth);
+    AcceleratedHNSWParams parameters = CagraBuildOptions.accelerated(request, maxConn, beamWidth);
 
     final Codec codec;
     try {
@@ -78,30 +88,5 @@ public final class AcceleratedHNSWCodecFactory
     response.put(MAX_CONN_KEY, parameters.getMaxConn());
     response.put(BEAM_WIDTH_KEY, parameters.getBeamWidth());
     return response;
-  }
-
-  static AcceleratedHNSWParams createParameters(int maxConn, int beamWidth) {
-    return new AcceleratedHNSWParams.Builder()
-        .withStrategy(AcceleratedHNSWParams.Strategy.HEURISTIC)
-        .withHnswHeuristicType(HnswHeuristicType.SAME_GRAPH_FOOTPRINT)
-        .withMaxConn(maxConn)
-        .withBeamWidth(beamWidth)
-        .build();
-  }
-
-  private static int requiredInteger(
-      Map<String, Object> values, String key, int minimum, int maximum) {
-    if (values == null) {
-      throw new IllegalArgumentException("request must not be null");
-    }
-    Object value = values.get(key);
-    if (!(value instanceof Integer integer)) {
-      throw new IllegalArgumentException(key + " must have type Integer");
-    }
-    if (integer < minimum || integer > maximum) {
-      throw new IllegalArgumentException(
-          key + " must be in range [" + minimum + ", " + maximum + "], but was: " + integer);
-    }
-    return integer;
   }
 }

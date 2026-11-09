@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from ._lucene_compat import LUCENE_COMPATIBILITY, PERSISTED_CODEC_KINDS
+from ._lucene_parameters import CUVS_BUILD_KEYS
 from ._lucene_runtime_config import (
     CUVS_LUCENE_ARTIFACT_ID,
     maven_artifact_version,
@@ -31,6 +32,8 @@ CAGRA_CODEC = LUCENE_COMPATIBILITY.cagra_codec
 CONFIGURED_ACCELERATED_HNSW_CODEC_FACTORY = (
     "com.nvidia.cuvs.lucene.AcceleratedHNSWCodecFactory"
 )
+CONFIGURED_CAGRA_CODEC_FACTORY = "com.nvidia.cuvs.lucene.GPUSearchCodecFactory"
+_CAGRA_QUERY_FACTORY = "com.nvidia.cuvs.lucene.GPUKnnFloatVectorQueryFactory"
 INDEX_WRITER_CONFIG_RAM_LIMIT_BRIDGE = (
     "com.nvidia.cuvs.lucene.IndexWriterConfigRAMLimitBridge"
 )
@@ -1190,7 +1193,7 @@ class LuceneRuntime:
     """Own the generated bindings and the narrow Lucene operations Bench uses."""
 
     def __init__(self, lucene: Any):
-        from java.lang import Boolean, Class, Integer, Long, String
+        from java.lang import Boolean, Class, Double, Integer, Long, String
         from java.nio.file import Paths
         from java.util import HashMap, Map
         from java.util.function import Function
@@ -1216,6 +1219,7 @@ class LuceneRuntime:
         from org.apache.lucene.search import (
             IndexSearcher,
             KnnFloatVectorQuery,
+            Query,
             TopDocs,
         )
         from org.apache.lucene.store import FSDirectory, IOContext
@@ -1228,6 +1232,7 @@ class LuceneRuntime:
         self.TieredMergePolicy = TieredMergePolicy
         self.Class = Class
         self.Integer = Integer
+        self.Double = Double
         self.Long = Long
         self.HashMap = HashMap
         self.Map = Map
@@ -1248,6 +1253,7 @@ class LuceneRuntime:
         self.VectorSimilarityFunction = VectorSimilarityFunction
         self.IndexSearcher = IndexSearcher
         self.KnnFloatVectorQuery = KnnFloatVectorQuery
+        self.Query = Query
         self.TopDocs = TopDocs
         self.FSDirectory = FSDirectory
         self.IOContext = IOContext
@@ -1258,6 +1264,8 @@ class LuceneRuntime:
         self._artifact_tokens: dict[str, tuple[int, ...]] = {}
         self._java_search_timer: Any | None = None
         self._java_configured_codec_factory: Any | None = None
+        self._java_cagra_codec_factory: Any | None = None
+        self._java_cagra_query_factory: Any | None = None
         self._java_ram_limit_bridge: Any | None = None
 
     @classmethod
@@ -1315,6 +1323,33 @@ class LuceneRuntime:
                 "PyLucene/JCC: "
                 f"{type(error).__name__}: {error}"
             ) from error
+
+    def _load_parameter_factory(self, class_name: str) -> Any:
+        """Load an opt-in factory only when a run requests its controls."""
+        try:
+            instance = self.Class.forName(class_name).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not load or adapt {class_name} through PyLucene/JCC. "
+                "These controls require an updated thin cuVS-Lucene JAR: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
+    def _parameter_request(self, parameters: Mapping[str, Any]) -> Any:
+        """Box scalar controls explicitly; Java must not guess numeric types."""
+        request = self.HashMap()
+        for key, value in parameters.items():
+            if type(value) is bool:
+                value = self.Boolean.valueOf(value)
+            elif type(value) is int:
+                value = self.Integer.valueOf(value)
+            elif type(value) is float:
+                value = self.Double.valueOf(value)
+            elif type(value) is not str:
+                raise TypeError(f"Unsupported Java parameter {key}: {value!r}")
+            request.put(key, value)
+        return request
 
     def _set_ram_per_thread_hard_limit_mb(
         self,
@@ -1445,7 +1480,10 @@ class LuceneRuntime:
         return codec
 
     def resolve_configured_hnsw_codec(
-        self, max_conn: int, beam_width: int
+        self,
+        max_conn: int,
+        beam_width: int,
+        parameters: Mapping[str, Any] | None = None,
     ) -> Any:
         """Construct an accelerated-HNSW codec from one atomic request."""
         self.attach_current_thread()
@@ -1453,10 +1491,12 @@ class LuceneRuntime:
         if factory is None:
             factory = self._load_java_configured_codec_factory()
             self._java_configured_codec_factory = factory
-        request = self.HashMap()
-        request.put(_HNSW_MAX_CONN_REQUEST_KEY, self.Integer.valueOf(max_conn))
-        request.put(
-            _HNSW_BEAM_WIDTH_REQUEST_KEY, self.Integer.valueOf(beam_width)
+        request = self._parameter_request(
+            {
+                **(parameters or {}),
+                _HNSW_MAX_CONN_REQUEST_KEY: max_conn,
+                _HNSW_BEAM_WIDTH_REQUEST_KEY: beam_width,
+            }
         )
         try:
             raw_response = factory.apply(request)
@@ -1491,6 +1531,31 @@ class LuceneRuntime:
             )
         return codec
 
+    def resolve_configured_cagra_codec(
+        self, parameters: Mapping[str, Any]
+    ) -> Any:
+        self.attach_current_thread()
+        if self._java_cagra_codec_factory is None:
+            self._java_cagra_codec_factory = self._load_parameter_factory(
+                CONFIGURED_CAGRA_CODEC_FACTORY
+            )
+        try:
+            response = self.Map.cast_(
+                self._java_cagra_codec_factory.apply(
+                    self._parameter_request(parameters)
+                )
+            )
+            codec = self.Codec.cast_(
+                response.get(_CONFIGURED_CODEC_RESPONSE_KEY)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured GPU CAGRA codec: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        self._validate_codec(codec, CAGRA_CODEC)
+        return codec
+
     @staticmethod
     def _validate_codec(codec: Any, name: str) -> None:
         if str(codec.getName()) != name:
@@ -1520,17 +1585,25 @@ class LuceneRuntime:
         codec_name: str,
         build_parameters: Mapping[str, Any] | None,
     ) -> Any:
-        if codec_name != ACCELERATED_HNSW_CODEC:
-            return self.resolve_codec(codec_name)
-        if build_parameters is None or not {
-            "m",
-            "beam_width",
-        }.issubset(build_parameters):
-            return self.resolve_codec(codec_name)
-        return self.resolve_configured_hnsw_codec(
-            int(build_parameters["m"]),
-            int(build_parameters["beam_width"]),
-        )
+        parameters = build_parameters or {}
+        codec_controls = {
+            key: value
+            for key, value in parameters.items()
+            if key in CUVS_BUILD_KEYS
+        }
+        if codec_name == CAGRA_CODEC and codec_controls:
+            return self.resolve_configured_cagra_codec(codec_controls)
+        if codec_name == ACCELERATED_HNSW_CODEC and (
+            codec_controls or {"m", "beam_width"}.issubset(parameters)
+        ):
+            # Match AcceleratedHNSWParams' defaults when only a new control
+            # (for example, hnsw_layers) is supplied.
+            return self.resolve_configured_hnsw_codec(
+                int(parameters.get("m", 32)),
+                int(parameters.get("beam_width", 32)),
+                codec_controls,
+            )
+        return self.resolve_codec(codec_name)
 
     def _controlled_ingest_config(
         self,
@@ -2013,12 +2086,19 @@ class LuceneRuntime:
         vector: np.ndarray,
         k: int,
         candidates: int,
+        cagra_search_parameters: Mapping[str, Any] | None = None,
     ) -> tuple[list[SearchHit], QueryTiming]:
         client_started = time.perf_counter_ns()
         prepare_started = time.perf_counter_ns()
-        query = self.KnnFloatVectorQuery(
-            _VECTOR_FIELD, self._java_vector(vector), candidates
-        )
+        java_vector = self._java_vector(vector)
+        if cagra_search_parameters:
+            query = self._configured_cagra_query(
+                java_vector, k, cagra_search_parameters
+            )
+        else:
+            query = self.KnnFloatVectorQuery(
+                _VECTOR_FIELD, java_vector, candidates
+            )
         query_prepare_ns = time.perf_counter_ns() - prepare_started
 
         top_docs, pylucene_search_dispatch_ns, java_search_ns = self._search(
@@ -2038,6 +2118,28 @@ class LuceneRuntime:
             client_query_ns=time.perf_counter_ns() - client_started,
         )
 
+    def _configured_cagra_query(
+        self, java_vector: Any, k: int, parameters: Mapping[str, Any]
+    ) -> Any:
+        """Construct the GPU query without requiring custom JCC wrappers."""
+        if self._java_cagra_query_factory is None:
+            self._java_cagra_query_factory = self._load_parameter_factory(
+                _CAGRA_QUERY_FACTORY
+            )
+        request = self._parameter_request(
+            {**parameters, "field": _VECTOR_FIELD, "k": k}
+        )
+        request.put("target", java_vector)
+        try:
+            return self.Query.cast_(
+                self._java_cagra_query_factory.apply(request)
+            )
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct a configured GPU CAGRA query: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+
     def search_index(
         self,
         index_path: Path,
@@ -2045,6 +2147,7 @@ class LuceneRuntime:
         *,
         k: int,
         num_candidates: int,
+        cagra_search_parameters: Mapping[str, Any] | None = None,
     ) -> RuntimeSearchResult:
         self.attach_current_thread()
         plan_started = time.perf_counter_ns()
@@ -2100,6 +2203,7 @@ class LuceneRuntime:
                     vector,
                     k,
                     min(num_candidates, document_count),
+                    cagra_search_parameters,
                 )
                 all_hits.append(hits)
                 query_timings.append(query_timing)

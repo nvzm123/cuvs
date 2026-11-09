@@ -179,6 +179,10 @@ public class CuVS2510GPUVectorsWriter extends KnnVectorsWriter {
     long cagraIndexOffset, cagraIndexLength = 0L;
     long bruteForceIndexOffset, bruteForceIndexLength = 0L;
 
+    // Invalid binding-factory settings are caller errors, not a reason to build brute force.
+    // Validate before the native-build fallback handler below; legacy configurations are unchanged.
+    gpuSearchParams.validateIvfPqBuildShape(vectors.size(), fieldInfo.getVectorDimension());
+
     /*
      * CAGRA has an issue when asked to build an index with just one vector.
      * Hence, we currently fallback to brute force in such a case.
