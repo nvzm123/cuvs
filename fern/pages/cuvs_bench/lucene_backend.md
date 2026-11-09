@@ -87,10 +87,11 @@ guarantees of successful allocation.
 
 The codec/query factories belong to the thin cuVS-Lucene JAR. Newly configured
 builds require an updated JAR containing `AcceleratedHNSWCodecFactory` or
-`GPUSearchCodecFactory`; explicit GPU query controls require
-`GPUKnnFloatVectorQueryFactory`. Missing helpers fail rather than silently
-ignoring the request. Default builds and searches do not require these new
-classes. Java's factory selects the writing codec for its artifact's Lucene
+`GPUSearchCodecFactory`; explicit GPU query controls and CAGRA requests with
+`k > 1024` require `GPUKnnFloatVectorQueryFactory`. Missing helpers fail rather
+than silently ignoring the request. Default builds and empty search
+configurations with `k <= 1024` keep the existing path and do not require these
+factories. Java's factory selects the writing codec for its artifact's Lucene
 release; the Python runtime still supports only PyLucene 10.2.0.
 
 Configured index names distinguish their build settings; new tuning combinations
@@ -124,12 +125,11 @@ classpath inconsistent.
 
 The initial backend accepts nonempty, finite, `float32` Euclidean/L2 vectors
 and supports latency-mode sweeps. The CPU HNSW algorithm accepts at most 1024
-dimensions; both cuVS-backed algorithms accept at most 4096. CAGRA supports
-`k <= 1024`. The backend validates the physical segment codec and every
-persisted vector field before searching, and fails if CAGRA construction
-silently produced a brute-force index. Both HNSW algorithms support an explicit
-`num_candidates` value greater than or equal to `k`; their CPU search path is
-not subject to CAGRA's `k <= 1024` limit.
+dimensions; both cuVS-backed algorithms accept at most 4096. The backend
+validates the physical segment codec and every persisted vector field before
+searching, and fails if CAGRA construction silently produced a brute-force
+index. Both HNSW algorithms support an explicit `num_candidates` value greater
+than or equal to `k`.
 
 ### Search controls
 
@@ -146,8 +146,15 @@ search requires an effective `itopk` no larger than 512. Resource requirements
 depend on the combination; accepted integer ranges do not guarantee sufficient
 device memory. Defaults are `itopk=k`, width 1, automatic iterations/block size
 and algorithm. Explicit controls construct `GPUKnnFloatVectorQuery` through the
-thin-JAR bridge; an empty search configuration retains the existing query path.
-Search sweeps reuse one index: these settings do not change its build identity.
+thin-JAR bridge. Search sweeps reuse one index: these settings do not change its
+build identity.
+
+CAGRA requests with `k > 1024` also use this bridge, including with an empty
+search configuration. They require the optimized multi-partition path (which
+also handles one segment), with a CAGRA index of the same graph degree in every
+segment. An incompatible index fails clearly rather than silently using the
+per-segment path, whose CAGRA search remains capped at 1024. Use `auto` or
+`multi_cta` for larger result counts; `single_cta` retains its 512 limit.
 
 ### Build PyLucene 10.2.0 from source
 

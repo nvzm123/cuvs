@@ -8,13 +8,14 @@ import com.nvidia.cuvs.CagraSearchParams;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 
 /**
  * Constructs a GPU vector query through types exposed by standard generated Java bindings.
  *
  * <p>The request requires {@code field} ({@link String}), {@code target} ({@code float[]}), and
- * {@code k} ({@link Integer}, 1 through 1024). Optional integer entries are {@code itopk} (defaults
+ * {@code k} (a positive {@link Integer}). Optional integer entries are {@code itopk} (defaults
  * to {@code k}), {@code search_width} (1), {@code max_iterations} (0, automatic), and
  * {@code thread_block_size} (0, automatic). The optional {@code algo} string is one of {@code auto}
  * (default), {@code single_cta}, or {@code multi_cta}. No other entries are accepted.
@@ -22,8 +23,9 @@ import org.apache.lucene.search.Query;
  * <p>An explicit {@code itopk} must be at least {@code k}; this bridge rejects a request that the
  * query would otherwise silently raise to {@code k}. Other search-parameter limits are enforced by
  * {@link GPUKnnFloatVectorQuery}. In particular, SINGLE_CTA supports at most 512 intermediate
- * results. The 1024 result-count limit is distinct from the {@code itopk} limit: the latter's Java
- * integer range is only representational, not a promise that native CAGRA can execute every
+ * results. Requests above 1024 results require the optimized multi-partition CAGRA path and fail
+ * if the index would require per-segment fallback (for example, unequal graph degrees). Accepted
+ * integer ranges are only representational, not a promise that native CAGRA can execute every
  * accepted combination. Native limits also depend on the index and other search parameters.
  *
  * <p>The factory is stateless and returns the base Lucene {@link Query} type, so callers can use
@@ -74,8 +76,8 @@ public final class GPUKnnFloatVectorQueryFactory implements Function<Map<String,
     String field = requiredValue(request, FIELD_KEY, String.class);
     float[] target = requiredValue(request, TARGET_KEY, float[].class);
     int k = requiredValue(request, K_KEY, Integer.class);
-    if (k < 1 || k > 1024) {
-      throw new IllegalArgumentException("k must be in range [1, 1024], but was: " + k);
+    if (k < 1) {
+      throw new IllegalArgumentException("k must be positive, but was: " + k);
     }
     int iTopK = optionalInteger(request, ITOPK_KEY, k);
     if (iTopK < k) {
@@ -96,6 +98,19 @@ public final class GPUKnnFloatVectorQueryFactory implements Function<Map<String,
               throw new IllegalArgumentException("algo must be auto, single_cta, or multi_cta");
         };
 
+    if (k > CuVS2510GPUVectorsReader.MAX_CAGRA_K) {
+      return new GPUKnnFloatVectorQuery(
+          field, target, k, null, iTopK, searchWidth, threadBlockSize, maxIterations, searchAlgo) {
+        @Override
+        Query rewritePerLeaf(IndexSearcher indexSearcher) {
+          // Merging capped leaf results can fill k while excluding better hits from one leaf.
+          throw new UnsupportedOperationException(
+              "k > 1024 requires multi-partition CAGRA search: every segment must contain a CAGRA"
+                  + " index for the field with the same graph degree; per-segment fallback is"
+                  + " disabled");
+        }
+      };
+    }
     return new GPUKnnFloatVectorQuery(
         field, target, k, null, iTopK, searchWidth, threadBlockSize, maxIterations, searchAlgo);
   }
