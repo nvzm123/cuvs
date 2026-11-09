@@ -237,6 +237,35 @@ is accepted as an alias for `num_candidates`; it is the candidate count passed
 to Lucene's vector query, not an independent hnswlib-style search parameter.
 If both names are supplied, they must agree.
 
+For `lucene_accelerated_hnsw`, opt in to random entry selection with
+`random_entry_points: [true]`. On each unquantized, single-layer HNSW segment,
+the query scores `num_entry_points` randomly sampled vector ordinals and starts
+**one** graph traversal from the best sample. This follows the best-of-samples approach used by
+[FAISS's base-layer CAGRA-HNSW query](https://github.com/facebookresearch/faiss/blob/main/faiss/IndexHNSW.h).
+It does not perform a separate search per sample or add layers to the saved graph.
+
+`num_entry_points` optionally changes the sample count; `0` restores the ordinary
+Lucene entry point. A count requires `random_entry_points: [true]`. Omitting the
+enable flag leaves current behavior unchanged. Both settings are search-time
+controls, so sweeps reuse the same index. CPU-built HNSW and GPU CAGRA algorithms
+reject these settings; multi-layer or scalar-quantized HNSW readers retain ordinary
+Lucene search. The feature requires an updated thin JAR containing
+`BaseLayerKnnFloatVectorQueryFactory`; a missing helper fails rather than silently
+ignoring the requested mode.
+
+```yaml
+search:
+  num_candidates: [1200]
+  random_entry_points: [true]
+  num_entry_points: [42, 256]
+```
+
+Sampling is reproducible for the same query and segment layout, with replacement
+(a vector may be sampled more than once). Sampling work counts toward Lucene's
+visit budget and Java search timer. Filters, deletions, timeouts and exact-search
+fallback remain Lucene's responsibility. This option may trade sampling overhead
+for a better starting point; it is not a guaranteed latency or recall improvement.
+
 GPU CAGRA search optionally accepts `itopk` (internal candidate budget, at least
 `k`), `search_width` (entry points per search iteration, not query batch size),
 `max_iterations` (`0` = automatic), `algo` (`auto`, `single_cta`, `multi_cta`),

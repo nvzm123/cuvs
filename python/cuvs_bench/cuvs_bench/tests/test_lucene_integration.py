@@ -809,6 +809,85 @@ def test_custom_graph_build_and_query_controls_preserve_search_quality(
         )
 
 
+@pytest.mark.parametrize(
+    "layers,document_count",
+    [
+        pytest.param(1, 4096, id="base-layer-random-seeding"),
+        pytest.param(3, 32768, id="multi-layer-unchanged"),
+    ],
+)
+def test_random_entry_search_reuses_the_cagra_built_hnsw_index(
+    tmp_path, capfd, request, layers, document_count
+):
+    dataset, query_ids = _case(
+        ACCELERATED_HNSW_ALGORITHM, 128, document_count=document_count
+    )
+    plans = [
+        {"num_candidates": 128},
+        {"num_candidates": 128, "random_entry_points": True},
+        {
+            "num_candidates": 128,
+            "random_entry_points": True,
+            "num_entry_points": 7,
+        },
+    ]
+    backend, index = _backend_and_index(
+        tmp_path, ACCELERATED_HNSW_ALGORITHM, ACCELERATED_HNSW_CODEC, plans
+    )
+    index.build_param.update(
+        m=16,
+        beam_width=100,
+        hnsw_layers=layers,
+        graph_degree=32,
+        intermediate_graph_degree=64,
+        premerge_segment_count=1,
+        force_merge_segment_count=0,
+        ram_per_thread_hard_limit_mb=512,
+    )
+    capfd.readouterr()
+    with lucene_log_case(request.node.nodeid):
+        build = backend.build(dataset, [index])
+        assert build.success, build.error_message
+        assert _persisted_hnsw_layer_counts(
+            backend._get_runtime(), index.file
+        ) == [layers]
+        results = backend.search(dataset, [index], k=10)
+        reused = backend.build(dataset, [index])
+
+    captured = capfd.readouterr()
+    assert not case_used_cpu_hnsw_fallback(
+        captured.err, request.node.nodeid
+    ), captured.err
+    for warning in _GRAPH_CLAMP_WARNINGS:
+        assert (
+            warning.casefold() not in (captured.out + captured.err).casefold()
+        )
+    assert reused.success, reused.error_message
+    assert reused.metadata["skipped"]
+    assert len(results) == len(plans)
+    for result in results:
+        assert result.success, result.error_message
+        np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
+        assert all(
+            len(set(row)) == len(row) for row in result.neighbors.tolist()
+        )
+        assert (
+            _recall(result.neighbors, dataset.groundtruth_neighbors)
+            >= _MINIMUM_RECALL
+        )
+    assert results[1].search_params[0]["num_entry_points"] == 42
+    assert results[2].search_params[0]["num_entry_points"] == 7
+    if layers == 3:
+        # A multi-layer graph must retain Lucene's ordinary upper-layer entry search.
+        for result in results[1:]:
+            np.testing.assert_array_equal(
+                result.neighbors, results[0].neighbors
+            )
+            np.testing.assert_array_equal(
+                result.distances, results[0].distances
+            )
+
+
 @pytest.mark.parametrize("k", (1500, 2000), ids=("top-1500", "top-2000"))
 def test_large_cagra_queries_use_multi_partition_search_and_match_brute_force(
     tmp_path, monkeypatch, k

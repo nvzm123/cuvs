@@ -38,6 +38,7 @@ from ._lucene_parameters import (
     CUVS_BUILD_KEYS,
     normalize_cagra_search_controls,
     normalize_cuvs_build_controls,
+    normalize_hnsw_entry_controls,
     validate_cagra_build_dataset,
 )
 from ._lucene_runtime import (
@@ -641,6 +642,8 @@ def _search_parameters(
             **normalize_cagra_search_controls(parameters, k),
         }
     allowed = {"num_candidates", "ef_search"}
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        allowed.update(("random_entry_points", "num_entry_points"))
     unsupported = set(parameters) - allowed
     if unsupported:
         raise ValueError(
@@ -664,6 +667,8 @@ def _search_parameters(
         # This is only an alias for Lucene's candidate budget, not a separate
         # native HNSW ef control. Retain it so result rows identify the input.
         normalized["ef_search"] = alias
+    if algorithm == ACCELERATED_HNSW_ALGORITHM:
+        normalized.update(normalize_hnsw_entry_controls(parameters))
     return normalized
 
 
@@ -1974,6 +1979,10 @@ class LuceneBackend(BenchmarkBackend):
                         search_kwargs["cagra_search_parameters"] = (
                             cagra_controls
                         )
+                elif parameters.get("random_entry_points", False):
+                    search_kwargs["num_entry_points"] = parameters[
+                        "num_entry_points"
+                    ]
                 runtime_result = runtime.search_index(
                     path,
                     queries,
