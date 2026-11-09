@@ -64,16 +64,18 @@ Omitting them retains the corresponding Java codec's defaults.
 | `hnsw_layers` | Accelerated HNSW layer limit, 1–99; the graph may have fewer layers on small datasets. |
 | `build_quality` | GPU CAGRA construction-effort setting, not a percentage or a 0–10 score. Default 7; cuVS describes values below 20 as most practical. The binding accepts integers from 0 through 2,147,483,647, but that type limit is not a recommended tuning range or a guarantee of successful construction. Requires heuristic mode. |
 
-Heuristic mode rejects settings it would ignore. The GPU CAGRA dataset heuristic
-does consume `graph_degree`, so use `build_strategy: [heuristic]` explicitly to
-combine that degree with `build_quality`. Accelerated HNSW keeps the
-`SAME_GRAPH_FOOTPRINT` default, with no exposed heuristic selector. It derives
-`graph_degree = 2 * m` and `intermediate_graph_degree = 3 * m`, before any
-dataset-size clamping during construction; `beam_width` tunes construction
-effort. In custom mode, omitted graph
-degree is 64 (capped at `2 * m` for HNSW); omitted intermediate degree is the
-larger of 128 and the final degree. If neither `m` nor `beam_width` is supplied,
-their Java defaults remain 32 and 32.
+For GPU-native CAGRA, explicitly selecting `build_strategy=heuristic` allows
+`graph_degree` while cuVS chooses the remaining construction settings. Accelerated
+HNSW instead derives graph degrees from `m`. Heuristic mode rejects settings it
+would ignore.
+
+Accelerated HNSW keeps the `SAME_GRAPH_FOOTPRINT` default, with no exposed
+heuristic selector. It derives `graph_degree = 2 * m` and
+`intermediate_graph_degree = 3 * m`, before any dataset-size clamping during
+construction; `beam_width` tunes construction effort. In custom mode, omitted
+graph degree is 64 (capped at `2 * m` for HNSW); omitted intermediate degree is
+the larger of 128 and the final degree. If neither `m` nor `beam_width` is
+supplied, their Java defaults remain 32 and 32.
 
 In the current native dataset heuristic, `build_quality` increases NN-descent's
 maximum iterations to `5 + build_quality` for segments with fewer than one
@@ -84,7 +86,8 @@ recall improvement. Very large values can be impractical or fail native limits.
 
 With `graph_build_algo: [ivf_pq]`, these additional **build** controls tune the
 temporary IVF-PQ index used to construct CAGRA. Omitted values use the existing
-cuVS Java-builder defaults below, not the separate native CAGRA build heuristic:
+cuVS Java-builder defaults below, except `refinement_rate`: it defaults to `1.0`
+to match the native CAGRA build heuristic, rather than the Java builder's `2.0`.
 
 | Control | Default | Meaning |
 | --- | --- | --- |
@@ -94,7 +97,7 @@ cuVS Java-builder defaults below, not the separate native CAGRA build heuristic:
 | `kmeans_trainset_fraction` | 0.5 | Fraction of input vectors used for k-means training, in `(0, 1]`; `0.5` requests 50%. Native sampling is rounded and must accommodate `n_lists`, so this is not an exact row-count promise. All input vectors are still indexed. |
 | `pq_dim` | 0 | Native automatic selection of the temporary PQ dimension. Explicit values must be nonnegative, and `pq_dim * pq_bits` must be divisible by 8. Does not change the input dimensions or compress the final Lucene vectors. |
 | `pq_bits` | 8 | Bits per product-quantization code in the temporary index. Integer from 4 through 8; the same byte-alignment constraint applies. Does not compress the final Lucene vectors. |
-| `refinement_rate` | 2 | Candidate-expansion factor before exact refinement during graph construction. Must remain finite and greater than 1 after float32 conversion; the underlying CAGRA bridge does not apply rates ≤ 1 as explicit overrides. |
+| `refinement_rate` | 1.0 | Candidate-expansion factor during graph construction. A value of 1 retains native heuristic refinement; larger values request more candidates for exact refinement and must remain finite and greater than 1 after float32 conversion. Values below 1 are rejected. |
 | `max_train_points_per_pq_code` | 256 | Positive training-sample cap per PQ code when learning codebooks. Separate from the k-means training fraction. |
 | `codebook_kind` | `per_subspace` | How PQ codebooks are organized: one per subspace (`per_subspace`) or one per IVF cluster (`per_cluster`). |
 | `force_random_rotation` | `false` | Whether to apply random rotation even when the input dimension is divisible by `pq_dim`. A boolean; `false` does not disable rotation when native dimensional alignment requires it. |

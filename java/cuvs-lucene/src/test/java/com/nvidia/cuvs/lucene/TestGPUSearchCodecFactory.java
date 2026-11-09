@@ -221,7 +221,7 @@ public class TestGPUSearchCodecFactory extends LuceneTestCase {
             Map.of("kmeans_trainset_fraction", 1.1),
             Map.of("kmeans_trainset_fraction", Double.NaN),
             Map.of("kmeans_trainset_fraction", 1),
-            Map.of("refinement_rate", 1.0),
+            Map.of("refinement_rate", Math.nextDown(1.0)),
             Map.of("refinement_rate", 0.5),
             Map.of("refinement_rate", Double.POSITIVE_INFINITY),
             Map.of("refinement_rate", Double.MAX_VALUE),

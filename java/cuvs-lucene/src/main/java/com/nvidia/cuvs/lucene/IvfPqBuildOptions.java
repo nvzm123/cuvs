@@ -15,12 +15,13 @@ import com.nvidia.cuvs.CuVSIvfPqParams;
 import com.nvidia.cuvs.CuVSIvfPqSearchParams;
 import java.util.Map;
 
-/** Validate binding overrides while retaining the existing cuVS Java builder defaults. */
+/** Validate binding overrides, using native heuristic refinement with Java defaults otherwise. */
 final class IvfPqBuildOptions {
   private IvfPqBuildOptions() {}
 
   static CuVSIvfPqParams parse(Map<String, Object> request) {
-    var defaults = new CuVSIvfPqParams.Builder().build();
+    // Match native heuristic refinement without changing the shared cuVS Java builder's defaults.
+    var defaults = new CuVSIvfPqParams.Builder().withRefinementRate(1.0f).build();
     var indexDefaults = defaults.getIndexParams();
     int lists = integer(request, "n_lists", indexDefaults.getnLists(), 1, Integer.MAX_VALUE);
     int probes =
@@ -38,11 +39,14 @@ final class IvfPqBuildOptions {
     if (fraction <= 0 || fraction > 1) {
       throw new IllegalArgumentException("kmeans_trainset_fraction must be in (0, 1]");
     }
-    float refinement = (float) floating(request, "refinement_rate", defaults.getRefinementRate());
-    // The native CAGRA C API leaves its heuristic unchanged for rates <= 1, including 1.
-    if (!Float.isFinite(refinement) || refinement <= 1) {
+    double requestedRefinement = floating(request, "refinement_rate", defaults.getRefinementRate());
+    float refinement = (float) requestedRefinement;
+    // Exactly 1 retains native heuristic refinement. A larger request must survive float rounding.
+    if (!Float.isFinite(refinement)
+        || requestedRefinement < 1
+        || (requestedRefinement > 1 && refinement == 1)) {
       throw new IllegalArgumentException(
-          "refinement_rate must be finite and greater than 1 as a float");
+          "refinement_rate must be 1 or remain finite and greater than 1 as a float");
     }
     boolean rotation = false;
     if (request.containsKey("force_random_rotation")) {

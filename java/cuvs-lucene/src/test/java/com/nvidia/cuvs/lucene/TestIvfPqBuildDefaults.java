@@ -4,6 +4,7 @@
  */
 package com.nvidia.cuvs.lucene;
 
+import com.nvidia.cuvs.CuVSIvfPqParams;
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.lucene.tests.util.LuceneTestCase;
@@ -12,7 +13,7 @@ import org.junit.Test;
 /** Checks actual build parameters without allocating vectors or requiring CUDA. */
 public class TestIvfPqBuildDefaults extends LuceneTestCase {
   @Test
-  public void testBothCustomFactoriesUseExistingJavaBuilderDefaults() {
+  public void testBothCustomFactoriesUseDocumentedDefaults() {
     var request = Map.<String, Object>of("graph_build_algo", "ivf_pq");
     var gpu = CagraBuildOptions.gpu(request);
     var hnsw = CagraBuildOptions.accelerated(request, 16, 100);
@@ -29,6 +30,27 @@ public class TestIvfPqBuildDefaults extends LuceneTestCase {
       assertEquals(8, parameters.getIndexParams().getPqBits());
       assertEquals(20, parameters.getIndexParams().getKmeansNIters());
       assertEquals(0.5, parameters.getIndexParams().getKmeansTrainsetFraction(), 0d);
+      assertEquals(1.0f, parameters.getRefinementRate(), 0f);
+    }
+    // The factory-specific refinement policy must not change defaults for other cuVS Java users.
+    assertEquals(2.0f, new CuVSIvfPqParams.Builder().build().getRefinementRate(), 0f);
+  }
+
+  @Test
+  public void testBothCustomFactoriesPreserveExplicitRefinementRates() {
+    for (Number rate : new Number[] {1.0f, 1.0d, Math.nextUp(1.0f), 2.5d}) {
+      var request = Map.<String, Object>of("graph_build_algo", "ivf_pq", "refinement_rate", rate);
+      var gpu = CagraBuildOptions.gpu(request);
+      var hnsw = CagraBuildOptions.accelerated(request, 16, 100);
+
+      assertEquals(
+          rate.floatValue(),
+          CagraIndexParamsFactory.create(gpu, 4096, 128).getCuVSIvfPqParams().getRefinementRate(),
+          0f);
+      assertEquals(
+          rate.floatValue(),
+          CagraIndexParamsFactory.create(hnsw, 4096, 128).getCuVSIvfPqParams().getRefinementRate(),
+          0f);
     }
   }
 
