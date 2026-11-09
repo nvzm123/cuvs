@@ -24,17 +24,18 @@ callers cannot observe or overwrite one another's configuration.
 
 Optional build controls are `build_strategy` (`heuristic` or `custom`),
 `graph_degree` (1..512), `intermediate_graph_degree` (2..512),
-`graph_build_algo` (`nn_descent`), `nn_descent_n_iters`
+`graph_build_algo` (`nn_descent` or `ivf_pq`), `nn_descent_n_iters`
 (1..100, NN-descent only), `hnsw_layers` (1..99), and `writer_threads` (1..512).
 Counts must be Integer values; enum names are lowercase strings.
 
-Supplying geometry, algorithm or iteration controls selects custom mode unless an
+Supplying geometry, algorithm, iteration or IVF-PQ controls selects custom mode unless an
 explicit strategy is supplied. Heuristic mode rejects controls it would ignore. Custom mode
 defaults to graph degree `min(64, 2 * max_conn)` and intermediate degree
 `max(128, graph_degree)`; the graph degree must not exceed `2 * max_conn` or the
 intermediate degree. Heuristic mode retains the SAME_GRAPH_FOOTPRINT default: cuVS derives
 `graph_degree = 2 * max_conn` and `intermediate_graph_degree = 3 * max_conn`.
 This factory does not expose a heuristic selector.
+IVF-PQ controls follow the contract documented on `GPUSearchCodecFactory`.
 
 ## Public Members
 
@@ -63,6 +64,6 @@ the codec and its verified applied parameter values
 | `IllegalArgumentException` | if the request is null, incomplete, or contains unknown, incorrectly typed, out-of-range or incompatible options |
 | `IllegalStateException` | if codec construction or vector-format initialization fails |
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/AcceleratedHNSWCodecFactory.java:55`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/AcceleratedHNSWCodecFactory.java:56`_
 
-_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/AcceleratedHNSWCodecFactory.java:41`_
+_Source: `java/cuvs-lucene/src/main/java/com/nvidia/cuvs/lucene/AcceleratedHNSWCodecFactory.java:42`_

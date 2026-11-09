@@ -196,6 +196,8 @@ public class TestAcceleratedHNSWCodecFactory extends LuceneTestCase {
             Map.of("build_strategy", "heuristic", "graph_degree", 16),
             Map.of("graph_degree", 33),
             Map.of("graph_degree", 24, "intermediate_graph_degree", 16),
+            Map.of("graph_build_algo", "ivf_pq", "nn_descent_n_iters", 10),
+            Map.of("n_lists", 100),
             Map.of("build_quality", 7),
             Map.of("hnsw_layers", 100),
             Map.of("writer_threads", 2L))) {
@@ -203,6 +205,34 @@ public class TestAcceleratedHNSWCodecFactory extends LuceneTestCase {
       request.putAll(options);
       expectThrows(IllegalArgumentException.class, () -> factory.apply(request));
     }
+  }
+
+  @Test
+  public void testIvfPqControlsReachHnswCodecAndCagraParameters() throws Exception {
+    var request = request(32, 80);
+    request.putAll(
+        Map.of(
+            "graph_build_algo",
+            "ivf_pq",
+            "n_lists",
+            64,
+            "n_probes",
+            8,
+            "pq_dim",
+            8,
+            "pq_bits",
+            6,
+            "refinement_rate",
+            3.5));
+    var parameters =
+        codecParameters((Codec) new AcceleratedHNSWCodecFactory().apply(request).get(CODEC_KEY));
+    var nativeParameters = CagraIndexParamsFactory.create(parameters, 1000, 16);
+    assertEquals(CagraGraphBuildAlgo.IVF_PQ, nativeParameters.getCagraGraphBuildAlgo());
+    assertEquals(64, nativeParameters.getCuVSIvfPqParams().getIndexParams().getnLists());
+    assertEquals(8, nativeParameters.getCuVSIvfPqParams().getSearchParams().getnProbes());
+    assertEquals(8, nativeParameters.getCuVSIvfPqParams().getIndexParams().getPqDim());
+    assertEquals(6, nativeParameters.getCuVSIvfPqParams().getIndexParams().getPqBits());
+    assertEquals(3.5f, nativeParameters.getCuVSIvfPqParams().getRefinementRate(), 0f);
   }
 
   @Test

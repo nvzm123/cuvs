@@ -17,19 +17,37 @@ import org.apache.lucene.codecs.Codec;
  *
  * <p>Optional controls are {@code build_strategy} ({@code heuristic} or {@code custom}),
  * {@code graph_degree} (1..512), {@code intermediate_graph_degree} (2..512),
- * {@code graph_build_algo} ({@code nn_descent}), {@code nn_descent_n_iters}
+ * {@code graph_build_algo} ({@code nn_descent} or {@code ivf_pq}), {@code nn_descent_n_iters}
  * (1..100, NN-descent only), {@code writer_threads} (1..512), and {@code build_quality}
  * (0..Integer.MAX_VALUE, default 7, heuristic only). Counts must be {@link Integer}; enum names are
  * lowercase strings.
- * Explicit geometry, algorithm or iteration options infer custom mode. Explicit heuristic
+ * Explicit geometry, algorithm, iteration or IVF-PQ options infer custom mode. Explicit heuristic
  * mode accepts graph_degree but rejects other custom controls it would ignore. Custom graph degree
  * defaults to 64; intermediate degree defaults to {@code max(128, graph_degree)} and must not be
  * below graph_degree.
  *
  * <p>Build quality is a construction-effort setting, not a percentage or a 0..10 score. Native cuVS
- * describes values below 20 as most practical. Below one million vectors, its current dataset
- * heuristic uses {@code 5 + build_quality} maximum NN-descent iterations. The integer type limit
- * is not a recommended tuning range or a guarantee that native construction will succeed.
+ * describes values below 20 as most practical. Its current dataset heuristic uses
+ * {@code 5 + build_quality} maximum NN-descent iterations below one million vectors, otherwise
+ * {@code round(2 + sqrt(n_lists) / 20 + build_quality)} IVF-PQ probes. The integer type limit is not
+ * a recommended tuning range or a guarantee that native construction will succeed.
+ *
+ * <p>IVF-PQ construction controls require explicit {@code graph_build_algo=ivf_pq}: positive Integer
+ * {@code n_lists}, {@code n_probes}, {@code kmeans_n_iters}, {@code max_train_points_per_pq_code};
+ * nonnegative Integer {@code pq_dim} (0 selects the native heuristic); Integer {@code pq_bits}
+ * (4..8); Float or Double {@code kmeans_trainset_fraction} (finite, in (0,1]) and
+ * {@code refinement_rate} (finite and greater than 1 after conversion to float); Boolean
+ * {@code force_random_rotation}; {@code codebook_kind} ({@code per_subspace} or {@code per_cluster});
+ * {@code lut_dtype} ({@code float32}, {@code float16}, {@code uint8}); and
+ * {@code internal_distance_dtype} ({@code float32} or {@code float16}).
+ * A float16 internal distance requires a float16 or uint8 LUT; an omitted LUT defaults to float32.
+ * The product {@code pq_dim * pq_bits} must be a multiple of 8, and explicit n_probes must not exceed n_lists.
+ * Omitted values retain the generic Java builder defaults: n_lists=1024, n_probes=20,
+ * pq_dim=0 (native automatic selection), pq_bits=8, kmeans_n_iters=20, and kmeans_trainset_fraction=0.5.
+ * For tuning, try floor(sqrt(segment vector count)) rather than assuming 1024 is optimal, and
+ * compare construction time and final-index recall. A list count below 20 requires an explicit
+ * n_probes no greater than that count. These controls do not change the native HEURISTIC strategy.
+ * These IVF-PQ search controls construct the CAGRA graph; they do not configure CAGRA queries.
  *
  * @since 26.12
  */

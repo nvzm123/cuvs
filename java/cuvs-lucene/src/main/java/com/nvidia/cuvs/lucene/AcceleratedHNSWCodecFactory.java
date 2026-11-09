@@ -24,17 +24,18 @@ import org.apache.lucene.codecs.Codec;
  *
  * <p>Optional build controls are {@code build_strategy} ({@code heuristic} or {@code custom}),
  * {@code graph_degree} (1..512), {@code intermediate_graph_degree} (2..512),
- * {@code graph_build_algo} ({@code nn_descent}), {@code nn_descent_n_iters}
+ * {@code graph_build_algo} ({@code nn_descent} or {@code ivf_pq}), {@code nn_descent_n_iters}
  * (1..100, NN-descent only), {@code hnsw_layers} (1..99), and {@code writer_threads} (1..512).
  * Counts must be Integer values; enum names are lowercase strings.
  *
- * <p>Supplying geometry, algorithm or iteration controls selects custom mode unless an
+ * <p>Supplying geometry, algorithm, iteration or IVF-PQ controls selects custom mode unless an
  * explicit strategy is supplied. Heuristic mode rejects controls it would ignore. Custom mode
  * defaults to graph degree {@code min(64, 2 * max_conn)} and intermediate degree
  * {@code max(128, graph_degree)}; the graph degree must not exceed {@code 2 * max_conn} or the
  * intermediate degree. Heuristic mode retains the SAME_GRAPH_FOOTPRINT default: cuVS derives
  * {@code graph_degree = 2 * max_conn} and {@code intermediate_graph_degree = 3 * max_conn}.
  * This factory does not expose a heuristic selector.
+ * IVF-PQ controls follow the contract documented on {@link GPUSearchCodecFactory}.
  *
  * @since 26.12
  */

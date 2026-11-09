@@ -56,9 +56,9 @@ Omitting them retains the corresponding Java codec's defaults.
 
 | Controls | Meaning |
 | --- | --- |
-| `build_strategy` | `heuristic` or `custom`. Explicit graph geometry, graph-builder selection, NN-descent iterations select `custom` unless a strategy is supplied. |
+| `build_strategy` | `heuristic` or `custom`. Explicit graph geometry, graph-builder selection, NN-descent iterations or IVF-PQ settings select `custom` unless a strategy is supplied. |
 | `graph_degree`, `intermediate_graph_degree` | Final and intermediate CAGRA graph degrees, in ranges 1–512 and 2–512. Intermediate degree must be at least final degree. Accelerated HNSW additionally requires final degree ≤ `2 * m`. |
-| `graph_build_algo` | `nn_descent` (custom-mode default), for constructing the initial CAGRA graph—not selecting the final search algorithm. |
+| `graph_build_algo` | `nn_descent` (custom-mode default) or `ivf_pq`, for constructing the initial CAGRA graph—not selecting the final search algorithm. |
 | `nn_descent_n_iters` | NN-descent construction iterations, 1–100; only for the NN-descent graph builder. |
 | `writer_threads` | Calling-thread OpenMP count for native graph build/merge work, 1–512, restored after the operation; not Python ingestion threads or a process-wide cap. Defaults remain 1 for accelerated HNSW and 32 for GPU CAGRA. |
 | `hnsw_layers` | Accelerated HNSW layer limit, 1–99; the graph may have fewer layers on small datasets. |
@@ -77,13 +77,73 @@ their Java defaults remain 32 and 32.
 
 In the current native dataset heuristic, `build_quality` increases NN-descent's
 maximum iterations to `5 + build_quality` for segments with fewer than one
-million vectors. Start with the
+million vectors. For larger segments, it increases the temporary IVF-PQ search
+probe count to `round(2 + sqrt(n_lists) / 20 + build_quality)`. Start with the
 default 7; larger values request more construction work, not a proportional
 recall improvement. Very large values can be impractical or fail native limits.
 
-Choose graph settings for the actual segment sizes. Small segments can cause
-native clamping; larger resource requests are not memory reservations or
-guarantees of successful allocation.
+With `graph_build_algo: [ivf_pq]`, these additional **build** controls tune the
+temporary IVF-PQ index used to construct CAGRA. Omitted values use the existing
+cuVS Java-builder defaults below, not the separate native CAGRA build heuristic:
+
+| Control | Default | Meaning |
+| --- | --- | --- |
+| `n_lists` | 1024 | Number of IVF clusters (inverted lists), matching the generic Java-builder default. Explicit values must be positive and fit the available training data; use fewer lists for small segments. |
+| `n_probes` | 20 | Number of IVF clusters searched when finding CAGRA construction candidates. Must be positive and no greater than `n_lists`; set it explicitly if requesting fewer than 20 lists. It does not control final CAGRA queries. |
+| `kmeans_n_iters` | 20 | Number of k-means training iterations used to find cluster centers. Must be a positive integer. |
+| `kmeans_trainset_fraction` | 0.5 | Fraction of input vectors used for k-means training, in `(0, 1]`; `0.5` requests 50%. Native sampling is rounded and must accommodate `n_lists`, so this is not an exact row-count promise. All input vectors are still indexed. |
+| `pq_dim` | 0 | Native automatic selection of the temporary PQ dimension. Explicit values must be nonnegative, and `pq_dim * pq_bits` must be divisible by 8. Does not change the input dimensions or compress the final Lucene vectors. |
+| `pq_bits` | 8 | Bits per product-quantization code in the temporary index. Integer from 4 through 8; the same byte-alignment constraint applies. Does not compress the final Lucene vectors. |
+| `refinement_rate` | 2 | Candidate-expansion factor before exact refinement during graph construction. Must remain finite and greater than 1 after float32 conversion; the underlying CAGRA bridge does not apply rates ≤ 1 as explicit overrides. |
+| `max_train_points_per_pq_code` | 256 | Positive training-sample cap per PQ code when learning codebooks. Separate from the k-means training fraction. |
+| `codebook_kind` | `per_subspace` | How PQ codebooks are organized: one per subspace (`per_subspace`) or one per IVF cluster (`per_cluster`). |
+| `force_random_rotation` | `false` | Whether to apply random rotation even when the input dimension is divisible by `pq_dim`. A boolean; `false` does not disable rotation when native dimensional alignment requires it. |
+| `lut_dtype` | `float32` | Precision of the distance lookup table used by construction-time IVF-PQ searches: `float32`, `float16`, or `uint8`. |
+| `internal_distance_dtype` | `float32` | Precision of distances computed by construction-time IVF-PQ searches: `float32` or `float16`. Using `float16` requires `lut_dtype=float16` or `uint8`. Native overflow handling may promote distance precision. |
+
+For manual tuning, `n_lists = floor(sqrt(N))` is an alternative to the fixed 1024
+default that may give better results for a particular workload. Square-root
+scaling is a useful IVF starting point, as described
+in [NVIDIA's IVF tuning guidance](https://developer.nvidia.com/blog/accelerated-vector-search-approximating-with-nvidia-cuvs-ivf-flat/),
+not a universal optimum. Here, `N` is the field's vector count in the segment/build
+being processed, not necessarily the entire corpus or just the training sample. Tune
+`n_lists` together with `n_probes`, measuring construction time and final-index
+recall; the [IVF-PQ tuning guide](https://developer.nvidia.com/blog/accelerating-vector-search-nvidia-cuvs-ivf-pq-performance-tuning-part-2/)
+illustrates how the best choice varies with the dataset and recall target.
+
+New custom IVF-PQ builds record these restored defaults in their build settings.
+Rebuild indexes created by earlier experimental versions with different implicit
+defaults; the saved build settings must match the requested configuration.
+
+In contrast, when the automatic CAGRA heuristic selects IVF-PQ, the
+[current native implementation](https://github.com/NVIDIA/cuvs/blob/b3be92aca7ac095df232732f847f52980b06a30d/cpp/include/cuvs/neighbors/ivf_pq.hpp#L3427)
+uses `n_lists = max(1, floor(N / 2000))`, not these custom defaults.
+
+Multi-layer HNSW reuses the segment's IVF settings for its smaller upper layers;
+list and probe counts must also be suitable for those layers. Valid parameter
+ranges alone do not guarantee enough construction candidates or good recall.
+
+For example, for a field with 1,000,000 vectors of dimension 96 in one segment,
+the square-root tuning alternative gives 1,000 lists. This example overrides
+only that IVF-PQ setting; the remaining IVF-PQ controls use the defaults above:
+
+```yaml
+name: lucene_cuvs_cagra
+groups:
+  ivf_pq_build:
+    build:
+      graph_degree: [32]
+      intermediate_graph_degree: [64]
+      graph_build_algo: [ivf_pq]
+      n_lists: [1000]
+    search:
+      itopk: [128]
+      search_width: [16, 32]
+```
+
+Choose graph and training settings for the actual segment sizes. Small segments
+can cause native clamping or training errors; larger resource requests are not
+memory reservations or guarantees of successful allocation.
 
 For reproducible segment layouts, both cuVS-backed algorithms also accept
 `premerge_segment_count`, `force_merge_segment_count`, and

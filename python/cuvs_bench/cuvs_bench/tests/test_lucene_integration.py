@@ -572,6 +572,22 @@ _CUSTOM_GRAPH_BUILD = {
     "intermediate_graph_degree": 64,
     "writer_threads": 1,
 }
+_IVF_PQ_GRAPH_BUILD = {
+    **_CUSTOM_GRAPH_BUILD,
+    "graph_build_algo": "ivf_pq",
+    "n_lists": 32,
+    "n_probes": 16,
+    "kmeans_n_iters": 10,
+    "kmeans_trainset_fraction": 0.5,
+    "pq_dim": 16,
+    "pq_bits": 4,
+    "refinement_rate": 2.0,
+    "max_train_points_per_pq_code": 128,
+    "codebook_kind": "per_subspace",
+    "force_random_rotation": True,
+    "lut_dtype": "float16",
+    "internal_distance_dtype": "float16",
+}
 
 
 def _persisted_hnsw_layer_counts(runtime, index_path):
@@ -625,11 +641,57 @@ def _persisted_hnsw_layer_counts(runtime, index_path):
             id="nn-descent-hnsw-three-layers",
         ),
         pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            _IVF_PQ_GRAPH_BUILD,
+            4096,
+            id="ivf-pq-hnsw",
+        ),
+        pytest.param(
             CAGRA_ALGORITHM,
             CAGRA_CODEC,
             {**_CUSTOM_GRAPH_BUILD, "nn_descent_n_iters": 15},
             1024,
             id="nn-descent-gpu-search",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            _IVF_PQ_GRAPH_BUILD,
+            4096,
+            id="ivf-pq-gpu-search",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            {**_CUSTOM_GRAPH_BUILD, "graph_build_algo": "ivf_pq"},
+            # The 1024-list/20-probe defaults need a larger candidate pool than
+            # our 4096-row explicit-override fixture provides.
+            32768,
+            id="ivf-pq-hnsw-defaults",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            {**_CUSTOM_GRAPH_BUILD, "graph_build_algo": "ivf_pq"},
+            32768,
+            id="ivf-pq-gpu-search-defaults",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            {
+                **_CUSTOM_GRAPH_BUILD,
+                "graph_build_algo": "ivf_pq",
+                "hnsw_layers": 3,
+                # Keep 256 lists for the 256-row top layer; the default 1024 is too large.
+                # 32 probes failed upper-layer graph construction on the 256-row top layer.
+                "n_lists": 256,
+                "n_probes": 256,
+            },
+            # Three layers retain 65536, 4096, then 256 vectors: enough for 8-bit PQ training.
+            65536,
+            id="ivf-pq-hnsw-three-layers-tuned-probes",
         ),
     ],
 )
