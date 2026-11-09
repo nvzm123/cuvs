@@ -129,8 +129,6 @@ public class TestCuVSRandomizedVectorSearch extends LuceneTestCase {
 
     GPUKnnFloatVectorQuery query =
         new GPUKnnFloatVectorQuery("vector", queries[0], topK, null, topK, 1);
-    int correct[] = new int[topK];
-    for (int i = 0; i < topK; i++) correct[i] = expected.get(0).get(i);
 
     ScoreDoc[] hits = searcher.search(query, topK).scoreDocs;
     log.log(Level.FINE, "RESULTS: " + Arrays.toString(hits));
