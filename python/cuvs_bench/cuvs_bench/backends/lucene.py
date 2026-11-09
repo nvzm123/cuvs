@@ -38,6 +38,7 @@ from ._lucene_parameters import (
     CUVS_BUILD_KEYS,
     normalize_cagra_search_controls,
     normalize_cuvs_build_controls,
+    validate_cagra_build_dataset,
 )
 from ._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
@@ -606,7 +607,7 @@ def _build_controls(
 def _controlled_index_suffix(controls: Mapping[str, Any]) -> str:
     if CUVS_BUILD_KEYS & controls.keys():
         # Hash the complete canonical build identity, not just new settings.
-        # Keep the filename bounded even for a full parameter sweep.
+        # Keep the filename bounded even for a full IVF-PQ parameter sweep.
         encoded = json.dumps(
             dict(controls),
             sort_keys=True,
@@ -1043,6 +1044,10 @@ def _read_manifest(index_path: Path) -> dict[str, Any]:
         saved_parameters = payload["build_parameters"]
         try:
             canonical = _build_controls(payload["algorithm"], saved_parameters)
+            if payload["algorithm"] == CAGRA_ALGORITHM:
+                validate_cagra_build_dataset(
+                    canonical, payload["dataset"]["vector_count"]
+                )
         except (ValueError, TypeError) as error:
             raise RuntimeError(
                 f"Invalid Lucene manifest build parameters: {path}"
@@ -1592,6 +1597,8 @@ class LuceneBackend(BenchmarkBackend):
                 time.perf_counter_ns() - dataset_prepare_started
             )
             controls = _build_controls(self.algorithm, index.build_param)
+            if self.algorithm == CAGRA_ALGORITHM:
+                validate_cagra_build_dataset(controls, int(vectors.shape[0]))
             if path.exists() and (path.is_symlink() or not path.is_dir()):
                 raise ValueError(
                     f"Lucene index path must be a directory: {path}"

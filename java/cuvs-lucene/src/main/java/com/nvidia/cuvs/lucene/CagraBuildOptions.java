@@ -18,6 +18,20 @@ final class CagraBuildOptions {
           "graph_build_algo",
           "nn_descent_n_iters",
           "writer_threads");
+  private static final Set<String> IVF_PQ_KEYS =
+      Set.of(
+          "n_lists",
+          "n_probes",
+          "kmeans_n_iters",
+          "kmeans_trainset_fraction",
+          "pq_dim",
+          "pq_bits",
+          "refinement_rate",
+          "max_train_points_per_pq_code",
+          "codebook_kind",
+          "force_random_rotation",
+          "lut_dtype",
+          "internal_distance_dtype");
   private static final Set<String> HNSW_KEYS = Set.of("max_conn", "beam_width", "hnsw_layers");
   private static final Set<String> CUSTOM_KEYS =
       Set.of("graph_degree", "intermediate_graph_degree", "graph_build_algo", "nn_descent_n_iters");
@@ -34,26 +48,40 @@ final class CagraBuildOptions {
     for (Object rawKey : request.keySet()) {
       if (!(rawKey instanceof String key)
           || !COMMON_KEYS.contains(key)
+              && !IVF_PQ_KEYS.contains(key)
               && !(hnsw ? HNSW_KEYS.contains(key) : "build_quality".equals(key))) {
         throw new IllegalArgumentException("unsupported build parameter: " + rawKey);
       }
     }
-    boolean hasCustom = request.keySet().stream().anyMatch(CUSTOM_KEYS::contains);
+    boolean hasCustom =
+        request.keySet().stream()
+            .anyMatch(key -> CUSTOM_KEYS.contains(key) || IVF_PQ_KEYS.contains(key));
     custom =
         choice(request, "build_strategy", hasCustom ? "custom" : "heuristic", "heuristic", "custom")
             .equals("custom");
     if (!custom) {
       for (String key : request.keySet()) {
         // GPU's dataset heuristic consumes graph_degree; the HNSW heuristic derives it from M.
-        if (CUSTOM_KEYS.contains(key) && (hnsw || !key.equals("graph_degree"))) {
+        if (IVF_PQ_KEYS.contains(key)
+            || CUSTOM_KEYS.contains(key) && (hnsw || !key.equals("graph_degree"))) {
           throw new IllegalArgumentException(key + " requires build_strategy=custom");
         }
       }
     } else if (request.containsKey("build_quality")) {
       throw new IllegalArgumentException("build_quality requires build_strategy=heuristic");
     }
-    choice(request, "graph_build_algo", "nn_descent", "nn_descent");
-    algorithm = CagraGraphBuildAlgo.NN_DESCENT;
+    algorithm =
+        choice(request, "graph_build_algo", "nn_descent", "nn_descent", "ivf_pq").equals("ivf_pq")
+            ? CagraGraphBuildAlgo.IVF_PQ
+            : CagraGraphBuildAlgo.NN_DESCENT;
+    for (String key : IVF_PQ_KEYS) {
+      if (request.containsKey(key) && algorithm != CagraGraphBuildAlgo.IVF_PQ) {
+        throw new IllegalArgumentException(key + " requires explicit graph_build_algo=ivf_pq");
+      }
+    }
+    if (request.containsKey("nn_descent_n_iters") && algorithm != CagraGraphBuildAlgo.NN_DESCENT) {
+      throw new IllegalArgumentException("nn_descent_n_iters requires graph_build_algo=nn_descent");
+    }
   }
 
   static AcceleratedHNSWParams accelerated(
@@ -106,6 +134,9 @@ final class CagraBuildOptions {
                   AcceleratedHNSWParams.DEFAULT_NN_DESCENT_NUM_ITERATIONS,
                   AcceleratedHNSWParams.MIN_NN_DESCENT_NUM_ITERATIONS,
                   AcceleratedHNSWParams.MAX_NN_DESCENT_NUM_ITERATIONS));
+      if (options.algorithm == CagraGraphBuildAlgo.IVF_PQ) {
+        builder.withCuVSIvfPqParams(IvfPqBuildOptions.parse(request));
+      }
     }
     return builder.build();
   }
@@ -146,6 +177,9 @@ final class CagraBuildOptions {
                   GPUSearchParams.DEFAULT_NN_DESCENT_NUM_ITERATIONS,
                   GPUSearchParams.MIN_NN_DESCENT_NUM_ITERATIONS,
                   GPUSearchParams.MAX_NN_DESCENT_NUM_ITERATIONS));
+      if (options.algorithm == CagraGraphBuildAlgo.IVF_PQ) {
+        builder.withCuVSIvfPqParams(IvfPqBuildOptions.parse(request));
+      }
     } else {
       builder.withBuildQuality(
           integer(
@@ -186,6 +220,18 @@ final class CagraBuildOptions {
   static int integer(
       Map<String, Object> values, String key, int defaultValue, int minimum, int maximum) {
     return values.containsKey(key) ? requiredInteger(values, key, minimum, maximum) : defaultValue;
+  }
+
+  static double floating(Map<String, Object> values, String key, double defaultValue) {
+    if (!values.containsKey(key)) {
+      return defaultValue;
+    }
+    Object value = values.get(key);
+    if (!(value instanceof Float || value instanceof Double)
+        || !Double.isFinite(((Number) value).doubleValue())) {
+      throw new IllegalArgumentException(key + " must have type Float or Double and be finite");
+    }
+    return ((Number) value).doubleValue();
   }
 
   static String choice(

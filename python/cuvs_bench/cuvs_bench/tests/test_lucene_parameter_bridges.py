@@ -44,18 +44,18 @@ def test_parameter_requests_preserve_boolean_integer_and_fraction_types():
 
     request = runtime._parameter_request(
         {
-            "fake_integer": 2,
-            "fake_fraction": 0.25,
-            "fake_boolean": True,
-            "fake_string": "i-am-fake-data",
+            "writer_threads": 2,
+            "kmeans_trainset_fraction": 0.25,
+            "force_random_rotation": True,
+            "graph_build_algo": "ivf_pq",
         }
     )
 
     assert request == {
-        "fake_integer": ("Integer", 2),
-        "fake_fraction": ("Double", 0.25),
-        "fake_boolean": ("Boolean", True),
-        "fake_string": "i-am-fake-data",
+        "writer_threads": ("Integer", 2),
+        "kmeans_trainset_fraction": ("Double", 0.25),
+        "force_random_rotation": ("Boolean", True),
+        "graph_build_algo": "ivf_pq",
     }
 
 
@@ -110,8 +110,8 @@ def test_custom_cagra_build_reaches_the_gpu_codec_factory():
         return_value=fake_configured_codec
     )
     algorithm_controls = {
-        "graph_build_algo": "nn_descent",
-        "nn_descent_n_iters": 7,
+        "graph_build_algo": "ivf_pq",
+        "kmeans_trainset_fraction": 0.25,
     }
 
     selected = runtime._resolve_build_codec(CAGRA_CODEC, algorithm_controls)

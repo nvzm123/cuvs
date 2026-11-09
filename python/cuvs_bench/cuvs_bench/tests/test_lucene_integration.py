@@ -130,14 +130,12 @@ def _backend_and_index(
 
 
 def _recall(actual: np.ndarray, expected: np.ndarray) -> float:
-    return float(
-        np.mean(
-            [
-                len(set(row).intersection(truth)) / expected.shape[1]
-                for row, truth in zip(actual, expected)
-            ]
-        )
+    # Divide once so intermediate rounding cannot reject an exact recall boundary.
+    matching_neighbors = sum(
+        len(set(row).intersection(truth))
+        for row, truth in zip(actual, expected)
     )
+    return matching_neighbors / expected.size
 
 
 def _write_bin(path: Path, values: np.ndarray) -> None:
@@ -577,6 +575,22 @@ _CUSTOM_GRAPH_BUILD = {
     "intermediate_graph_degree": 64,
     "writer_threads": 1,
 }
+_IVF_PQ_GRAPH_BUILD = {
+    **_CUSTOM_GRAPH_BUILD,
+    "graph_build_algo": "ivf_pq",
+    "n_lists": 32,
+    "n_probes": 16,
+    "kmeans_n_iters": 10,
+    "kmeans_trainset_fraction": 0.5,
+    "pq_dim": 16,
+    "pq_bits": 4,
+    "refinement_rate": 2.0,
+    "max_train_points_per_pq_code": 128,
+    "codebook_kind": "per_subspace",
+    "force_random_rotation": True,
+    "lut_dtype": "float16",
+    "internal_distance_dtype": "float16",
+}
 
 
 def _persisted_hnsw_layer_counts(runtime, index_path):
@@ -614,7 +628,7 @@ def _persisted_hnsw_layer_counts(runtime, index_path):
 
 
 @pytest.mark.parametrize(
-    "algorithm,codec,build_controls,document_count",
+    "algorithm,codec,build_controls,document_count,minimum_recall",
     [
         pytest.param(
             ACCELERATED_HNSW_ALGORITHM,
@@ -627,19 +641,95 @@ def _persisted_hnsw_layer_counts(runtime, index_path):
             # With degree 32, the layer sampling factor is 16. 32768 rows leave
             # 128 on the third layer, above intermediate degree 64: no clamping.
             32768,
+            _MINIMUM_RECALL,
             id="nn-descent-hnsw-three-layers",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            _IVF_PQ_GRAPH_BUILD,
+            4096,
+            _MINIMUM_RECALL,
+            id="ivf-pq-hnsw",
         ),
         pytest.param(
             CAGRA_ALGORITHM,
             CAGRA_CODEC,
             {**_CUSTOM_GRAPH_BUILD, "nn_descent_n_iters": 15},
             1024,
+            _MINIMUM_RECALL,
             id="nn-descent-gpu-search",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            _IVF_PQ_GRAPH_BUILD,
+            4096,
+            _MINIMUM_RECALL,
+            id="ivf-pq-gpu-search",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            {**_CUSTOM_GRAPH_BUILD, "graph_build_algo": "ivf_pq"},
+            # The 1024-list/20-probe defaults need a larger candidate pool than
+            # our 4096-row explicit-override fixture provides.
+            32768,
+            _MINIMUM_RECALL,
+            id="ivf-pq-hnsw-defaults",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            {
+                **_CUSTOM_GRAPH_BUILD,
+                "graph_build_algo": "ivf_pq",
+                "refinement_rate": 1.0,
+            },
+            32768,
+            0.70,
+            id="ivf-pq-gpu-search-refinement-1-min-recall-70pct",
+        ),
+        pytest.param(
+            CAGRA_ALGORITHM,
+            CAGRA_CODEC,
+            {
+                **_CUSTOM_GRAPH_BUILD,
+                "graph_build_algo": "ivf_pq",
+                "refinement_rate": 2.0,
+            },
+            32768,
+            0.79,
+            id="ivf-pq-gpu-search-refinement-2-min-recall-79pct",
+        ),
+        pytest.param(
+            ACCELERATED_HNSW_ALGORITHM,
+            ACCELERATED_HNSW_CODEC,
+            {
+                **_CUSTOM_GRAPH_BUILD,
+                "graph_build_algo": "ivf_pq",
+                "hnsw_layers": 3,
+                # Keep 256 lists for the 256-row top layer; the default 1024 is too large.
+                # 32 probes failed upper-layer graph construction on the 256-row top layer.
+                "n_lists": 256,
+                "n_probes": 256,
+            },
+            # Three layers retain 65536, 4096, then 256 vectors: enough for 8-bit PQ training.
+            65536,
+            _MINIMUM_RECALL,
+            id="ivf-pq-hnsw-three-layers-tuned-probes",
         ),
     ],
 )
 def test_custom_graph_build_and_query_controls_preserve_search_quality(
-    tmp_path, capfd, request, algorithm, codec, build_controls, document_count
+    tmp_path,
+    capfd,
+    request,
+    algorithm,
+    codec,
+    build_controls,
+    document_count,
+    minimum_recall,
 ):
     dataset, query_ids = _case(algorithm, 128, document_count=document_count)
     search_plans = (
@@ -695,6 +785,7 @@ def test_custom_graph_build_and_query_controls_preserve_search_quality(
         assert _persisted_hnsw_layer_counts(
             backend._get_runtime(), index.file
         ) == [expected_layers]
+    assert len(results) == len(search_plans)
     for result in results:
         assert result.success, result.error_message
         np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
@@ -703,7 +794,7 @@ def test_custom_graph_build_and_query_controls_preserve_search_quality(
         )
         assert (
             _recall(result.neighbors, dataset.groundtruth_neighbors)
-            >= _MINIMUM_RECALL
+            >= minimum_recall
         )
         expected_distances = np.sum(
             (
