@@ -167,8 +167,15 @@ def test_query_execution_selects_configured_gpu_query_only_when_requested(
     runtime._java_vector = Mock(return_value=fake_java_vector)
     runtime.KnnFloatVectorQuery = Mock(return_value=fake_default_query)
     runtime._configured_cagra_query = Mock(return_value=fake_gpu_query)
-    runtime._search = Mock(return_value=(SimpleNamespace(scoreDocs=[]), 1, 1))
-    runtime._materialize_hits = Mock(return_value=[])
+    fake_top_docs = object()
+    runtime._search = Mock(return_value=(fake_top_docs, 1, 1))
+    fake_document_ids = np.arange(10, dtype=np.int64)
+    fake_scores = np.linspace(1.0, 0.1, 10, dtype=np.float32)
+    runtime._materialize_top_docs = Mock(
+        return_value=(fake_document_ids, fake_scores)
+    )
+    destination_ids = np.full(10, -1, dtype=np.int64)
+    destination_scores = np.full(10, np.nan, dtype=np.float32)
     fake_searcher, fake_reader = object(), object()
 
     runtime._search_one(
@@ -177,6 +184,8 @@ def test_query_execution_selects_configured_gpu_query_only_when_requested(
         np.zeros(2, dtype=np.float32),
         10,
         64,
+        destination_ids,
+        destination_scores,
         gpu_controls,
     )
 
@@ -193,6 +202,11 @@ def test_query_execution_selects_configured_gpu_query_only_when_requested(
         runtime.KnnFloatVectorQuery.assert_not_called()
         expected_query = fake_gpu_query
     runtime._search.assert_called_once_with(fake_searcher, expected_query, 10)
+    runtime._materialize_top_docs.assert_called_once_with(
+        fake_reader, fake_top_docs
+    )
+    np.testing.assert_array_equal(destination_ids, fake_document_ids)
+    np.testing.assert_array_equal(destination_scores, fake_scores)
 
 
 def test_requested_factory_failure_is_not_replaced_by_default_search():

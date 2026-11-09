@@ -194,6 +194,65 @@ def test_float32_vectors_are_converted_to_a_jcc_compatible_sequence() -> None:
     assert converted is fake_converter_output_object
 
 
+@pytest.mark.parametrize(
+    "include_old_jar", (False, True), ids=("no-jar", "helper-free-fake-jar")
+)
+def test_missing_bulk_helper_does_not_attempt_java_loading(
+    tmp_path: Path, include_old_jar: bool
+) -> None:
+    runtime = object.__new__(LuceneRuntime)
+    runtime.artifact_provenance = {}
+    runtime.Class = Mock()
+    if include_old_jar:
+        _java_jar, lucene_jar = _write_artifacts(tmp_path)
+        runtime.artifact_provenance["cuvs_lucene_jar_path"] = str(lucene_jar)
+
+    assert runtime._load_optional_hit_materializer() is None
+    runtime.Class.forName.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "broken_stage", (None, "class-loading", "jcc-adaptation")
+)
+def test_present_bulk_helper_is_loaded_or_reports_its_failure(
+    tmp_path: Path, broken_stage: str | None
+) -> None:
+    _java_jar, lucene_jar = _write_artifacts(tmp_path)
+    class_name = _lucene_runtime._SEARCH_RESULT_MATERIALIZER
+    with zipfile.ZipFile(lucene_jar, "a") as archive:
+        # Placeholder bytecode is used only to exercise archive capability detection.
+        archive.writestr(class_name.replace(".", "/") + ".class", b"")
+    runtime = object.__new__(LuceneRuntime)
+    runtime.artifact_provenance = {"cuvs_lucene_jar_path": str(lucene_jar)}
+    runtime.Class = Mock()
+    runtime.Function = Mock()
+    fake_loaded_instance = object()
+    fake_callable_bridge = object()
+    runtime.Class.forName.return_value.newInstance.return_value = (
+        fake_loaded_instance
+    )
+    runtime.Function.cast_.return_value = fake_callable_bridge
+    if broken_stage is not None:
+        boundary = (
+            runtime.Class.forName
+            if broken_stage == "class-loading"
+            else runtime.Function.cast_
+        )
+        original_error = RuntimeError("deliberate fake bridge failure")
+        boundary.side_effect = original_error
+        with pytest.raises(
+            RuntimeError, match="Could not load or adapt"
+        ) as failure:
+            runtime._load_optional_hit_materializer()
+        assert failure.value.__cause__ is original_error
+    else:
+        assert (
+            runtime._load_optional_hit_materializer() is fake_callable_bridge
+        )
+        runtime.Class.forName.assert_called_once_with(class_name)
+        runtime.Function.cast_.assert_called_once_with(fake_loaded_instance)
+
+
 def test_numeric_document_ids_preserve_score_order_across_leaves() -> None:
     class ForwardOnlyDocumentIds:
         def __init__(self, values: dict[int, int]) -> None:
@@ -253,15 +312,14 @@ def test_numeric_document_ids_preserve_score_order_across_leaves() -> None:
         SimpleNamespace(doc=5, score=0.7),
     ]
 
-    hits = LuceneRuntime._materialize_hits(reader, score_docs)
+    document_ids, scores = LuceneRuntime._materialize_hits(reader, score_docs)
 
     assert first_ids.visited == [2, 5]
     assert second_ids.visited == [2]
-    assert hits == [
-        _lucene_runtime.SearchHit(108, 0.9),
-        _lucene_runtime.SearchHit(102, 0.8),
-        _lucene_runtime.SearchHit(105, 0.7),
-    ]
+    np.testing.assert_array_equal(document_ids, [108, 102, 105])
+    np.testing.assert_array_equal(
+        scores, np.asarray([0.9, 0.8, 0.7], dtype=np.float32)
+    )
 
 
 def test_missing_numeric_document_id_requests_an_index_rebuild() -> None:

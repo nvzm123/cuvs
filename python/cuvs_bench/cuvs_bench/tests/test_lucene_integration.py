@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +26,9 @@ from _lucene_log_capture import (
 from cuvs_bench.backends.base import Dataset
 from cuvs_bench.backends._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
+    BULK_DOCVALUES_MATERIALIZATION,
     DIRECT_PYLUCENE_DISPATCH,
+    PYTHON_DOCVALUES_MATERIALIZATION,
     TIMED_BRIDGE_PYLUCENE_DISPATCH,
 )
 from cuvs_bench.backends.lucene import (
@@ -343,6 +346,10 @@ def test_accelerated_hnsw_builds_on_gpu_and_searches_on_cpu(
     _assert_artifact_provenance(build.metadata, "build_runtime")
     assert result.success, result.error_message
     assert result.metadata["expected_search_route"] == "cpu_hnsw"
+    assert (
+        result.metadata["result_materialization_kind"]
+        == BULK_DOCVALUES_MATERIALIZATION
+    )
     assert result.metadata["persisted_index_kind"] == "hnsw"
     assert result.metadata["build_route_policy"] == (
         "gpu_cagra_or_cpu_hnsw_fallback"
@@ -748,6 +755,10 @@ def test_custom_graph_build_and_query_controls_preserve_search_quality(
         ) == [expected_layers]
     for result in results:
         assert result.success, result.error_message
+        assert (
+            result.metadata["result_materialization_kind"]
+            == BULK_DOCVALUES_MATERIALIZATION
+        )
         np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
         assert all(
             len(set(row)) == len(row) for row in result.neighbors.tolist()
@@ -829,6 +840,10 @@ def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path):
         requested_batch_size=2,
         java_timing=False,
     )
+    assert (
+        result.metadata["result_materialization_kind"]
+        == PYTHON_DOCVALUES_MATERIALIZATION
+    )
     np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
     assert all(len(set(row)) == len(row) for row in result.neighbors.tolist())
     assert (
@@ -849,7 +864,8 @@ def test_numeric_document_values_preserve_dataset_ids_across_segments(
 ) -> None:
     rng = np.random.default_rng(2624)
     vectors = rng.standard_normal((12, 16)).astype(np.float32)
-    external_ids = np.roll(np.arange(12, dtype=np.int64) * 17 + 1000, 3)
+    # Deliberately outside double's exact integer range: IDs must stay integer-valued across JCC.
+    external_ids = np.roll(np.arange(12, dtype=np.int64) * 17 + (2**53 + 1), 3)
     query_positions = np.asarray([1, 9])
     queries = vectors[query_positions].copy()
     backend, index = _backend_and_index(
@@ -876,9 +892,13 @@ def test_numeric_document_values_preserve_dataset_ids_across_segments(
     )
 
     assert segment_count == expected_segments
-    returned_ids = [
-        [hit.document_id for hit in query_hits] for query_hits in result.hits
-    ]
+    assert (
+        result.timing.result_materialization_kind
+        == BULK_DOCVALUES_MATERIALIZATION
+    )
+    assert result.neighbors.dtype == np.int64
+    assert result.scores.dtype == np.float32
+    returned_ids = result.neighbors.tolist()
     assert [row[0] for row in returned_ids] == external_ids[
         query_positions
     ].tolist()
@@ -887,6 +907,34 @@ def test_numeric_document_values_preserve_dataset_ids_across_segments(
     assert all(
         document_id in valid_ids for row in returned_ids for document_id in row
     )
+
+    # Compare both extractors on identical TopDocs, so ANN variation cannot mask a mapping error.
+    with closing(
+        runtime.FSDirectory.open(runtime.Paths.get(index.file))
+    ) as directory:
+        with closing(runtime.DirectoryReader.open(directory)) as reader:
+            searcher = runtime.IndexSearcher(reader)
+            query = runtime.KnnFloatVectorQuery(
+                "vector", runtime._java_vector(queries[0]), len(vectors)
+            )
+            top_docs = searcher.search(query, 4)
+            bulk_ids, bulk_scores = runtime._materialize_top_docs(
+                reader, top_docs
+            )
+            python_ids, python_scores = runtime._materialize_hits(
+                reader, top_docs.scoreDocs
+            )
+    np.testing.assert_array_equal(bulk_ids, python_ids)
+    np.testing.assert_array_equal(bulk_scores, python_scores)
+
+    # A subsequent search and its reader closure must not mutate the already returned arrays.
+    first_ids = result.neighbors.copy()
+    first_scores = result.scores.copy()
+    runtime.search_index(
+        Path(index.file), queries[::-1], k=4, num_candidates=len(vectors)
+    )
+    np.testing.assert_array_equal(result.neighbors, first_ids)
+    np.testing.assert_array_equal(result.scores, first_scores)
 
 
 def test_accelerated_hnsw_logs_cpu_fallback_when_gpu_is_hidden(tmp_path):

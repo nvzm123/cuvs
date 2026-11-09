@@ -19,6 +19,7 @@ For an introduction to the codecs, configuration, and tuning, see the [Lucene In
 - [GPUSearchParams](/api-reference/lucene-api-com-nvidia-cuvs-lucene-gpusearchparams)
 - [IndexSearcherTimingBridge](/api-reference/lucene-api-com-nvidia-cuvs-lucene-indexsearchertimingbridge)
 - [IndexWriterConfigRAMLimitBridge](/api-reference/lucene-api-com-nvidia-cuvs-lucene-indexwriterconfigramlimitbridge)
+- [SearchResultMaterializer](/api-reference/lucene-api-com-nvidia-cuvs-lucene-searchresultmaterializer)
 - [ThreadLocalCuVSResourcesProvider](/api-reference/lucene-api-com-nvidia-cuvs-lucene-threadlocalcuvsresourcesprovider)
 - [Utils](/api-reference/lucene-api-com-nvidia-cuvs-lucene-utils)
 

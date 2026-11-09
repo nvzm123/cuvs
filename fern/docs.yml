@@ -608,6 +608,8 @@ navigation:
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-indexsearchertimingbridge.md"
           - page: "IndexWriterConfigRAMLimitBridge"
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-indexwriterconfigramlimitbridge.md"
+          - page: "SearchResultMaterializer"
+            path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-searchresultmaterializer.md"
           - page: "ThreadLocalCuVSResourcesProvider"
             path: "./pages/lucene_api/lucene-api-com-nvidia-cuvs-lucene-threadlocalcuvsresourcesprovider.md"
           - page: "Utils"

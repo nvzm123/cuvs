@@ -83,6 +83,13 @@ _CODEC_SERVICE_DESCRIPTOR = "META-INF/services/org.apache.lucene.codecs.Codec"
 _INDEX_SEARCHER_TIMING_BRIDGE = (
     f"{_CUVS_LUCENE_PACKAGE}.IndexSearcherTimingBridge"
 )
+_SEARCH_RESULT_MATERIALIZER = (
+    f"{_CUVS_LUCENE_PACKAGE}.SearchResultMaterializer"
+)
+_READER_REQUEST_KEY = "reader"
+_ID_FIELD_REQUEST_KEY = "id_field"
+_DOCUMENT_IDS_RESPONSE_KEY = "document_ids"
+_SCORES_RESPONSE_KEY = "scores"
 _SEARCHER_REQUEST_KEY = "searcher"
 _QUERY_REQUEST_KEY = "query"
 _TOP_K_REQUEST_KEY = "top_k"
@@ -90,6 +97,8 @@ _TOP_DOCS_RESPONSE_KEY = "top_docs"
 _ELAPSED_NANOS_RESPONSE_KEY = "elapsed_nanos"
 DIRECT_PYLUCENE_DISPATCH = "direct_pylucene"
 TIMED_BRIDGE_PYLUCENE_DISPATCH = "thin_jar_timing_bridge"
+PYTHON_DOCVALUES_MATERIALIZATION = "python_docvalues"
+BULK_DOCVALUES_MATERIALIZATION = "thin_jar_bulk_docvalues"
 
 _JVM_LOCK = threading.Lock()
 _INITIALIZED_CLASSPATH: str | None = None
@@ -971,12 +980,6 @@ class CagraIndexVerifier:
 
 
 @dataclass(frozen=True)
-class SearchHit:
-    document_id: int
-    score: float
-
-
-@dataclass(frozen=True)
 class RuntimeBuildTiming:
     """Nanosecond timings for the Lucene build lifecycle."""
 
@@ -1179,11 +1182,15 @@ class RuntimeSearchTiming:
     runtime_plan_wall_ns: int
     search_dispatch_kind: str
     queries: tuple[QueryTiming, ...]
+    result_materialization_kind: str = PYTHON_DOCVALUES_MATERIALIZATION
 
 
 @dataclass(frozen=True)
 class RuntimeSearchResult:
-    hits: list[list[SearchHit]]
+    """Owned query-by-rank arrays that remain valid after the reader closes."""
+
+    neighbors: np.ndarray
+    scores: np.ndarray
     timing: RuntimeSearchTiming
     document_count: int
     dimensions: int
@@ -1263,6 +1270,7 @@ class LuceneRuntime:
         self.artifact_provenance: dict[str, str] = {}
         self._artifact_tokens: dict[str, tuple[int, ...]] = {}
         self._java_search_timer: Any | None = None
+        self._java_hit_materializer: Any | None = None
         self._java_configured_codec_factory: Any | None = None
         self._java_cagra_codec_factory: Any | None = None
         self._java_cagra_query_factory: Any | None = None
@@ -1278,7 +1286,30 @@ class LuceneRuntime:
         runtime._artifact_tokens = artifact_tokens
         if artifact_provenance:
             runtime._java_search_timer = runtime._load_java_search_timer()
+            runtime._java_hit_materializer = (
+                runtime._load_optional_hit_materializer()
+            )
         return runtime
+
+    def _load_optional_hit_materializer(self) -> Any | None:
+        """Older accepted JARs may lack the helper; a broken present helper is an error."""
+        jar_path = self.artifact_provenance.get("cuvs_lucene_jar_path")
+        if jar_path is None:
+            return None
+        class_entry = _SEARCH_RESULT_MATERIALIZER.replace(".", "/") + ".class"
+        with zipfile.ZipFile(jar_path) as archive:
+            if class_entry not in archive.namelist():
+                return None
+        try:
+            instance = self.Class.forName(
+                _SEARCH_RESULT_MATERIALIZER
+            ).newInstance()
+            return self.Function.cast_(instance)
+        except Exception as error:
+            raise RuntimeError(
+                f"Could not load or adapt {_SEARCH_RESULT_MATERIALIZER} "
+                f"through PyLucene/JCC: {type(error).__name__}: {error}"
+            ) from error
 
     def _load_java_search_timer(self) -> Any:
         """Load the thin-JAR timer through JCC's wrapped Function interface."""
@@ -2028,12 +2059,13 @@ class LuceneRuntime:
     @staticmethod
     def _materialize_hits(
         reader: Any, score_docs: Sequence[Any]
-    ) -> list[SearchHit]:
-        """Read each leaf's forward-only IDs, preserving score rank."""
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compatibility path for CPU-only runtimes and JARs without the bulk helper."""
         ranked_score_docs_by_doc_id = sorted(
             enumerate(score_docs), key=lambda item: int(item[1].doc)
         )
-        hits_by_rank: dict[int, SearchHit] = {}
+        ids_by_rank = np.empty(len(score_docs), dtype=np.int64)
+        scores = np.empty(len(score_docs), dtype=np.float32)
         next_hit = 0
         for leaf in reader.leaves():
             leaf_reader = leaf.reader()
@@ -2065,19 +2097,37 @@ class LuceneRuntime:
                         f"Lucene document {lucene_doc_id} has no numeric "
                         "dataset ID; rebuild the index with --force"
                     )
-                hits_by_rank[rank] = SearchHit(
-                    int(document_ids.longValue()), float(score_doc.score)
-                )
+                ids_by_rank[rank] = int(document_ids.longValue())
+                scores[rank] = float(score_doc.score)
                 next_hit += 1
         if next_hit != len(ranked_score_docs_by_doc_id):
             lucene_doc_id = int(ranked_score_docs_by_doc_id[next_hit][1].doc)
             raise RuntimeError(
                 f"Lucene document {lucene_doc_id} is outside the index"
             )
-        return [
-            hits_by_rank[rank]
-            for rank in range(len(ranked_score_docs_by_doc_id))
-        ]
+        return ids_by_rank, scores
+
+    def _materialize_top_docs(
+        self, reader: Any, top_docs: Any
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if self._java_hit_materializer is None:
+            return self._materialize_hits(reader, top_docs.scoreDocs)
+        request = self.HashMap()
+        request.put(_READER_REQUEST_KEY, reader)
+        request.put(_TOP_DOCS_RESPONSE_KEY, top_docs)
+        request.put(_ID_FIELD_REQUEST_KEY, _ID_FIELD)
+        response = self.Map.cast_(self._java_hit_materializer.apply(request))
+        java_ids = self.lucene.JArray("long").cast_(
+            response.get(_DOCUMENT_IDS_RESPONSE_KEY)
+        )
+        java_scores = self.lucene.JArray("float").cast_(
+            response.get(_SCORES_RESPONSE_KEY)
+        )
+        # Copy into NumPy-owned memory: no reader/JCC object lifetime escapes this call.
+        return (
+            np.array(java_ids, dtype=np.int64, copy=True),
+            np.array(java_scores, dtype=np.float32, copy=True),
+        )
 
     def _search_one(
         self,
@@ -2086,8 +2136,10 @@ class LuceneRuntime:
         vector: np.ndarray,
         k: int,
         candidates: int,
+        destination_ids: np.ndarray,
+        destination_scores: np.ndarray,
         cagra_search_parameters: Mapping[str, Any] | None = None,
-    ) -> tuple[list[SearchHit], QueryTiming]:
+    ) -> QueryTiming:
         client_started = time.perf_counter_ns()
         prepare_started = time.perf_counter_ns()
         java_vector = self._java_vector(vector)
@@ -2106,11 +2158,18 @@ class LuceneRuntime:
         )
 
         materialization_started = time.perf_counter_ns()
-        hits = self._materialize_hits(reader, top_docs.scoreDocs)
+        document_ids, scores = self._materialize_top_docs(reader, top_docs)
+        if document_ids.shape != (k,) or scores.shape != (k,):
+            raise RuntimeError(
+                "Lucene returned result arrays with shapes "
+                f"{document_ids.shape} and {scores.shape}, expected {(k,)}"
+            )
+        destination_ids[:] = document_ids
+        destination_scores[:] = scores
         result_materialization_ns = (
             time.perf_counter_ns() - materialization_started
         )
-        return hits, QueryTiming(
+        return QueryTiming(
             query_prepare_ns=query_prepare_ns,
             pylucene_search_dispatch_ns=pylucene_search_dispatch_ns,
             java_index_searcher_search_ns=java_search_ns,
@@ -2193,23 +2252,26 @@ class LuceneRuntime:
             reader_searcher_setup_ns = (
                 time.perf_counter_ns() - reader_setup_started
             )
-            all_hits: list[list[SearchHit]] = []
+            all_ids = np.empty((len(queries), k), dtype=np.int64)
+            all_scores = np.empty((len(queries), k), dtype=np.float32)
             query_timings: list[QueryTiming] = []
             corpus_started = time.perf_counter_ns()
-            for vector in queries:
-                hits, query_timing = self._search_one(
+            for query_number, vector in enumerate(queries):
+                query_timing = self._search_one(
                     searcher,
                     reader,
                     vector,
                     k,
                     min(num_candidates, document_count),
+                    all_ids[query_number],
+                    all_scores[query_number],
                     cagra_search_parameters,
                 )
-                all_hits.append(hits)
                 query_timings.append(query_timing)
             query_corpus_wall_ns = time.perf_counter_ns() - corpus_started
         return RuntimeSearchResult(
-            hits=all_hits,
+            neighbors=all_ids,
+            scores=all_scores,
             timing=RuntimeSearchTiming(
                 directory_open_ns=directory_open_ns,
                 reader_searcher_setup_ns=reader_searcher_setup_ns,
@@ -2223,6 +2285,11 @@ class LuceneRuntime:
                     else DIRECT_PYLUCENE_DISPATCH
                 ),
                 queries=tuple(query_timings),
+                result_materialization_kind=(
+                    BULK_DOCVALUES_MATERIALIZATION
+                    if self._java_hit_materializer is not None
+                    else PYTHON_DOCVALUES_MATERIALIZATION
+                ),
             ),
             document_count=document_count,
             dimensions=dimensions,
