@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from _lucene_test_support import (
+    FakeSearchHit,
     ALGORITHM_CASES,
     _FAKE_ARTIFACT_PROVENANCE,
     RecordingRuntime,
@@ -29,7 +30,6 @@ from cuvs_bench.backends._lucene_runtime import (
     RuntimeBuildResult,
     RuntimeBuildTiming,
     RuntimeSearchResult,
-    SearchHit,
 )
 from cuvs_bench.backends.base import Dataset
 from cuvs_bench.backends.lucene import (
@@ -372,8 +372,8 @@ def test_search_timing_uses_one_sample_per_serial_query(
     assert backend.build(dataset, [index]).success
     runtime.search_result = _runtime_search_result(
         [
-            [SearchHit(0, 1.0), SearchHit(1, 0.5)],
-            [SearchHit(0, 1.0), SearchHit(1, 0.5)],
+            [FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)],
+            [FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)],
         ],
         search_dispatch_ns=(2_000_000, 8_000_000),
         query_corpus_wall_ns=12_000_000,
@@ -406,8 +406,8 @@ def test_exact_java_timing_reports_first_and_subsequent_queries_only_when_availa
     None
 ):
     hits = [
-        [SearchHit(0, 1.0), SearchHit(1, 0.5)],
-        [SearchHit(0, 1.0), SearchHit(1, 0.5)],
+        [FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)],
+        [FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)],
     ]
     bridged = _runtime_search_result(
         hits,
@@ -459,13 +459,11 @@ def test_search_rejects_missing_per_query_timing_data(tmp_path: Path) -> None:
     dataset = _dataset()
     assert backend.build(dataset, [index]).success
     single_query_result = _runtime_search_result(
-        [[SearchHit(0, 1.0), SearchHit(1, 0.5)]]
+        [[FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)]]
     )
     runtime.search_result = RuntimeSearchResult(
-        hits=[
-            [SearchHit(0, 1.0), SearchHit(1, 0.5)],
-            [SearchHit(0, 1.0), SearchHit(1, 0.5)],
-        ],
+        neighbors=np.asarray([[0, 1], [0, 1]], dtype=np.int64),
+        scores=np.asarray([[1.0, 0.5], [1.0, 0.5]], dtype=np.float32),
         timing=single_query_result.timing,
         document_count=4,
         dimensions=2,
@@ -477,6 +475,49 @@ def test_search_rejects_missing_per_query_timing_data(tmp_path: Path) -> None:
     assert result.error_message == (
         "RuntimeError: Lucene returned timing data for 1 queries, expected 2"
     )
+
+
+@pytest.mark.parametrize(
+    ("changed_array", "fake_values", "message"),
+    (
+        pytest.param(
+            "neighbors",
+            np.array([0, 1], dtype=np.int64),
+            "query-by-rank",
+            id="flat-ids",
+        ),
+        pytest.param(
+            "neighbors",
+            np.array([[0, 1]], dtype=np.int32),
+            "int64 IDs",
+            id="narrow-ids",
+        ),
+        pytest.param(
+            "scores",
+            np.array([[1.0, 0.5]], dtype=np.float64),
+            "float32 scores",
+            id="wide-scores",
+        ),
+        pytest.param(
+            "scores",
+            np.array([[1.0]], dtype=np.float32),
+            "different shapes",
+            id="missing-score",
+        ),
+    ),
+)
+def test_search_result_arrays_reject_malformed_boundary_data(
+    changed_array: str, fake_values: np.ndarray, message: str
+) -> None:
+    result = _runtime_search_result(
+        [[FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)]]
+    )
+    malformed_result = replace(result, **{changed_array: fake_values})
+
+    with pytest.raises(RuntimeError, match=message):
+        LuceneBackend._validate_hits(
+            malformed_result, k=2, expected_query_count=1
+        )
 
 
 def test_build_timing_rejects_phases_longer_than_the_enclosing_wall() -> None:
@@ -497,7 +538,9 @@ def test_build_timing_rejects_phases_longer_than_the_enclosing_wall() -> None:
 
 
 def test_search_timing_rejects_query_phases_outside_client_wall() -> None:
-    result = _runtime_search_result([[SearchHit(0, 1.0), SearchHit(1, 0.5)]])
+    result = _runtime_search_result(
+        [[FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)]]
+    )
     query = result.timing.queries[0]
     query_phases_total_ns = (
         query.query_prepare_ns
@@ -521,7 +564,9 @@ def test_search_timing_rejects_query_phases_outside_client_wall() -> None:
 
 
 def test_search_timing_rejects_client_total_longer_than_corpus_wall() -> None:
-    result = _runtime_search_result([[SearchHit(0, 1.0), SearchHit(1, 0.5)]])
+    result = _runtime_search_result(
+        [[FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)]]
+    )
     client_queries_total_ns = sum(
         query.client_query_ns for query in result.timing.queries
     )
@@ -539,7 +584,9 @@ def test_search_timing_rejects_client_total_longer_than_corpus_wall() -> None:
 
 
 def test_search_timing_rejects_plan_phases_longer_than_plan_wall() -> None:
-    result = _runtime_search_result([[SearchHit(0, 1.0), SearchHit(1, 0.5)]])
+    result = _runtime_search_result(
+        [[FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)]]
+    )
     timing = result.timing
     plan_phases_total_ns = (
         timing.directory_open_ns
@@ -563,19 +610,19 @@ def test_search_timing_rejects_plan_phases_longer_than_plan_wall() -> None:
     ("hits", "message"),
     (
         pytest.param(
-            [[SearchHit(0, 1.0), SearchHit(0, 0.5)]] * 2,
+            [[FakeSearchHit(0, 1.0), FakeSearchHit(0, 0.5)]] * 2,
             "duplicate IDs",
             id="duplicate",
         ),
         pytest.param(
-            [[SearchHit(0, 1.0), SearchHit(4, 0.5)]] * 2,
+            [[FakeSearchHit(0, 1.0), FakeSearchHit(4, 0.5)]] * 2,
             "an invalid ID",
             id="out-of-range",
         ),
     ),
 )
 def test_search_rejects_invalid_hit_identifiers(
-    tmp_path: Path, hits: list[list[SearchHit]], message: str
+    tmp_path: Path, hits: list[list[FakeSearchHit]], message: str
 ) -> None:
     runtime = RecordingRuntime()
     backend, index, _factory = _backend_and_index(
@@ -603,7 +650,7 @@ def test_search_rejects_a_runtime_result_that_drops_a_query(
     dataset = _dataset()
     assert backend.build(dataset, [index]).success
     runtime.search_result = _runtime_search_result(
-        [[SearchHit(0, 1.0), SearchHit(1, 0.5)]]
+        [[FakeSearchHit(0, 1.0), FakeSearchHit(1, 0.5)]]
     )
 
     result = backend.search(dataset, [index], k=2)[0]
