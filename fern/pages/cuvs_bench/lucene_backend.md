@@ -10,8 +10,14 @@ PyLucene. The cuVS-Lucene thin JAR supplies GPU CAGRA search and GPU-accelerated
 HNSW construction with CPU HNSW search. PyLucene is an implementation detail;
 the public cuVS Bench backend name is `lucene`.
 
-This layer exposes the backend classes for direct Python integration.
-Installed CLI selection requires package registration.
+Selecting this backend is explicit. Commands that do not select it through a
+Lucene `--backend-config` file continue to use the `cpp_gbench` backend and its
+existing `cuvs_cagra` default. Save this reusable selector as
+`lucene-backend.yaml`:
+
+```yaml
+backend: lucene
+```
 
 ## Algorithms
 
@@ -33,6 +39,30 @@ physical segment codec and every persisted vector field before searching, and
 fails if CAGRA construction silently produced a brute-force index. Both HNSW
 algorithms support an explicit `num_candidates` value greater than or equal to
 `k`; their CPU search path is not subject to CAGRA's `k <= 1024` limit.
+
+`lucene_cuvs_cagra` is selected when the Lucene backend configuration is used
+without an explicit `--algorithms` value. Select `lucene_cpu_hnsw` explicitly
+when a CPU control is needed.
+
+Generate the example dataset if it is not already available:
+
+```bash
+python -m cuvs_bench.get_dataset \
+    --dataset test-data \
+    --dataset-path /absolute/path/to/datasets
+```
+
+```bash
+python -m cuvs_bench.run \
+    --backend-config lucene-backend.yaml \
+    --dataset test-data \
+    --dataset-path /absolute/path/to/datasets \
+    --algorithms lucene_cuvs_cagra \
+    --groups test \
+    --batch-size 10 \
+    -k 10 \
+    --build --search
+```
 
 ## Runtime requirements
 
@@ -207,3 +237,25 @@ first-query effects, but it does not establish steady state or isolate every
 JVM, CUDA, or cuVS initialization cost. Build results similarly separate
 dataset preparation, runtime setup, writer lifecycle, index validation,
 publication, and total backend time.
+
+## Integration tests
+
+Run the live CPU/GPU suite from the repository root after providing the same
+runtime prerequisites:
+
+```bash
+python -m pytest -q -s \
+    python/cuvs_bench/cuvs_bench/tests/test_lucene_integration.py \
+    --run-lucene-e2e
+```
+
+Without `--run-lucene-e2e`, ordinary cuVS Bench test runs skip these live
+cases. Once selected, every case requires PyLucene and Java. GPU-intended cases
+also require the cuVS Java artifacts, native libraries, CUDA, and a supported
+GPU; missing prerequisites fail rather than skip. Accelerated-HNSW GPU-intended
+cases fail if the codec logs its CPU-writer fallback. A separate GPU-hidden
+negative control verifies that this warning remains observable and attributable
+to the case that produced it.
+
+Automated CI provisioning for this suite is tracked in
+[NVIDIA/cuvs#2635](https://github.com/NVIDIA/cuvs/issues/2635).
