@@ -222,7 +222,7 @@ navigation:
               - section: "Backends"
                 path: "./pages/cuvs_bench/pluggable_backend.md"
                 contents:
-                  - page: "Lucene Runtime"
+                  - page: "Lucene"
                     path: "./pages/cuvs_bench/lucene_backend.md"
               - page: "cuVS Bench Parameter Tuning Guide"
                 hidden: true
