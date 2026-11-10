@@ -48,20 +48,20 @@ Generate the example dataset if it is not already available:
 
 ```bash
 python -m cuvs_bench.get_dataset \
-    --dataset test-data \
-    --dataset-path /absolute/path/to/datasets
+  --dataset test-data \
+  --dataset-path /absolute/path/to/datasets
 ```
 
 ```bash
 python -m cuvs_bench.run \
-    --backend-config lucene-backend.yaml \
-    --dataset test-data \
-    --dataset-path /absolute/path/to/datasets \
-    --algorithms lucene_cuvs_cagra \
-    --groups test \
-    --batch-size 10 \
-    -k 10 \
-    --build --search
+  --backend-config lucene-backend.yaml \
+  --dataset test-data \
+  --dataset-path /absolute/path/to/datasets \
+  --algorithms lucene_cuvs_cagra \
+  --groups test \
+  --batch-size 10 \
+  -k 10 \
+  --build --search
 ```
 
 ## Runtime requirements
@@ -119,13 +119,13 @@ installation: JCC and the virtual environment retain absolute paths. Allow at
 least 3 GB of disk space.
 
 ```bash
-export PYLUCENE_BUILD_ROOT="$HOME/.local/share/cuvs/pylucene-10.2.0"
+export PYLUCENE_BUILD_ROOT="${HOME}/.local/share/cuvs/pylucene-10.2.0"
 
 conda/recipes/cuvs-bench/build_pylucene_10_2.sh \
-    --python python3 \
-    --build-root "$PYLUCENE_BUILD_ROOT"
+  --python python3 \
+  --build-root "${PYLUCENE_BUILD_ROOT}"
 
-source "$PYLUCENE_BUILD_ROOT/activate.sh"
+source "${PYLUCENE_BUILD_ROOT}/activate.sh"
 python -m pip install -e ./python/cuvs_bench
 python -m pip check
 ```
@@ -160,8 +160,8 @@ fresh source-build libraries visible to both Java and the ELF loader:
 
 ```bash
 CUVS_NATIVE_BUILD="$(cd cpp/build && pwd -P)"
-export JAVA_LIBRARY_PATH="$CUVS_NATIVE_BUILD/c:$CUVS_NATIVE_BUILD"
-export LD_LIBRARY_PATH="$JAVA_LIBRARY_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export JAVA_LIBRARY_PATH="${CUVS_NATIVE_BUILD}/c:${CUVS_NATIVE_BUILD}"
+export LD_LIBRARY_PATH="${JAVA_LIBRARY_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 ```
 
 Keep CUDA's runtime directory loader-visible through the normal cuVS build
@@ -172,8 +172,8 @@ override `INSTALL_PREFIX`, verify that the C wrapper resolves matching cuVS
 libraries and relocations rather than an older installation:
 
 ```bash
-ldd -r "$CUVS_NATIVE_BUILD/c/libcuvs_c.so" \
-    | grep -E 'libcuvs|librmm|librapids_logger|undefined symbol'
+ldd -r "${CUVS_NATIVE_BUILD}/c/libcuvs_c.so" \
+  | grep -E 'libcuvs|librmm|librapids_logger|undefined symbol'
 ```
 
 The runtime resolver discovers the base JAR under `java/cuvs-java/target/` and the
@@ -245,8 +245,8 @@ runtime prerequisites:
 
 ```bash
 python -m pytest -q -s \
-    python/cuvs_bench/cuvs_bench/tests/test_lucene_integration.py \
-    --run-lucene-e2e
+  python/cuvs_bench/cuvs_bench/tests/test_lucene_integration.py \
+  --run-lucene-e2e
 ```
 
 Without `--run-lucene-e2e`, ordinary cuVS Bench test runs skip these live
