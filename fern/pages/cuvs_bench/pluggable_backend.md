@@ -55,7 +55,7 @@ Each `IndexConfig` describes one index to benchmark:
 | `search_params` | Search parameter combinations to benchmark. |
 | `file` | Path or identifier where the backend stores the index. |
 
-`ConfigLoader.load()` owns dataset loading and parameter expansion. A backend
+`ConfigLoader.load()` owns dataset-configuration loading and parameter expansion. A backend
 loader implements the two template hooks below. This minimal network loader
 creates one index configuration for each requested algorithm and group:
 
@@ -154,13 +154,14 @@ Add a new backend when cuVS Bench needs to drive a different execution path, suc
    `--backend-config`, or construct `BenchmarkOrchestrator` directly with its
    `backend_type`.
 
-The complete example below uses an idempotent function to register both pieces.
+The registration example below uses an idempotent function to register both pieces.
 
 ## Example: network backend
 
-This example shows the shape of a network backend using the loader above. The
-backend consumes `backend_config` to connect to the service, build the index,
-run search, and return cuVS Bench result objects.
+This is interface scaffolding, not a working benchmark. The zero-valued results
+below are fabricated placeholders: replace them with real service calls and
+measurements before use. The loader also needs a packaged
+`config/datasets/datasets.yaml` describing the datasets it accepts.
 
 ```python
 import numpy as np
