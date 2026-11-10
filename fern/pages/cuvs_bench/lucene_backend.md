@@ -2,11 +2,37 @@
 slug: user-guide/benchmarking-guide/cu-vs-bench-tool/lucene-backend
 ---
 
-# Lucene Runtime
+# Lucene Backend
 
-The optional Lucene runtime adapters embed the JVM through PyLucene. This page
-covers runtime setup; registering a selectable benchmark backend is a separate
-integration step.
+The optional `lucene` backend runs cuVS Bench against a local Lucene index. It
+embeds the JVM through PyLucene. The CPU HNSW control uses stock Lucene through
+PyLucene. The cuVS-Lucene thin JAR supplies GPU CAGRA search and GPU-accelerated
+HNSW construction with CPU HNSW search. PyLucene is an implementation detail;
+the public cuVS Bench backend name is `lucene`.
+
+This layer exposes the backend classes for direct Python integration.
+Installed CLI selection requires package registration.
+
+## Algorithms
+
+| Algorithm | Codec | Build and search path |
+| --- | --- | --- |
+| `lucene_cuvs_cagra` | `CuVS2510GPUSearchCodec` | cuVS CAGRA on a supported NVIDIA GPU |
+| `lucene_accelerated_hnsw` | `Lucene101AcceleratedHNSWCodec` | cuVS CAGRA build with Lucene CPU HNSW search; CPU HNSW build fallback when GPU support is unavailable |
+| `lucene_cpu_hnsw` | `Lucene101` | Lucene CPU HNSW control |
+
+`lucene_cuvs_cagra` fails when its GPU path is unavailable.
+`lucene_accelerated_hnsw` retains the codec's intentional CPU-writer fallback.
+The `lucene_cpu_hnsw` control does not require native cuVS or either cuVS JAR.
+
+The initial backend accepts nonempty, finite, `float32` Euclidean/L2 vectors
+and supports latency-mode sweeps. The CPU HNSW algorithm accepts at most 1024
+dimensions; both cuVS-backed algorithms accept at most 4096. CAGRA uses the
+codec's fixed defaults and supports `k <= 1024`. The backend validates the
+physical segment codec and every persisted vector field before searching, and
+fails if CAGRA construction silently produced a brute-force index. Both HNSW
+algorithms support an explicit `num_candidates` value greater than or equal to
+`k`; their CPU search path is not subject to CAGRA's `k <= 1024` limit.
 
 ## Runtime requirements
 
@@ -140,3 +166,44 @@ runtime uses the thin JAR's `IndexSearcherTimingBridge`. It measures
 `System.nanoTime()` around exactly `IndexSearcher.search(Query, int)` inside
 the JVM, excluding Python/JCC dispatch and result conversion. The artifact-free
 CPU runtime calls PyLucene directly and does not provide this Java measurement.
+
+## Timing contract
+
+This initial backend invokes one Lucene query at a time. The common cuVS Bench
+`--batch-size` value is retained for configuration and result-file
+compatibility, but it does not introduce bulk or concurrent execution. Results
+therefore record both `requested_batch_size` and
+`effective_search_batch_size=1` and use one latency sample per query.
+
+The headline latency is the complete `client_query` boundary: Java vector and
+query preparation, the synchronous search call, and hit materialization. QPS
+uses the wall time for the entire serial query corpus, so it is not simply the
+reciprocal of mean latency. The raw result also reports narrower preparation,
+PyLucene search-dispatch, result-materialization, reader lifecycle, and NumPy
+conversion timings. `search_dispatch_kind` distinguishes direct PyLucene
+dispatch from the thin-JAR timing bridge. Compare timing results only when that
+value matches. Selecting the CPU and GPU algorithms together loads the bridge
+for both and provides a like-for-like dispatch-boundary comparison; the
+artifact-free CPU control remains useful but is not dispatch-identical.
+
+The runtime's exact Java measurement is reported as
+`java_index_searcher_search` when the timing bridge is available. It is
+diagnostic and unavailable to the artifact-free CPU control. The reported
+timing boundaries are nested rather than additive; summing parent and child
+values double-counts work.
+
+`backend_search_invocation_total_ms` measures one complete non-dry-run search
+invocation after argument validation and dry-run handling. A parameter sweep
+copies that one shared invocation value into every plan row; do not interpret
+or sum it as a per-plan duration.
+
+Before each search-parameter plan, the backend sequentially reads every regular
+index file to establish the same host page-cache policy for CPU and GPU paths.
+It runs no discarded warmup queries: the first query remains part of the
+result, and first-query and subsequent-query values are reported separately
+for the client-query and PyLucene-dispatch boundaries, plus the exact JVM
+search boundary when Java timing is available. That contrast can reveal
+first-query effects, but it does not establish steady state or isolate every
+JVM, CUDA, or cuVS initialization cost. Build results similarly separate
+dataset preparation, runtime setup, writer lifecycle, index validation,
+publication, and total backend time.
