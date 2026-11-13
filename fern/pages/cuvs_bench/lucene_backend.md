@@ -10,15 +10,6 @@ PyLucene. The cuVS-Lucene thin JAR supplies GPU CAGRA search and GPU-accelerated
 HNSW construction with CPU HNSW search. PyLucene is an implementation detail;
 the public cuVS Bench backend name is `lucene`.
 
-Selecting this backend is explicit. Commands that do not select it through a
-Lucene `--backend-config` file continue to use the `cpp_gbench` backend and its
-existing `cuvs_cagra` default. Save this reusable selector as
-`lucene-backend.yaml`:
-
-```yaml
-backend: lucene
-```
-
 ## Algorithms
 
 | Algorithm | Codec | Build and search path |
@@ -43,26 +34,6 @@ algorithms support an explicit `num_candidates` value greater than or equal to
 `lucene_cuvs_cagra` is selected when the Lucene backend configuration is used
 without an explicit `--algorithms` value. Select `lucene_cpu_hnsw` explicitly
 when a CPU control is needed.
-
-Generate the example dataset if it is not already available:
-
-```bash
-python -m cuvs_bench.get_dataset \
-  --dataset test-data \
-  --dataset-path /absolute/path/to/datasets
-```
-
-```bash
-python -m cuvs_bench.run \
-  --backend-config lucene-backend.yaml \
-  --dataset test-data \
-  --dataset-path /absolute/path/to/datasets \
-  --algorithms lucene_cuvs_cagra \
-  --groups test \
-  --batch-size 10 \
-  -k 10 \
-  --build --search
-```
 
 ## Runtime requirements
 
@@ -101,15 +72,19 @@ CPython 3.12-3.14 with development headers and `venv` support, GNU Make, a C/C++
 compiler, `awk`, `curl`, `flock`, `gzip`, `patch`, `tar`, GNU coreutils, and GNU
 findutils. CUDA and a supported NVIDIA GPU are required for GPU execution.
 
-For native cuVS integrations, start at the repository root and, before
-activating the isolated PyLucene environment, build matching native cuVS,
-base `cuvs-java`, and thin `cuvs-lucene` artifacts. Standalone CPU PyLucene does
-not need native cuVS or either JAR, so CPU-only users can skip this command and
-the native-library setup below, but should retain the documented cuVS build
-environment for the editable install.
+Start at the repository root and select JDK 22 for both CPU and GPU runs:
 
 ```bash
 export JAVA_HOME=/absolute/path/to/jdk-22
+```
+
+For native cuVS integrations, build matching native cuVS, base `cuvs-java`,
+and thin `cuvs-lucene` artifacts before activating the isolated PyLucene
+environment. Standalone CPU PyLucene does not need native cuVS or either JAR,
+so CPU-only users can skip this command and the native-library setup below,
+but should retain the documented cuVS build environment for the editable install.
+
+```bash
 ./build.sh libcuvs java lucene
 ```
 
@@ -117,6 +92,10 @@ Choose a stable absolute PyLucene build location outside `/tmp`. Do not move
 the completed directory or selected JDK, and do not remove the base Python
 installation: JCC and the virtual environment retain absolute paths. Allow at
 least 3 GB of disk space.
+
+The example dataset generator also requires `h5py`. Install it explicitly
+alongside cuVS Bench in the isolated environment; it is not currently included
+in cuVS Bench's pip dependencies.
 
 ```bash
 export PYLUCENE_BUILD_ROOT="${HOME}/.local/share/cuvs/pylucene-10.2.0"
@@ -126,7 +105,7 @@ conda/recipes/cuvs-bench/build_pylucene_10_2.sh \
   --build-root "${PYLUCENE_BUILD_ROOT}"
 
 source "${PYLUCENE_BUILD_ROOT}/activate.sh"
-python -m pip install -e ./python/cuvs_bench
+python -m pip install -e ./python/cuvs_bench "h5py>=3.8.0"
 python -m pip check
 ```
 
@@ -196,6 +175,67 @@ runtime uses the thin JAR's `IndexSearcherTimingBridge`. It measures
 `System.nanoTime()` around exactly `IndexSearcher.search(Query, int)` inside
 the JVM, excluding Python/JCC dispatch and result conversion. The artifact-free
 CPU runtime calls PyLucene directly and does not provide this Java measurement.
+
+## Run a small benchmark
+
+After completing runtime setup, run the following commands from the repository
+root in the activated environment. Use a new, writable dataset directory for
+this first run so that its indexes and results are not confused with earlier
+measurements. Replace `/absolute/path/to/datasets` with that directory in both
+commands below.
+
+Selecting this backend is explicit. Commands that do not select it through a
+Lucene `--backend-config` file continue to use the `cpp_gbench` backend and its
+existing `cuvs_cagra` default. Save this reusable selector as
+`lucene-backend.yaml` in the current directory:
+
+```yaml
+backend: lucene
+```
+
+Generate cuVS Bench's built-in small synthetic test dataset, then build and
+search its Lucene index:
+
+```bash
+python -m cuvs_bench.get_dataset \
+  --dataset test-data \
+  --dataset-path /absolute/path/to/datasets
+
+python -m cuvs_bench.run \
+  --backend-config lucene-backend.yaml \
+  --dataset test-data \
+  --dataset-path /absolute/path/to/datasets \
+  --algorithms lucene_cuvs_cagra \
+  --groups test \
+  --search-mode latency \
+  --batch-size 10 \
+  -k 10 \
+  --build --search
+```
+
+For a CPU-only run, replace `lucene_cuvs_cagra` with `lucene_cpu_hnsw` in the
+benchmark command. This uses the same dataset without requiring native cuVS,
+the cuVS Java artifacts, or a GPU.
+
+On a successful first run, both commands exit with status zero and produce
+these files beneath `/absolute/path/to/datasets/test-data/`:
+
+| Output | Relative path |
+| --- | --- |
+| Persisted index | `index/lucene_cuvs_cagra_test/` |
+| Build measurements | `result/build/lucene_cuvs_cagra,test.csv` |
+| Raw search measurements | `result/search/lucene_cuvs_cagra,test,k10,bs10,raw.csv` |
+
+The build CSV contains `time` in seconds. The raw search CSV contains `recall`
+as a fraction, `throughput` in queries per second, and `latency` in seconds.
+Search also produces `,latency.csv` and `,throughput.csv` plotting summaries
+alongside the raw CSV. CPU-only runs use `lucene_cpu_hnsw` in these paths.
+The `bs10` filename records the requested batch size, not concurrent or bulk
+Lucene execution; see the timing contract below.
+
+Inspect the new measurement rows as well as the command's exit status. An
+existing valid index is reused rather than rebuilt, and CSVs from earlier runs
+can remain after a skipped or failed operation.
 
 ## Timing contract
 
