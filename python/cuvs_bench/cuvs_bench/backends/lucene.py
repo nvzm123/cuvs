@@ -34,12 +34,13 @@ from ._lucene_compat import (
     PERSISTED_CODEC_KINDS,
     SAVED_CUVS_LUCENE_ARTIFACT_IDS,
 )
+from ._lucene_parameters import normalize_cagra_search_controls
 from ._lucene_runtime import (
     ACCELERATED_HNSW_CODEC,
     CAGRA_CODEC,
     CPU_HNSW_CODEC,
     DIRECT_PYLUCENE_DISPATCH,
-    MAX_CAGRA_TOP_K,
+    MAX_PER_SEGMENT_CAGRA_TOP_K,
     LuceneRuntime,
     RuntimeBuildResult,
     RuntimeSearchResult,
@@ -436,32 +437,39 @@ def _codec_for(algorithm: str, build_params: Mapping[str, Any]) -> str:
 
 def _search_parameters(
     algorithm: str, parameters: Mapping[str, Any], k: int
-) -> dict[str, int]:
+) -> dict[str, Any]:
     if not isinstance(parameters, Mapping):
         raise TypeError("Lucene search parameters must be mappings")
     if algorithm == CAGRA_ALGORITHM:
-        if parameters:
-            raise ValueError(
-                "lucene_cuvs_cagra currently uses the codec's fixed search "
-                "defaults and accepts no search parameters"
-            )
-        if k > MAX_CAGRA_TOP_K:
-            raise ValueError(
-                f"CAGRA search supports k <= {MAX_CAGRA_TOP_K}; received k={k}"
-            )
-        return {"num_candidates": k}
-    unsupported = set(parameters) - {"num_candidates"}
+        return {
+            "num_candidates": k,
+            **normalize_cagra_search_controls(parameters, k),
+        }
+    allowed = {"num_candidates", "ef_search"}
+    unsupported = set(parameters) - allowed
     if unsupported:
         raise ValueError(
             "Unsupported Lucene search parameters: "
             + ", ".join(sorted(str(name) for name in unsupported))
         )
-    candidates = parameters.get("num_candidates", k)
+    candidates = parameters.get(
+        "num_candidates", parameters.get("ef_search", k)
+    )
     if type(candidates) is not int or candidates < k:
         raise ValueError(
             f"num_candidates must be an integer >= k ({k}), got {candidates!r}"
         )
-    return {"num_candidates": candidates}
+    normalized = {"num_candidates": candidates}
+    if "ef_search" in parameters:
+        alias = parameters["ef_search"]
+        if type(alias) is not int or alias != candidates:
+            raise ValueError(
+                "ef_search must equal num_candidates when both are supplied"
+            )
+        # This is only an alias for Lucene's candidate budget, not a separate
+        # native HNSW ef control. Retain it so result rows identify the input.
+        normalized["ef_search"] = alias
+    return normalized
 
 
 def _source_identity(dataset: Dataset) -> dict[str, Any]:
@@ -1390,7 +1398,7 @@ class LuceneBackend(BenchmarkBackend):
     def _successful_search(
         self,
         runtime_result: RuntimeSearchResult,
-        parameters: dict[str, int],
+        parameters: dict[str, Any],
         *,
         k: int,
         batch_size: int,
@@ -1438,7 +1446,13 @@ class LuceneBackend(BenchmarkBackend):
             recall=0.0,
             algorithm=self.algorithm,
             search_params=[
-                {} if self.algorithm == CAGRA_ALGORITHM else parameters
+                {
+                    key: value
+                    for key, value in parameters.items()
+                    if key != "num_candidates"
+                }
+                if self.algorithm == CAGRA_ALGORITHM
+                else parameters
             ],
             latency_percentiles={
                 "p50": float(np.percentile(latency_samples_ms, 50)),
@@ -1576,11 +1590,23 @@ class LuceneBackend(BenchmarkBackend):
             for parameters in validated_parameters:
                 search_plan_started = time.perf_counter_ns()
                 prewarm = _prewarm_index_files(path)
+                search_kwargs = {}
+                if self.algorithm == CAGRA_ALGORITHM:
+                    cagra_controls = {
+                        key: value
+                        for key, value in parameters.items()
+                        if key != "num_candidates"
+                    }
+                    if cagra_controls or k > MAX_PER_SEGMENT_CAGRA_TOP_K:
+                        search_kwargs["cagra_search_parameters"] = (
+                            cagra_controls
+                        )
                 runtime_result = runtime.search_index(
                     path,
                     queries,
                     k=k,
                     num_candidates=parameters["num_candidates"],
+                    **search_kwargs,
                 )
                 result = self._successful_search(
                     runtime_result,

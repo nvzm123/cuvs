@@ -13,6 +13,7 @@ For an introduction to the codecs, configuration, and tuning, see the [Lucene In
 - [FilterBitsetCacheConfig](/api-reference/lucene-api-com-nvidia-cuvs-lucene-filterbitsetcacheconfig)
 - [FilterCuVSServiceProvider](/api-reference/lucene-api-com-nvidia-cuvs-lucene-filtercuvsserviceprovider)
 - [GPUIndex](/api-reference/lucene-api-com-nvidia-cuvs-lucene-gpuindex)
+- [GPUKnnFloatVectorQueryFactory](/api-reference/lucene-api-com-nvidia-cuvs-lucene-gpuknnfloatvectorqueryfactory)
 - [GPUSearchParams](/api-reference/lucene-api-com-nvidia-cuvs-lucene-gpusearchparams)
 - [IndexSearcherTimingBridge](/api-reference/lucene-api-com-nvidia-cuvs-lucene-indexsearchertimingbridge)
 - [ThreadLocalCuVSResourcesProvider](/api-reference/lucene-api-com-nvidia-cuvs-lucene-threadlocalcuvsresourcesprovider)

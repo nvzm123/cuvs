@@ -132,17 +132,19 @@ def test_hnsw_search_parameter_validation_rejects_invalid_budgets(
         _search_parameters(algorithm, parameters, 3)
 
 
-def test_cagra_search_accepts_only_fixed_parameters_within_its_route_limit() -> (
-    None
-):
-    assert _search_parameters(CAGRA_ALGORITHM, {}, 1024) == {
-        "num_candidates": 1024
+@pytest.mark.parametrize("k", (1024, 1025, 1500, 2000))
+def test_cagra_search_defaults_candidate_count_to_requested_hits(k) -> None:
+    assert _search_parameters(CAGRA_ALGORITHM, {}, k) == {"num_candidates": k}
+
+    assert _search_parameters(CAGRA_ALGORITHM, {"search_width": 16}, 10) == {
+        "num_candidates": 10,
+        "search_width": 16,
     }
 
-    with pytest.raises(ValueError, match="accepts no search parameters"):
-        _search_parameters(CAGRA_ALGORITHM, {"search_width": 16}, 10)
-    with pytest.raises(ValueError, match=r"supports k <= 1024"):
-        _search_parameters(CAGRA_ALGORITHM, {}, 1025)
+
+def test_cagra_result_count_must_fit_a_java_integer() -> None:
+    with pytest.raises(ValueError, match=r"k must be an integer"):
+        _search_parameters(CAGRA_ALGORITHM, {}, 2**31)
 
 
 @pytest.mark.parametrize(
