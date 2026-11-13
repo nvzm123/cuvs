@@ -29,7 +29,7 @@ from cuvs_bench.backends.lucene import (
     LuceneBackend,
     LuceneConfigLoader,
     _codec_for,
-    _score_to_squared_euclidean,
+    _scores_to_squared_euclidean,
     _search_parameters,
 )
 
@@ -156,9 +156,10 @@ def test_cagra_search_accepts_only_fixed_parameters_within_its_route_limit() -> 
 def test_lucene_scores_are_inverted_to_squared_euclidean_distance(
     score: float, expected_distance: float
 ) -> None:
-    assert _score_to_squared_euclidean(score) == pytest.approx(
-        expected_distance
-    )
+    scores = np.asarray([[score]], dtype=np.float32)
+    distances = _scores_to_squared_euclidean(scores)
+    assert distances.dtype == np.float32
+    assert distances[0, 0] == pytest.approx(expected_distance)
 
 
 @pytest.mark.parametrize(
@@ -175,13 +176,31 @@ def test_score_inversion_rejects_values_outside_lucenes_score_domain(
     score: float,
 ) -> None:
     with pytest.raises(RuntimeError, match="invalid Euclidean score"):
-        _score_to_squared_euclidean(score)
+        _scores_to_squared_euclidean(np.asarray([[score]], dtype=np.float32))
 
 
 def test_score_inversion_tolerates_float32_roundoff_above_one() -> None:
     score = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
 
-    assert _score_to_squared_euclidean(score) == 0.0
+    distances = _scores_to_squared_euclidean(
+        np.asarray([[score]], dtype=np.float32)
+    )
+    assert distances[0, 0] == 0.0
+
+
+def test_score_array_conversion_preserves_double_precision_reciprocals() -> (
+    None
+):
+    rng = np.random.default_rng(31)
+    scores = rng.uniform(0.001, 1.0, size=(3, 100)).astype(np.float32)
+    expected = np.asarray(
+        [[1.0 / float(score) - 1.0 for score in row] for row in scores],
+        dtype=np.float32,
+    )
+
+    distances = _scores_to_squared_euclidean(scores)
+
+    np.testing.assert_array_equal(distances, expected)
 
 
 @pytest.mark.parametrize("group", ("base", "test"))

@@ -210,11 +210,19 @@ query preparation, the synchronous search call, and hit materialization. QPS
 uses the wall time for the entire serial query corpus, so it is not simply the
 reciprocal of mean latency. The raw result also reports narrower preparation,
 PyLucene search-dispatch, result-materialization, reader lifecycle, and NumPy
-conversion timings. `search_dispatch_kind` distinguishes direct PyLucene
-dispatch from the thin-JAR timing bridge. Compare timing results only when that
-value matches. Selecting the CPU and GPU algorithms together loads the bridge
-for both and provides a like-for-like dispatch-boundary comparison; the
-artifact-free CPU control remains useful but is not dispatch-identical.
+conversion timings. Results are retained as compact ID/score arrays. When the
+configured thin JAR provides `SearchResultMaterializer`, numeric-ID retrieval
+runs in Java; older JARs and artifact-free CPU runs retain Python retrieval.
+`result_materialization_kind` records the selected path. Retrieval, transfer
+and per-query array storage remain inside the materialization and client-query
+timers; this does not change the search-only timer or saved index format.
+
+`search_dispatch_kind` distinguishes direct PyLucene dispatch from the thin-JAR
+timing bridge. For CPU/GPU algorithm comparisons, match both
+`search_dispatch_kind` and `result_materialization_kind`. Selecting the Lucene
+CPU and GPU algorithms together in one cuVS Bench invocation uses the same
+configured artifacts and materialization path for both; the artifact-free CPU
+control is not boundary-identical.
 
 The runtime's exact Java measurement is reported as
 `java_index_searcher_search` when the timing bridge is available. It is
