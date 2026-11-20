@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.IntFunction;
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.codecs.KnnFieldVectorsWriter;
 import org.apache.lucene.codecs.KnnVectorsWriter;
@@ -169,23 +170,23 @@ public class Lucene99AcceleratedHNSWVectorsWriter extends KnnVectorsWriter {
   private void writeNonTrivialField(FieldInfo fieldInfo, CuVSMatrix dataset) throws IOException {
     try (Utils.OwnedIndex<CagraIndex> ownedIndex = Utils.ownDataset(dataset)) {
       int size = (int) dataset.size();
-      CagraIndexParams params =
-          CagraIndexParamsFactory.create(acceleratedHNSWParams, dataset.size(), dataset.columns());
+      int dimensions = fieldInfo.getVectorDimension();
+      IntFunction<CagraIndexParams> paramsForRows =
+          rows -> CagraIndexParamsFactory.create(acceleratedHNSWParams, rows, dimensions);
       CagraIndex cagraIndex =
           CagraIndex.newBuilder(getCuVSResourcesInstance())
               .fromDataset(dataset)
-              .withIndexParams(params)
+              .withIndexParams(paramsForRows.apply(size))
               .build();
       ownedIndex.transferTo(cagraIndex);
       CuVSMatrix adjacencyListMatrix = cagraIndex.getGraph();
-      int dimensions = fieldInfo.getVectorDimension();
       GPUBuiltHnswGraph hnswGraph =
           createMultiLayerHnswGraph(
               dimensions,
               adjacencyListMatrix,
               dataset,
               acceleratedHNSWParams.getHnswLayers(),
-              params,
+              paramsForRows,
               QuantizationType.NONE,
               acceleratedHNSWParams.getMaxConn());
       long vectorIndexOffset = hnswVectorIndex.getFilePointer();

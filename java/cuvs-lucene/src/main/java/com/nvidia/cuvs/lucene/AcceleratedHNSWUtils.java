@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.function.IntFunction;
 import org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.VectorSimilarityFunction;
@@ -79,7 +80,7 @@ public class AcceleratedHNSWUtils {
         adjacencyListMatrix,
         vectors,
         hnswLayers,
-        params,
+        rows -> params,
         quantization,
         Math.ceilDiv((int) adjacencyListMatrix.columns(), 2));
   }
@@ -91,14 +92,12 @@ public class AcceleratedHNSWUtils {
       CuVSMatrix adjacencyListMatrix,
       List<?> vectors,
       int hnswLayers,
-      CagraIndexParams params,
+      IntFunction<CagraIndexParams> paramsForRows,
       QuantizationType quantization,
       int maxUpperLayerDegree)
       throws Throwable {
 
     int M = Math.ceilDiv((int) adjacencyListMatrix.columns(), 2);
-    // Created when the first upper layer is built; see maxUpperLayerDegree.
-    CagraIndexParams upperLayerParams = null;
 
     // Store all layers data
     List<int[]> layerNodes = new ArrayList<>();
@@ -115,12 +114,11 @@ public class AcceleratedHNSWUtils {
 
     try {
       while (layerIndex < hnswLayers && currentLayerSize > 1) {
-        if (upperLayerParams == null) {
-          upperLayerParams =
-              CagraIndexParamsFactory.withMaxGraphDegree(params, maxUpperLayerDegree);
-        }
         // Calculate size for next layer (1/M of current layer)
         int nextLayerSize = Math.max(2, currentLayerSize / M);
+        CagraIndexParams upperLayerParams =
+            CagraIndexParamsFactory.withMaxGraphDegree(
+                paramsForRows.apply(nextLayerSize), maxUpperLayerDegree);
         // Select nodes for this layer
         SortedSet<Integer> selectedNodesSet = new TreeSet<>();
 
@@ -229,6 +227,25 @@ public class AcceleratedHNSWUtils {
       QuantizationType quantization,
       int maxConn)
       throws Throwable {
+    return createMultiLayerHnswGraph(
+        dimensions,
+        adjacencyListMatrix,
+        vectorDataset,
+        hnswLayers,
+        rows -> params,
+        quantization,
+        maxConn);
+  }
+
+  static GPUBuiltHnswGraph createMultiLayerHnswGraph(
+      int dimensions,
+      CuVSMatrix adjacencyListMatrix,
+      CuVSMatrix vectorDataset,
+      int hnswLayers,
+      IntFunction<CagraIndexParams> paramsForRows,
+      QuantizationType quantization,
+      int maxConn)
+      throws Throwable {
     int size = Math.toIntExact(vectorDataset.size());
     // Matrix columns are the stored width: binary vectors are bit-packed, while scalar and float
     // vectors store one value per dimension.
@@ -254,7 +271,14 @@ public class AcceleratedHNSWUtils {
           }
         };
     return createMultiLayerHnswGraph(
-        size, dimensions, adjacencyListMatrix, vectors, hnswLayers, params, quantization, maxConn);
+        size,
+        dimensions,
+        adjacencyListMatrix,
+        vectors,
+        hnswLayers,
+        paramsForRows,
+        quantization,
+        maxConn);
   }
 
   private static Throwable closeUpperLayerAdjacencies(List<CuVSMatrix> layerAdjacencies) {

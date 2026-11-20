@@ -122,9 +122,11 @@ In contrast, when the automatic CAGRA heuristic selects IVF-PQ, the
 [current native implementation](https://github.com/NVIDIA/cuvs/blob/b3be92aca7ac095df232732f847f52980b06a30d/cpp/include/cuvs/neighbors/ivf_pq.hpp#L3427)
 uses `n_lists = max(1, floor(N / 2000))`, not these custom defaults.
 
-Multi-layer HNSW reuses the segment's IVF settings for its smaller upper layers;
-list and probe counts must also be suitable for those layers. Valid parameter
-ranges alone do not guarantee enough construction candidates or good recall.
+For float32 multi-layer HNSW, the automatic heuristic selects build parameters
+using the vector count of each layer. A large segment can use IVF-PQ for its
+base and NN-descent for its smaller upper layers. Custom IVF-PQ settings apply
+to all layers, so choose list and probe counts that provide enough construction
+candidates on the smaller layers.
 
 For example, for a field with 1,000,000 vectors of dimension 96 in one segment,
 the square-root tuning alternative gives 1,000 lists. This example overrides

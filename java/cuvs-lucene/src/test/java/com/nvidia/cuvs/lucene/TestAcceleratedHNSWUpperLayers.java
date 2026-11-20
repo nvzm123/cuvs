@@ -4,17 +4,69 @@
  */
 package com.nvidia.cuvs.lucene;
 
+import static com.nvidia.cuvs.lucene.ThreadLocalCuVSResourcesProvider.isSupported;
+
 import com.nvidia.cuvs.CagraIndexParams;
+import com.nvidia.cuvs.CagraIndexParams.CagraGraphBuildAlgo;
 import com.nvidia.cuvs.CuVSMatrix;
 import com.nvidia.cuvs.lucene.AcceleratedHNSWUtils.QuantizationType;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.function.IntFunction;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.junit.Test;
 
 public class TestAcceleratedHNSWUpperLayers extends LuceneTestCase {
+
+  @Test
+  public void testParametersResolvedForEachSampledLayer() throws Throwable {
+    assumeTrue("cuVS not supported", isSupported());
+    int dimensions = 16;
+    int[][] adjacency = new int[256][4];
+    for (int i = 0; i < adjacency.length; i++) {
+      for (int j = 0; j < adjacency[i].length; j++) {
+        adjacency[i][j] = (i + j + 1) % adjacency.length;
+      }
+    }
+    List<Integer> resolvedRows = new ArrayList<>();
+    CagraIndexParams params =
+        new CagraIndexParams.Builder()
+            .withCagraGraphBuildAlgo(CagraGraphBuildAlgo.NN_DESCENT)
+            .withGraphDegree(8)
+            .withIntermediateGraphDegree(16)
+            .build();
+    IntFunction<CagraIndexParams> resolve =
+        rows -> {
+          resolvedRows.add(rows);
+          return params;
+        };
+    int maxConn = 4;
+    try (CuVSMatrix base = CuVSMatrix.ofArray(adjacency);
+        CuVSMatrix vectors =
+            CuVSMatrix.ofArray(TestUtils.generateDataset(random(), adjacency.length, dimensions))) {
+      AcceleratedHNSWUtils.createMultiLayerHnswGraph(
+          dimensions, base, vectors, 1, resolve, QuantizationType.NONE, maxConn);
+      assertTrue("A base-only graph needs no upper-layer parameters", resolvedRows.isEmpty());
+
+      GPUBuiltHnswGraph graph =
+          AcceleratedHNSWUtils.createMultiLayerHnswGraph(
+              dimensions, base, vectors, 3, resolve, QuantizationType.NONE, maxConn);
+      assertEquals(
+          "Resolve each upper layer using its own sample size", List.of(128, 64), resolvedRows);
+      assertEquals(3, graph.numLevels());
+      for (int level = 1; level < graph.numLevels(); level++) {
+        var nodes = graph.getNodesOnLevel(level);
+        while (nodes.hasNext()) {
+          assertTrue(
+              "Upper-layer degree exceeds maxConn",
+              graph.getNeighbors(level, nodes.nextInt()).size() <= maxConn);
+        }
+      }
+    }
+  }
 
   @Test
   public void testLegacyListOverloadDescriptorIsPresent() throws Exception {
