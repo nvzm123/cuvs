@@ -175,6 +175,31 @@ public class TestCagraIndexParamsFactory extends LuceneTestCase {
   }
 
   /**
+   * An odd accelerated-HNSW graph degree is a valid CUSTOM input and reaches the copy-budget
+   * calculation unchanged. Pure Java, no GPU needed.
+   */
+  @Test
+  public void testHnswCustomOddGraphDegreeReachesCopyBudgetBoundary() {
+    int graphDegree = 65;
+    long rows = 100_000_000L;
+    AcceleratedHNSWParams params =
+        new AcceleratedHNSWParams.Builder()
+            .withStrategy(AcceleratedHNSWParams.Strategy.CUSTOM)
+            .withMaxConn(33)
+            .withGraphDegree(graphDegree)
+            .withIntermediateGraphDegree(128)
+            .build();
+
+    CagraIndexParams cagraParams = CagraIndexParamsFactory.create(params, rows, 96);
+    long requiredCopyBytes =
+        GraphCopyMemoryBudget.requiredCopyBytes(rows, cagraParams.getGraphDegree());
+
+    assertEquals(graphDegree, cagraParams.getGraphDegree());
+    assertEquals(26_000_000_000L, requiredCopyBytes);
+    assertTrue(requiredCopyBytes > AcceleratedHNSWParams.DEFAULT_GRAPH_COPY_MEMORY_BUDGET_BYTES);
+  }
+
+  /**
    * Checks the documented default degrees through cuVS' native parameter derivation, before any
    * dataset-size clamping during graph construction. The heuristic is deliberately not selected
    * explicitly: a changed default must also fail this check. Requires native cuVS support.
@@ -188,6 +213,7 @@ public class TestCagraIndexParamsFactory extends LuceneTestCase {
             .withMaxConn(16)
             .withBeamWidth(100)
             .withWriterThreads(7)
+            .withGraphThreads(3)
             .build();
 
     CagraIndexParams cagraParams = CagraIndexParamsFactory.create(params, 10_000, 128);
