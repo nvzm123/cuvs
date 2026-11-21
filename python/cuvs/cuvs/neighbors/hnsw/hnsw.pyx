@@ -131,10 +131,10 @@ cdef class IndexParams:
     ef_construction : int, default = 200 (optional)
         Maximum candidate list size used during index construction.
     num_threads : int, default = 0 (optional)
-        Number of CPU threads used to increase construction parallelism
-        when hierarchy is `cpu` or `gpu`. When the value is 0, the number of
-        threads is automatically determined to the maximum number of threads
-        available.
+        Number of CPU threads used for hierarchy construction (`cpu` or `gpu`)
+        and for copying rows during in-memory flat conversion (`none`). When
+        the value is 0, the number of threads is automatically determined to
+        the maximum number of threads available.
         NOTE: When hierarchy is `gpu`, while the majority of the work is done
         on the GPU, initialization of the HNSW index itself and some other
         work is parallelized with the help of CPU threads.
@@ -413,11 +413,11 @@ def from_cagra(IndexParams index_params, cagra.Index cagra_index,
 
     NOTE: When `index_params.hierarchy` is:
 
-    1. `NONE`: This method uses the filesystem to write the CAGRA index in
-    `/tmp/<random_number>.bin` before reading it as an hnswlib index, then
-    deleting the temporary file. The returned index is immutable and can only
-    be searched by the hnswlib wrapper in cuVS, as the format is not
-    compatible with the original hnswlib.
+    1. `NONE`: The in-memory conversion constructs the flat index directly
+    from the CAGRA graph and vectors. Disk-backed input and memory-pressure
+    spill paths may still write index files. The returned index is immutable
+    and can only be searched by the hnswlib wrapper in cuVS, as the format is
+    not compatible with the original hnswlib.
     2. `CPU`: The returned index is mutable and can be extended with additional
     vectors. The serialized index is also compatible with the original hnswlib
     library.
@@ -433,8 +433,8 @@ def from_cagra(IndexParams index_params, cagra.Index cagra_index,
     cagra_index : cagra.Index
         Trained CAGRA index.
     temporary_index_path : string, default = None
-        Path to save the temporary index file. If None, the temporary file
-        will be saved in `/tmp/<random_number>.bin`.
+        Accepted for backward compatibility and ignored. This argument does
+        not control file paths.
     {resources_docstring}
 
     Examples
@@ -449,7 +449,7 @@ def from_cagra(IndexParams index_params, cagra.Index cagra_index,
     ...                                   dtype=cp.float32)
     >>> # Build index
     >>> index = cagra.build(cagra.IndexParams(), dataset)
-    >>> # Serialize the CAGRA index to hnswlib base layer only index format
+    >>> # Convert the CAGRA index to an HNSW index
     >>> hnsw_index = hnsw.from_cagra(hnsw.IndexParams(), index)
 
     """

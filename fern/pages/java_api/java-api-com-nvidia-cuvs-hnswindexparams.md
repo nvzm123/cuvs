@@ -179,8 +179,9 @@ _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:213`
 public Builder withNumThreads(int numThreads)
 ```
 
-Sets the number of host threads to use to construct hierarchy when hierarchy
-is `CPU`.
+Sets the number of host threads used for hierarchy construction (`CPU` or `GPU`)
+and for copying rows during in-memory flat conversion (`NONE`). A value of 0
+selects the maximum number of available threads.
 
 **Parameters**
 
@@ -192,7 +193,7 @@ is `CPU`.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:225`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:226`_
 
 ### withVectorDimension
 
@@ -212,7 +213,7 @@ Sets the vector dimension
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:236`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:237`_
 
 ### withM
 
@@ -233,7 +234,7 @@ graph build parameters for GPU construction.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:248`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:249`_
 
 ### withMetric
 
@@ -253,7 +254,7 @@ Sets the distance metric type.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:259`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:260`_
 
 ### withAceParams
 
@@ -274,7 +275,7 @@ graph build algorithm is selected automatically.
 
 an instance of Builder
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:271`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:272`_
 
 ### build
 
@@ -288,6 +289,6 @@ Builds an instance of `HnswIndexParams`.
 
 an instance of `HnswIndexParams`
 
-_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:281`_
+_Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:282`_
 
 _Source: `java/cuvs-java/src/main/java/com/nvidia/cuvs/HnswIndexParams.java:12`_
