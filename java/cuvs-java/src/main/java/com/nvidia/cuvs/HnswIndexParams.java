@@ -217,8 +217,9 @@ public class HnswIndexParams {
     }
 
     /**
-     * Sets the number of host threads to use to construct hierarchy when hierarchy
-     * is `CPU`.
+     * Sets the number of host threads used for hierarchy construction (`CPU` or `GPU`)
+     * and for copying rows during in-memory flat conversion (`NONE`). A value of 0
+     * selects the maximum number of available threads.
      *
      * @param numThreads the number of threads
      * @return an instance of Builder

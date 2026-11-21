@@ -69,7 +69,8 @@ struct index_params : cuvs::neighbors::index_params {
   HnswOutputFormat output_format = HnswOutputFormat::HNSWLIB;
   /** Size of the candidate list during hierarchy construction when hierarchy is `CPU`*/
   int ef_construction = 200;
-  /** Number of host threads to use to construct hierarchy when hierarchy is `CPU` or `GPU`.
+  /** Number of host threads used for hierarchy construction (`CPU` or `GPU`) and for
+      copying rows during in-memory flat conversion (`NONE`).
       When the value is 0, the number of threads is automatically determined to the
       maximum number of threads available.
       NOTE: When hierarchy is `GPU`, while the majority of the work is done on the GPU,
@@ -477,10 +478,10 @@ std::unique_ptr<index<int8_t>> build(
 /**
  * @brief Construct an hnswlib index from a CAGRA index
  * NOTE: When `hnsw::index_params.hierarchy` is:
- *       1. `NONE`: This method uses the filesystem to write the CAGRA index in
- * `/tmp/<random_number>.bin` before reading it as an hnswlib index, then deleting the temporary
- * file. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS, as
- * the format is not compatible with the original hnswlib.
+ *       1. `NONE`: The in-memory conversion constructs the flat index directly from the CAGRA
+ * graph and vectors. Disk-backed input and memory-pressure spill paths may still write index
+ * files. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS,
+ * as the format is not compatible with the original hnswlib.
  *       2. `CPU`: The returned index is mutable and can be extended with additional vectors. The
  * serialized index is also compatible with the original hnswlib library.
  *       3. `GPU`: The hierarchy is constructed on the GPU.
@@ -517,10 +518,10 @@ std::unique_ptr<index<float>> from_cagra(
 /**
  * @brief Construct an hnswlib index from a CAGRA index
  * NOTE: When `hnsw::index_params.hierarchy` is:
- *       1. `NONE`: This method uses the filesystem to write the CAGRA index in
- * `/tmp/<random_number>.bin` before reading it as an hnswlib index, then deleting the temporary
- * file. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS, as
- * the format is not compatible with the original hnswlib.
+ *       1. `NONE`: The in-memory conversion constructs the flat index directly from the CAGRA
+ * graph and vectors. Disk-backed input and memory-pressure spill paths may still write index
+ * files. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS,
+ * as the format is not compatible with the original hnswlib.
  *       2. `CPU`: The returned index is mutable and can be extended with additional vectors. The
  * serialized index is also compatible with the original hnswlib library.
  *       3. `GPU`: The hierarchy is constructed on the GPU.
@@ -557,10 +558,10 @@ std::unique_ptr<index<half>> from_cagra(
 /**
  * @brief Construct an hnswlib index from a CAGRA index
  * NOTE: When `hnsw::index_params.hierarchy` is:
- *       1. `NONE`: This method uses the filesystem to write the CAGRA index in
- * `/tmp/<random_number>.bin` before reading it as an hnswlib index, then deleting the temporary
- * file. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS, as
- * the format is not compatible with the original hnswlib.
+ *       1. `NONE`: The in-memory conversion constructs the flat index directly from the CAGRA
+ * graph and vectors. Disk-backed input and memory-pressure spill paths may still write index
+ * files. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS,
+ * as the format is not compatible with the original hnswlib.
  *       2. `CPU`: The returned index is mutable and can be extended with additional vectors. The
  * serialized index is also compatible with the original hnswlib library.
  *       3. `GPU`: The hierarchy is constructed on the GPU.
@@ -597,10 +598,10 @@ std::unique_ptr<index<uint8_t>> from_cagra(
 /**
  * @brief Construct an hnswlib index from a CAGRA index
  * NOTE: When `hnsw::index_params.hierarchy` is:
- *       1. `NONE`: This method uses the filesystem to write the CAGRA index in
- * `/tmp/<random_number>.bin` before reading it as an hnswlib index, then deleting the temporary
- * file. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS, as
- * the format is not compatible with the original hnswlib.
+ *       1. `NONE`: The in-memory conversion constructs the flat index directly from the CAGRA
+ * graph and vectors. Disk-backed input and memory-pressure spill paths may still write index
+ * files. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS,
+ * as the format is not compatible with the original hnswlib.
  *       2. `CPU`: The returned index is mutable and can be extended with additional vectors. The
  * serialized index is also compatible with the original hnswlib library.
  *       3. `GPU`: The hierarchy is constructed on the GPU.
