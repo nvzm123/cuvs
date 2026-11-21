@@ -263,6 +263,59 @@ TEST(AnnHNSW, FlatConversionMatchesHnswlibExport)
   check_flat_conversion<int8_t, int>(cuvs::distance::DistanceType::InnerProduct);
 }
 
+TEST(AnnHNSW, FlatConversionPreservesPartialSecondBatch)
+{
+  raft::resources res;
+  constexpr int64_t dim = 257, degree = 5;
+  // Match the flat record layout and cross copy_flat_hnsw_rows' 64 MiB staging target.
+  constexpr size_t row_bytes = sizeof(hnswlib::linklistsizeint) + degree * sizeof(uint32_t) +
+                               dim * sizeof(float) + sizeof(hnswlib::labeltype);
+  constexpr int64_t batch_rows = (64 * 1024 * 1024) / row_bytes;
+  constexpr int64_t rows       = batch_rows + 17;
+  auto vectors                 = raft::make_host_matrix<float, int64_t>(rows, dim);
+  auto graph                   = raft::make_host_matrix<uint32_t, int64_t>(rows, degree);
+  std::fill_n(graph.data_handle(), rows * degree, cagra::kInvalidNeighbor<uint32_t>);
+  for (int64_t i = 0; i < rows; ++i) {
+    for (int64_t j = 0; j < dim; ++j) {
+      // Distinct rows make a repeated first batch observable in the serialized output.
+      vectors(i, j) = static_cast<float>(i * dim + j);
+    }
+    for (int64_t j = 0; j < 2 + i % (degree - 1); ++j) {
+      graph(i, j) = static_cast<uint32_t>((i + j + 1) % rows);
+    }
+  }
+  const auto data = raft::make_const_mdspan(vectors.view());
+  auto padded     = make_device_padded_dataset(res, data);
+  ASSERT_GT(padded->view().data_const_view().stride(0), dim);
+  cagra::device_padded_index<float> cagra_index(res,
+                                                cuvs::distance::DistanceType::L2Expanded,
+                                                padded->view(),
+                                                raft::make_const_mdspan(graph.view()));
+  index_params params;
+  params.hierarchy   = HnswHierarchy::NONE;
+  params.num_threads = 4;
+
+  tmp_index_file reference, actual;
+  cagra::serialize_to_hnswlib(res, reference.filename, cagra_index);
+  auto direct = from_cagra(res, params, cagra_index);
+  serialize(res, actual.filename, *direct);
+  std::ifstream legacy_file(reference.filename, std::ios::binary),
+    direct_file(actual.filename, std::ios::binary);
+  ASSERT_TRUE(legacy_file && direct_file);
+  using bytes = std::istreambuf_iterator<char>;
+  EXPECT_TRUE(std::equal(bytes(legacy_file), bytes(), bytes(direct_file), bytes()));
+
+  const auto* native = static_cast<const hnswlib::HierarchicalNSW<float>*>(direct->get_index());
+  ASSERT_EQ(native->size_data_per_element_, row_bytes);
+  // Check label lookup and vectors at the boundary and throughout the partial tail.
+  for (int64_t i = batch_rows - 1; i < rows; ++i) {
+    SCOPED_TRACE(i);
+    auto vec = native->getDataByLabel<float>(i);
+    ASSERT_EQ(vec.size(), dim);
+    EXPECT_TRUE(std::equal(vec.begin(), vec.end(), &data(i, 0)));
+  }
+}
+
 const std::vector<AnnHNSWInputs> inputs = raft::util::itertools::product<AnnHNSWInputs>(
   {1000, 2000},                          // n_rows
   {5, 10, 25, 50, 100, 250, 500, 1000},  // dim

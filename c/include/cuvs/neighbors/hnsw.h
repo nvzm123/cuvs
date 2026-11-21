@@ -115,7 +115,8 @@ struct cuvsHnswIndexParams {
   enum cuvsHnswHierarchy hierarchy;
   /** Maximum candidate list size used during index construction. */
   int ef_construction;
-  /** Number of host threads to use to construct hierarchy when hierarchy is `CPU` or `GPU`.
+  /** Number of host threads used for hierarchy construction (`CPU` or `GPU`) and for
+      copying rows during in-memory flat conversion (`NONE`).
       When the value is 0, the number of threads is automatically determined to the
       maximum number of threads available.
       NOTE: When hierarchy is `GPU`, while the majority of the work is done on the GPU,
@@ -235,9 +236,9 @@ CUVS_EXPORT cuvsError_t cuvsHnswExtendParamsDestroy(cuvsHnswExtendParams_t param
 /**
  * @brief Convert a CAGRA Index to an HNSW index.
  * NOTE: When hierarchy is:
- *       1. `NONE`: This method uses the filesystem to write the CAGRA index in
- * `/tmp/<random_number>.bin` before reading it as an hnswlib index, then deleting the temporary
- * file. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS,
+ *       1. `NONE`: The in-memory conversion constructs the flat index directly from the CAGRA
+ * graph and vectors. Disk-backed input and memory-pressure spill paths may still write index
+ * files. The returned index is immutable and can only be searched by the hnswlib wrapper in cuVS,
  * as the format is not compatible with the original hnswlib.
  *       2. `CPU`: The returned index is mutable and can be extended with additional vectors. The
  * serialized index is also compatible with the original hnswlib library.
