@@ -339,33 +339,157 @@ struct index_impl : index<T> {
   std::optional<cuvs::util::file_descriptor> hnsw_fd_;
 };
 
+// graph() exposes a device view even when the backing allocation is accessible from the host.
+// For mapped memory use the host address, which can differ from the device address.
+inline const uint32_t* host_graph_pointer(const uint32_t* graph)
+{
+  cudaPointerAttributes attributes{};
+  RAFT_CUDA_TRY(cudaPointerGetAttributes(&attributes, graph));
+  if (attributes.type == cudaMemoryTypeUnregistered) { return graph; }
+  return static_cast<const uint32_t*>(attributes.hostPointer);
+}
+
+template <typename DistT, typename VectorView>
+void copy_flat_hnsw_rows(raft::resources const& res,
+                         const index_params& params,
+                         raft::device_matrix_view<const uint32_t, int64_t, raft::row_major> graph,
+                         VectorView vectors,
+                         hnswlib::HierarchicalNSW<DistT>& index)
+{
+  const int64_t n_rows = graph.extent(0);
+  if (n_rows == 0) { return; }
+  RAFT_EXPECTS(vectors.data_handle() != nullptr, "Missing CAGRA dataset for base-layer conversion");
+
+  const int64_t degree = graph.extent(1);
+  const int64_t dim    = vectors.extent(1);
+  // A zero-width graph needs no storage. Use a valid address for the empty neighbor range.
+  const uint32_t empty_row{};
+  const auto* host_graph       = degree == 0 ? &empty_row : host_graph_pointer(graph.data_handle());
+  const bool stage_graph       = host_graph == nullptr;
+  constexpr bool stage_vectors = !raft::is_host_mdspan_v<VectorView>;
+
+  int64_t batch_rows = n_rows;
+  if (stage_graph || stage_vectors) {
+    constexpr size_t target_batch_bytes = 64 * 1024 * 1024;
+    const auto rows_that_fit =
+      std::max<size_t>(1, target_batch_bytes / index.size_data_per_element_);
+    batch_rows = std::min<int64_t>(n_rows, rows_that_fit);
+  }
+  using T = typename VectorView::value_type;
+  auto graph_buffer =
+    raft::make_host_matrix<uint32_t, int64_t>(stage_graph ? batch_rows : 0, degree);
+  auto vector_buffer = raft::make_host_matrix<T, int64_t>(stage_vectors ? batch_rows : 0, dim);
+  const auto stream  = raft::resource::get_cuda_stream(res);
+  [[maybe_unused]] const auto num_threads =
+    params.num_threads == 0 ? cuvs::core::omp::get_max_threads() : params.num_threads;
+
+  for (int64_t first = 0; first < n_rows; first += batch_rows) {
+    const auto count = std::min(batch_rows, n_rows - first);
+    const uint32_t* batch_graph;
+    if (stage_graph) {
+      raft::update_host(
+        graph_buffer.data_handle(), graph.data_handle() + first * degree, count * degree, stream);
+      batch_graph = graph_buffer.data_handle();
+    } else {
+      batch_graph = host_graph + first * degree;
+    }
+
+    int64_t vector_stride     = vectors.stride(0);
+    const auto* batch_vectors = vectors.data_handle() + first * vector_stride;
+    if constexpr (stage_vectors) {
+      raft::copy_matrix(
+        vector_buffer.data_handle(), dim, batch_vectors, vector_stride, dim, count, stream);
+      batch_vectors = vector_buffer.data_handle();
+      vector_stride = dim;
+    }
+    raft::resource::sync_stream(res);
+
+#pragma omp parallel for num_threads(num_threads)
+    for (int64_t row = 0; row < count; ++row) {
+      const auto id         = first + row;
+      const auto* neighbors = batch_graph + row * degree;
+      const auto* first_invalid =
+        std::find(neighbors, neighbors + degree, cagra::kInvalidNeighbor<uint32_t>);
+      const uint32_t neighbor_count = first_invalid - neighbors;
+
+      // The flat format stores the count followed by all slots, including invalid padding.
+      auto* links = index.data_level0_memory_ + id * index.size_data_per_element_;
+      std::memcpy(links, &neighbor_count, sizeof(neighbor_count));
+      std::memcpy(links + sizeof(neighbor_count), neighbors, degree * sizeof(uint32_t));
+      std::memcpy(
+        index.getDataByInternalId(id), batch_vectors + row * vector_stride, index.data_size_);
+      index.setExternalLabel(id, id);
+      index.linkLists_[id] = nullptr;
+    }
+  }
+}
+
+template <typename CagraIndexT, typename VectorView>
+auto make_flat_hnsw_index(raft::resources const& res,
+                          const index_params& params,
+                          const CagraIndexT& cagra_index,
+                          VectorView vectors)
+{
+  using T              = typename CagraIndexT::value_type;
+  const auto graph     = cagra_index.graph();
+  const int64_t n_rows = cagra_index.size();
+  const size_t degree  = graph.extent(1);
+  RAFT_EXPECTS(graph.extent(0) == n_rows && vectors.extent(0) == n_rows,
+               "CAGRA graph and dataset row counts must match");
+
+  auto result =
+    std::make_unique<index_impl<T>>(vectors.extent(1), cagra_index.metric(), HnswHierarchy::NONE);
+  // Match the flat header written by cagra::serialize_to_hnswlib.
+  constexpr size_t flat_ef_construction = 500;
+  auto index = std::make_unique<hnswlib::HierarchicalNSW<typename hnsw_dist_t<T>::type>>(
+    result->get_space(), n_rows, (degree + 1) / 2, flat_ef_construction);
+
+  // hnswlib allocates two base links per M. Round up for allocation, then use the exact
+  // record layout from the flat header, which also permits an odd number of links.
+  index->M_     = degree / 2;
+  index->maxM_  = index->M_;
+  index->maxM0_ = degree;
+  index->size_links_per_element_ =
+    sizeof(hnswlib::linklistsizeint) + index->maxM_ * sizeof(uint32_t);
+  index->size_links_level0_     = sizeof(hnswlib::linklistsizeint) + degree * sizeof(uint32_t);
+  index->offsetData_            = index->size_links_level0_;
+  index->label_offset_          = index->offsetData_ + index->data_size_;
+  index->size_data_per_element_ = index->label_offset_ + sizeof(hnswlib::labeltype);
+
+  // Reproduce the search state obtained by loading the flat header.
+  index->base_layer_only  = true;
+  index->enterpoint_node_ = n_rows / 2;
+  index->maxlevel_        = 1;
+  index->mult_            = 0.42424242;
+  index->revSize_         = 1.0 / index->mult_;
+  index->ef_construction_ = flat_ef_construction;
+  index->level_generator_.seed();
+  index->update_probability_generator_.seed();
+
+  copy_flat_hnsw_rows(res, params, graph, vectors, *index);
+  index->label_lookup_.reserve(n_rows);
+  for (int64_t id = 0; id < n_rows; ++id) {
+    index->label_lookup_.emplace(id, id);
+  }
+  index->cur_element_count = n_rows;
+  result->set_index(std::move(index));
+  return result;
+}
+
 template <typename T, HnswHierarchy hierarchy, typename CagraIndexT>
 std::enable_if_t<hierarchy == HnswHierarchy::NONE && is_cagra_hnsw_export_index_v<T, CagraIndexT>,
                  std::unique_ptr<index<T>>>
 from_cagra(raft::resources const& res,
            const index_params& params,
            CagraIndexT const& cagra_index,
-           std::optional<raft::host_matrix_view<const T, int64_t, raft::row_major>> dataset)
+           std::optional<raft::host_matrix_view<const T, int64_t, raft::row_major>> host_dataset)
 {
   common::nvtx::range<common::nvtx::domain::cuvs> fun_scope("hnsw::from_cagra<NONE>");
-  std::random_device dev;
-  std::mt19937 rng(dev());
-  std::uniform_int_distribution<std::mt19937::result_type> dist(0);
-  auto uuid            = std::to_string(dist(rng));
-  std::string filepath = "/tmp/" + uuid + ".bin";
-  cuvs::neighbors::cagra::serialize_to_hnswlib(res, filepath, cagra_index, dataset);
-
-  index<T>* hnsw_index = nullptr;
-  int dim;
-  if (dataset.has_value()) {
-    dim = dataset.value().extent(1);
-  } else {
-    dim = cagra_index.dim();
+  if (host_dataset.has_value()) {
+    return make_flat_hnsw_index(res, params, cagra_index, *host_dataset);
   }
-
-  cuvs::neighbors::hnsw::deserialize(res, params, filepath, dim, cagra_index.metric(), &hnsw_index);
-  std::filesystem::remove(filepath);
-  return std::unique_ptr<index<T>>(hnsw_index);
+  const auto index_vectors = cagra_index.dataset().data_const_view();
+  return make_flat_hnsw_index(res, params, cagra_index, index_vectors);
 }
 
 template <typename T, HnswHierarchy hierarchy, typename CagraIndexT>
