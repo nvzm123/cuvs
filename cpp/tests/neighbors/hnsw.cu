@@ -11,7 +11,9 @@
 #include <cuda/stream>
 #include <cuvs/neighbors/cagra.hpp>
 #include <cuvs/neighbors/hnsw.hpp>
+#include <hnswlib/hnswlib.h>
 #include <raft/core/host_mdspan.hpp>
+#include <raft/core/pinned_mdarray.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
 #include <raft/util/itertools.hpp>
 
@@ -19,8 +21,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -165,6 +172,149 @@ class AnnHNSWTest : public ::testing::TestWithParam<AnnHNSWInputs> {
   rmm::device_uvector<DataT> database;
   rmm::device_uvector<DataT> queries;
 };
+
+// Hold the CAGRA graph fixed so build randomness cannot mask conversion differences.
+template <typename T, typename DistT>
+void check_flat_conversion(cuvs::distance::DistanceType metric)
+{
+  raft::resources res;
+  constexpr int64_t rows = 97, dim = 7, degree = 5, k = 4;
+  auto vectors          = raft::make_host_matrix<T, int64_t>(rows, dim);
+  auto override_vectors = raft::make_host_matrix<T, int64_t>(rows, dim);
+  auto graph            = raft::make_pinned_matrix<uint32_t, int64_t>(res, rows, degree);
+  std::fill_n(graph.data_handle(), rows * degree, cagra::kInvalidNeighbor<uint32_t>);
+  for (int64_t i = 0; i < rows; ++i) {
+    for (int64_t j = 0; j < dim; ++j) {
+      vectors(i, j)          = static_cast<T>((i * 23 + j * 11) % 103 - 51);
+      override_vectors(i, j) = vectors(i, j) + 1;
+    }
+    const int64_t neighbor_count = 2 + i % (degree - 1);
+    for (int64_t j = 0; j < neighbor_count; ++j) {
+      graph(i, j) = static_cast<uint32_t>((i + j + 1) % rows);
+    }
+  }
+  auto data          = raft::make_const_mdspan(vectors.view());
+  auto override_data = raft::make_const_mdspan(override_vectors.view());
+  index_params params;
+  params.hierarchy   = HnswHierarchy::NONE;
+  params.num_threads = 1;
+  search_params search_options;
+  search_options.ef          = 12;
+  search_options.num_threads = 1;
+  auto search_all            = [&](const index<T>& idx) {
+    std::vector<uint64_t> ids(rows * k);
+    std::vector<float> distances(rows * k);
+    search(res,
+           search_options,
+           idx,
+           data,
+           raft::make_host_matrix_view(ids.data(), rows, k),
+           raft::make_host_matrix_view(distances.data(), rows, k));
+    return std::make_pair(std::move(ids), std::move(distances));
+  };
+  auto check_conversion = [&](const auto& cagra_index, std::optional<decltype(data)> host_vectors) {
+    const auto expected = host_vectors.value_or(data);
+    tmp_index_file reference, actual;
+    cagra::serialize_to_hnswlib(res, reference.filename, cagra_index, host_vectors);
+    auto direct = from_cagra(res, params, cagra_index, host_vectors);
+    serialize(res, actual.filename, *direct);
+    std::ifstream legacy_file(reference.filename, std::ios::binary),
+      direct_file(actual.filename, std::ios::binary);
+    ASSERT_TRUE(legacy_file && direct_file);
+    using bytes = std::istreambuf_iterator<char>;
+    EXPECT_TRUE(std::equal(bytes(legacy_file), bytes(), bytes(direct_file), bytes()));
+
+    using native_index = hnswlib::HierarchicalNSW<DistT>;
+    const auto* native = static_cast<const native_index*>(direct->get_index());
+    ASSERT_TRUE(native->base_layer_only);
+    for (int64_t i = 0; i < rows; ++i) {
+      auto vec = native->template getDataByLabel<T>(i);
+      ASSERT_EQ(vec.size(), dim);
+      EXPECT_TRUE(std::equal(vec.begin(), vec.end(), &expected(i, 0)));
+    }
+    index<T>* loaded = nullptr;
+    deserialize(res, params, reference.filename, dim, metric, &loaded);
+    std::unique_ptr<index<T>> legacy(loaded);
+    EXPECT_EQ(native->num_seeds, static_cast<const native_index*>(legacy->get_index())->num_seeds);
+    EXPECT_EQ(search_all(*direct), search_all(*legacy));
+  };
+  // A device view of the pinned allocation gives CAGRA a graph that the CPU can read directly.
+  auto mapped_graph =
+    raft::make_device_matrix_view<const uint32_t, int64_t>(graph.data_handle(), rows, degree);
+  cagra::host_standard_index<T> host_index(
+    res, metric, make_host_standard_dataset_view(data), mapped_graph);
+  check_conversion(host_index, data);
+  check_conversion(host_index, override_data);
+
+  // Passing a host view to the constructor makes CAGRA copy the graph to the GPU.
+  auto host_graph =
+    raft::make_host_matrix_view<const uint32_t, int64_t>(graph.data_handle(), rows, degree);
+  auto padded = make_device_padded_dataset(res, data);
+  cagra::device_padded_index<T> device_index(res, metric, padded->view(), host_graph);
+  check_conversion(device_index, std::nullopt);
+  check_conversion(device_index, override_data);
+  device_index.update_graph(res, mapped_graph);
+  check_conversion(device_index, std::nullopt);
+}
+
+TEST(AnnHNSW, FlatConversionMatchesHnswlibExport)
+{
+  check_flat_conversion<float, float>(cuvs::distance::DistanceType::L2Expanded);
+  check_flat_conversion<int8_t, int>(cuvs::distance::DistanceType::InnerProduct);
+}
+
+TEST(AnnHNSW, FlatConversionPreservesPartialSecondBatch)
+{
+  raft::resources res;
+  constexpr int64_t dim = 257, degree = 5;
+  // Match the flat record layout and cross copy_flat_hnsw_rows' 64 MiB staging target.
+  constexpr size_t row_bytes = sizeof(hnswlib::linklistsizeint) + degree * sizeof(uint32_t) +
+                               dim * sizeof(float) + sizeof(hnswlib::labeltype);
+  constexpr int64_t batch_rows = (64 * 1024 * 1024) / row_bytes;
+  constexpr int64_t rows       = batch_rows + 17;
+  auto vectors                 = raft::make_host_matrix<float, int64_t>(rows, dim);
+  auto graph                   = raft::make_host_matrix<uint32_t, int64_t>(rows, degree);
+  std::fill_n(graph.data_handle(), rows * degree, cagra::kInvalidNeighbor<uint32_t>);
+  for (int64_t i = 0; i < rows; ++i) {
+    for (int64_t j = 0; j < dim; ++j) {
+      // Distinct rows make a repeated first batch observable in the serialized output.
+      vectors(i, j) = static_cast<float>(i * dim + j);
+    }
+    for (int64_t j = 0; j < 2 + i % (degree - 1); ++j) {
+      graph(i, j) = static_cast<uint32_t>((i + j + 1) % rows);
+    }
+  }
+  const auto data = raft::make_const_mdspan(vectors.view());
+  auto padded     = make_device_padded_dataset(res, data);
+  ASSERT_GT(padded->view().data_const_view().stride(0), dim);
+  cagra::device_padded_index<float> cagra_index(res,
+                                                cuvs::distance::DistanceType::L2Expanded,
+                                                padded->view(),
+                                                raft::make_const_mdspan(graph.view()));
+  index_params params;
+  params.hierarchy   = HnswHierarchy::NONE;
+  params.num_threads = 4;
+
+  tmp_index_file reference, actual;
+  cagra::serialize_to_hnswlib(res, reference.filename, cagra_index);
+  auto direct = from_cagra(res, params, cagra_index);
+  serialize(res, actual.filename, *direct);
+  std::ifstream legacy_file(reference.filename, std::ios::binary),
+    direct_file(actual.filename, std::ios::binary);
+  ASSERT_TRUE(legacy_file && direct_file);
+  using bytes = std::istreambuf_iterator<char>;
+  EXPECT_TRUE(std::equal(bytes(legacy_file), bytes(), bytes(direct_file), bytes()));
+
+  const auto* native = static_cast<const hnswlib::HierarchicalNSW<float>*>(direct->get_index());
+  ASSERT_EQ(native->size_data_per_element_, row_bytes);
+  // Check label lookup and vectors at the boundary and throughout the partial tail.
+  for (int64_t i = batch_rows - 1; i < rows; ++i) {
+    SCOPED_TRACE(i);
+    auto vec = native->getDataByLabel<float>(i);
+    ASSERT_EQ(vec.size(), dim);
+    EXPECT_TRUE(std::equal(vec.begin(), vec.end(), &data(i, 0)));
+  }
+}
 
 const std::vector<AnnHNSWInputs> inputs = raft::util::itertools::product<AnnHNSWInputs>(
   {1000, 2000},                          // n_rows
