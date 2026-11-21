@@ -49,6 +49,8 @@ fi
 if [ "${MIN_JDK}" = false ]; then
   rapids-logger "Check GPU usage"
   nvidia-smi
+  # This GPU lane must execute the real cuVS writer-path sentinel rather than skip it.
+  export CUVS_TESTS_REQUIRE_GPU=1
 fi
 
 rapids-logger "Configuring conda strict channel priority"
