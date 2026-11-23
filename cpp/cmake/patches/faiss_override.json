@@ -14,6 +14,11 @@
           "file" : "${current_json_dir}/faiss-1.14-cuda-stream-ref.diff",
           "issue" : "Unwrap cuda::stream_ref at CUDA kernel launch, Faiss toHost, and legacy RAFT rowNorm boundaries.",
           "fixed_in" : ""
+        },
+        {
+          "file" : "${current_json_dir}/faiss-1.14-cagra-cpu-storage.diff",
+          "issue" : "Allow CAGRA-to-HNSW export to allocate the final CPU vector storage once and populate it in parallel.",
+          "fixed_in" : ""
         }
       ]
     }

@@ -1,0 +1,726 @@
+diff --git a/faiss/IndexFlatCodes.cpp b/faiss/IndexFlatCodes.cpp
+index 889afe4..c546b4e 100644
+--- a/faiss/IndexFlatCodes.cpp
++++ b/faiss/IndexFlatCodes.cpp
+@@ -10,6 +10,7 @@
+ #include <atomic>
+
+ #include <faiss/impl/AuxIndexStructures.h>
++#include <faiss/impl/CodeBuffer.h>
+ #include <faiss/impl/CodePacker.h>
+ #include <faiss/impl/DistanceComputer.h>
+ #include <faiss/impl/FaissAssert.h>
+@@ -25,12 +26,60 @@ IndexFlatCodes::IndexFlatCodes(size_t code_size_, idx_t d_, MetricType metric)
+
+ IndexFlatCodes::IndexFlatCodes() : code_size(0) {}
+
++namespace {
++
++MaybeOwnedVector<uint8_t> copy_codes(const MaybeOwnedVector<uint8_t>& src) {
++    if (!OverwriteCodeBuffer::backs(src)) {
++        return src;
++    }
++    // A copied index owns its own codes, even when the source uses a raw array.
++    return std::vector<uint8_t>(src.data(), src.data() + src.size());
++}
++
++void resize_codes(MaybeOwnedVector<uint8_t>& codes, size_t size) {
++    if (!OverwriteCodeBuffer::backs(codes)) {
++        codes.resize(size);
++        return;
++    }
++    if (size == codes.size()) {
++        return;
++    }
++    if (size < codes.size()) {
++        codes = MaybeOwnedVector<uint8_t>::create_view(
++                codes.data(), size, codes.owner);
++        return;
++    }
++    // Growth needs resizable storage. Retain the existing codes in one copy.
++    std::vector<uint8_t> next;
++    next.reserve(size);
++    next.insert(next.end(), codes.data(), codes.data() + codes.size());
++    next.resize(size);
++    codes = std::move(next);
++}
++
++} // namespace
++
++IndexFlatCodes::IndexFlatCodes(const IndexFlatCodes& other)
++        : Index(other),
++          code_size(other.code_size),
++          codes(copy_codes(other.codes)) {}
++
++IndexFlatCodes& IndexFlatCodes::operator=(const IndexFlatCodes& other) {
++    if (this != &other) {
++        auto next = copy_codes(other.codes);
++        Index::operator=(other);
++        code_size = other.code_size;
++        codes = std::move(next);
++    }
++    return *this;
++}
++
+ void IndexFlatCodes::add(idx_t n, const float* x) {
+     FAISS_THROW_IF_NOT(is_trained);
+     if (n == 0) {
+         return;
+     }
+-    codes.resize((ntotal + n) * code_size);
++    resize_codes(codes, (ntotal + n) * code_size);
+     sa_encode(n, x, codes.data() + (ntotal * code_size));
+     ntotal += n;
+ }
+@@ -39,13 +88,17 @@ void IndexFlatCodes::add_sa_codes(
+         idx_t n,
+         const uint8_t* codes_in,
+         const idx_t* /* xids */) {
+-    codes.resize((ntotal + n) * code_size);
++    resize_codes(codes, (ntotal + n) * code_size);
+     memcpy(codes.data() + (ntotal * code_size), codes_in, n * code_size);
+     ntotal += n;
+ }
+
+ void IndexFlatCodes::reset() {
+-    codes.clear();
++    if (OverwriteCodeBuffer::backs(codes)) {
++        codes = MaybeOwnedVector<uint8_t>();
++    } else {
++        codes.clear();
++    }
+     ntotal = 0;
+ }
+
+@@ -70,7 +123,7 @@ size_t IndexFlatCodes::remove_ids(const IDSelector& sel) {
+     size_t nremove = ntotal - j;
+     if (nremove > 0) {
+         ntotal = j;
+-        codes.resize(ntotal * code_size);
++        resize_codes(codes, ntotal * code_size);
+     }
+     return nremove;
+ }
+@@ -100,7 +153,7 @@ void IndexFlatCodes::merge_from(Index& otherIndex, idx_t add_id) {
+     FAISS_THROW_IF_NOT_MSG(add_id == 0, "cannot set ids in FlatCodes index");
+     check_compatible_for_merge(otherIndex);
+     IndexFlatCodes* other = static_cast<IndexFlatCodes*>(&otherIndex);
+-    codes.resize((ntotal + other->ntotal) * code_size);
++    resize_codes(codes, (ntotal + other->ntotal) * code_size);
+     memcpy(codes.data() + (ntotal * code_size),
+            other->codes.data(),
+            other->ntotal * code_size);
+diff --git a/faiss/IndexFlatCodes.h b/faiss/IndexFlatCodes.h
+index 0c6043e..f34b400 100644
+--- a/faiss/IndexFlatCodes.h
++++ b/faiss/IndexFlatCodes.h
+@@ -26,6 +26,10 @@ struct IndexFlatCodes : Index {
+     MaybeOwnedVector<uint8_t> codes;
+
+     IndexFlatCodes();
++    IndexFlatCodes(const IndexFlatCodes& other);
++    IndexFlatCodes& operator=(const IndexFlatCodes& other);
++    IndexFlatCodes(IndexFlatCodes&&) = default;
++    IndexFlatCodes& operator=(IndexFlatCodes&&) = default;
+
+     IndexFlatCodes(size_t code_size, idx_t d, MetricType metric = METRIC_L2);
+
+diff --git a/faiss/IndexHNSW.cpp b/faiss/IndexHNSW.cpp
+index 7a2b4fa..00465c3 100644
+--- a/faiss/IndexHNSW.cpp
++++ b/faiss/IndexHNSW.cpp
+@@ -380,8 +380,12 @@ void IndexHNSW::add(idx_t n, const float* x) {
+             storage,
+             "Please use IndexHNSWFlat (or variants) instead of IndexHNSW directly");
+     FAISS_THROW_IF_NOT(is_trained);
+-    size_t n0 = ntotal;
+     storage->add(n, x);
++    add_graph_nodes(n, x);
++}
++
++void IndexHNSW::add_graph_nodes(idx_t n, const float* x) {
++    size_t n0 = ntotal;
+     ntotal = storage->ntotal;
+
+     hnsw_add_vertices(
+diff --git a/faiss/IndexHNSW.h b/faiss/IndexHNSW.h
+index 8e3d7f2..179f147 100644
+--- a/faiss/IndexHNSW.h
++++ b/faiss/IndexHNSW.h
+@@ -23,6 +23,10 @@
+
+ namespace faiss {
+
++namespace gpu {
++struct GpuIndexCagra;
++}
++
+ struct IndexHNSW;
+
+ /** The HNSW index is a normal random-access index with a HNSW
+@@ -132,6 +136,12 @@ struct IndexHNSW : Index {
+     virtual void permute_entries(const idx_t* perm);
+
+     DistanceComputer* get_distance_computer() const override;
++
++   private:
++    friend struct gpu::GpuIndexCagra;
++
++    /// Link the n newly stored vectors, starting at the previous ntotal.
++    void add_graph_nodes(idx_t n, const float* x);
+ };
+
+ /** Flat index topped with with a HNSW structure to access elements
+diff --git a/faiss/gpu/GpuIndexCagra.cu b/faiss/gpu/GpuIndexCagra.cu
+index 3ba7ae6..54f805c 100644
+--- a/faiss/gpu/GpuIndexCagra.cu
++++ b/faiss/gpu/GpuIndexCagra.cu
+@@ -21,11 +21,17 @@
+  * limitations under the License.
+  */
+
++#include <cuda_runtime_api.h>
+ #include <faiss/IndexHNSW.h>
+ #include <faiss/gpu/GpuIndexCagra.h>
+ #include <faiss/gpu/StandardGpuResources.h>
++#include <faiss/gpu/utils/DeviceUtils.h>
++#include <faiss/impl/CodeBuffer.h>
++#include <omp.h>
++#include <algorithm>
+ #include <cstddef>
+ #include <cstdio>
++#include <cstring>
+ #include <faiss/gpu/impl/CuvsCagra.cuh>
+ #include <optional>
+ #include <type_traits>
+@@ -406,22 +412,113 @@ void GpuIndexCagra::copyFrom(const faiss::IndexHNSWCagra* index) {
+     copyFrom_ex(index, NumericType::Float32);
+ }
+
++namespace {
++
++// A CUDA device alias for mapped host memory can have a different address
++// from the one the CPU can dereference.
++const float* host_address(const float* ptr) {
++    if (!ptr) {
++        return nullptr;
++    }
++    cudaPointerAttributes attributes{};
++    const auto status = cudaPointerGetAttributes(&attributes, ptr);
++    if (status == cudaErrorInvalidValue) {
++        // Older CUDA runtimes report this for ordinary host allocations.
++        cudaGetLastError();
++        return ptr;
++    }
++    CUDA_VERIFY(status);
++    if (attributes.type == cudaMemoryTypeUnregistered) {
++        return ptr;
++    }
++    return static_cast<const float*>(attributes.hostPointer);
++}
++
++// Workers first-touch disjoint blocks of the new CPU allocation.
++void copy_host_vectors(uint8_t* output, const float* input, size_t bytes) {
++    constexpr size_t block_size = 1024 * 1024;
++    const idx_t blocks = 1 + (bytes - 1) / block_size;
++    const int threads = std::min<idx_t>(blocks, omp_get_max_threads());
++    const auto* src = reinterpret_cast<const uint8_t*>(input);
++#pragma omp parallel for schedule(static) if (threads > 1) num_threads(threads)
++    for (idx_t block = 0; block < blocks; ++block) {
++        const size_t offset = block * block_size;
++        std::memcpy(
++                output + offset,
++                src + offset,
++                std::min(block_size, bytes - offset));
++    }
++}
++
++std::unique_ptr<IndexFlat> copy_float_storage(
++        CuvsCagra<float>& source,
++        const IndexHNSWCagra& destination,
++        idx_t count,
++        int dim,
++        MetricType metric,
++        const raft::device_resources& handle,
++        CagraCpuStorage mode) {
++    std::unique_ptr<IndexFlat> flat;
++    if (metric == METRIC_L2) {
++        flat = std::make_unique<IndexFlatL2>(dim);
++    } else {
++        FAISS_THROW_IF_NOT(metric == METRIC_INNER_PRODUCT);
++        flat = std::make_unique<IndexFlatIP>(dim);
++    }
++    const size_t bytes = mul_no_overflow(count, flat->code_size, "CAGRA codes");
++    if (bytes != 0) {
++        const auto* input = source.get_training_dataset();
++        FAISS_THROW_IF_NOT(input);
++        if (mode == CagraCpuStorage::Overwrite) {
++            flat->codes = OverwriteCodeBuffer::allocate(bytes);
++        } else {
++            flat->codes.resize(bytes);
++        }
++        if (const auto* host = host_address(input)) {
++            handle.sync_stream();
++            copy_host_vectors(flat->codes.data(), host, bytes);
++
++            // An in-place round trip can replace the owner of the GPU index's
++            // borrowed host data. Keep those original pages alive for reuse.
++            auto* old = dynamic_cast<IndexFlatCodes*>(destination.storage);
++            if (destination.own_fields && old &&
++                (old->codes.is_owned || old->codes.owner)) {
++                const auto address = reinterpret_cast<uintptr_t>(host);
++                const auto begin =
++                        reinterpret_cast<uintptr_t>(old->codes.data());
++                if (address >= begin && address - begin < old->codes.size()) {
++                    source.retain_training_data(
++                            std::make_shared<MaybeOwnedVector<uint8_t>>(
++                                    std::move(old->codes)));
++                }
++            }
++        } else {
++            raft::copy(
++                    flat->get_xb(),
++                    input,
++                    bytes / sizeof(float),
++                    handle.get_stream());
++            handle.sync_stream();
++        }
++    }
++    flat->ntotal = count;
++    return flat;
++}
++
++} // namespace
++
+ void GpuIndexCagra::copyTo(faiss::IndexHNSWCagra* index) const {
++    copyTo(index, CagraCpuStorage::Standard);
++}
++
++void GpuIndexCagra::copyTo(
++        faiss::IndexHNSWCagra* index,
++        CagraCpuStorage storage_mode) const {
+     FAISS_ASSERT(
+             !std::holds_alternative<std::monostate>(index_) &&
+             this->is_trained && index);
+     DeviceScope scope(config_.device);
+
+-    //
+-    // Index information
+-    //
+-    GpuIndex::copyTo(index);
+-    index->hnsw.is_similarity = is_similarity_metric(this->metric_type);
+-    // This needs to be zeroed out as this implementation adds vectors to the
+-    // cpuIndex instead of copying fields
+-    index->ntotal = 0;
+-    index->set_numeric_type(numeric_type_);
+-
+     idx_t graph_degree;
+
+     if (numeric_type_ == NumericType::Float32) {
+@@ -437,28 +534,40 @@ void GpuIndexCagra::copyTo(faiss::IndexHNSWCagra* index) const {
+         FAISS_THROW_MSG("GpuIndexCagra::copyTo unsupported data type");
+     }
+
+-    auto M = graph_degree / 2;
+-    if (index->storage and index->own_fields) {
+-        delete index->storage;
+-    }
+-
+-    // storage depends on numerictype
++    const auto n_train = this->ntotal;
++    std::unique_ptr<IndexFlatCodes> storage;
+     if (numeric_type_ == NumericType::Float32) {
+-        if (this->metric_type == METRIC_L2) {
+-            index->storage = new IndexFlatL2(index->d);
+-        } else if (this->metric_type == METRIC_INNER_PRODUCT) {
+-            index->storage = new IndexFlatIP(index->d);
+-        }
+-    } else if (numeric_type_ == NumericType::Float16) {
+-        auto qtype = ScalarQuantizer::QT_fp16;
+-        index->storage =
+-                new IndexScalarQuantizer(index->d, qtype, this->metric_type);
+-    } else if (numeric_type_ == NumericType::Int8) {
+-        auto qtype = ScalarQuantizer::QT_8bit_direct_signed;
+-        index->storage =
+-                new IndexScalarQuantizer(index->d, qtype, this->metric_type);
++        auto& source = *std::get<std::shared_ptr<CuvsCagra<float>>>(index_);
++        storage = copy_float_storage(
++                source,
++                *index,
++                n_train,
++                d,
++                metric_type,
++                resources_->getRaftHandleCurrentDevice(),
++                storage_mode);
++    } else {
++        const auto qtype = numeric_type_ == NumericType::Float16
++                ? ScalarQuantizer::QT_fp16
++                : ScalarQuantizer::QT_8bit_direct_signed;
++        storage = std::make_unique<IndexScalarQuantizer>(d, qtype, metric_type);
+     }
+
++    //
++    // Index information
++    //
++    GpuIndex::copyTo(index);
++    index->hnsw.is_similarity = is_similarity_metric(this->metric_type);
++    // This needs to be zeroed out as this implementation adds vectors to the
++    // cpuIndex instead of copying fields
++    index->ntotal = 0;
++    index->set_numeric_type(numeric_type_);
++
++    if (index->own_fields) {
++        delete index->storage;
++    }
++    index->storage = storage.release();
++    const auto M = graph_degree / 2;
+     index->own_fields = true;
+     index->keep_max_size_level0 = true;
+     index->hnsw.reset();
+@@ -466,38 +575,16 @@ void GpuIndexCagra::copyTo(faiss::IndexHNSWCagra* index) const {
+     index->hnsw.cum_nneighbor_per_level.clear();
+     index->hnsw.set_default_probas(M, 1.0 / log(M));
+
+-    auto n_train = this->ntotal;
+     bool allocation = false;
+
+     if (numeric_type_ == NumericType::Float32) {
+-        float* train_dataset;
+-        const float* dataset =
+-                std::get<std::shared_ptr<CuvsCagra<float>>>(index_)
+-                        ->get_training_dataset();
+-        if (getDeviceForAddress(dataset) >= 0) {
+-            train_dataset = new float[n_train * index->d];
+-            allocation = true;
+-            raft::copy(
+-                    train_dataset,
+-                    dataset,
+-                    n_train * index->d,
+-                    this->resources_->getRaftHandleCurrentDevice()
+-                            .get_stream());
+-        } else {
+-            train_dataset = const_cast<float*>(dataset);
+-        }
+-
+-        // turn off as level 0 is copied from CAGRA graph
+         index->init_level0 = false;
+-        if (!index->base_level_only) {
+-            index->add(n_train, train_dataset);
+-        } else {
++        if (index->base_level_only) {
+             index->hnsw.prepare_level_tab(n_train, false);
+-            index->storage->add(n_train, train_dataset);
+             index->ntotal = n_train;
+-        }
+-        if (allocation) {
+-            delete[] train_dataset;
++        } else {
++            const auto* flat = static_cast<const IndexFlat*>(index->storage);
++            index->add_graph_nodes(n_train, flat->get_xb());
+         }
+     } else if (numeric_type_ == NumericType::Float16) {
+         half* train_dataset;
+diff --git a/faiss/gpu/GpuIndexCagra.h b/faiss/gpu/GpuIndexCagra.h
+index 1f2a124..f595c1f 100644
+--- a/faiss/gpu/GpuIndexCagra.h
++++ b/faiss/gpu/GpuIndexCagra.h
+@@ -41,6 +41,9 @@ namespace gpu {
+ template <typename data_t>
+ class CuvsCagra;
+
++/// CPU vector storage to use when exporting a Float32 CAGRA index.
++enum class CagraCpuStorage { Standard, Overwrite };
++
+ enum class graph_build_algo {
+     /// Use IVF-PQ to build all-neighbors knn graph
+     IVF_PQ,
+@@ -284,6 +287,12 @@ struct GpuIndexCagra : public GpuIndex {
+     /// in the index instance
+     void copyTo(faiss::IndexHNSWCagra* index) const;
+
++    /// Overwrite skips zero-initialization when allocating Float32 codes.
++    /// Direct users of the resulting codes view should use data() and size().
++    /// A clone of the underlying flat storage owns an independent copy.
++    /// Other numeric types use standard storage.
++    void copyTo(faiss::IndexHNSWCagra* index, CagraCpuStorage storage) const;
++
+     void reset() override;
+
+     std::vector<idx_t> get_knngraph() const;
+diff --git a/faiss/gpu/GpuIndexFlat.cu b/faiss/gpu/GpuIndexFlat.cu
+index 456f42f..22be96c 100644
+--- a/faiss/gpu/GpuIndexFlat.cu
++++ b/faiss/gpu/GpuIndexFlat.cu
+@@ -16,6 +16,7 @@
+ #include <faiss/gpu/utils/ConversionOperators.cuh>
+ #include <faiss/gpu/utils/CopyUtils.cuh>
+ #include <faiss/gpu/utils/Float16.cuh>
++#include <faiss/impl/CodeBuffer.h>
+ #include <limits>
+
+ #if defined USE_NVIDIA_CUVS
+@@ -142,7 +143,13 @@ void GpuIndexFlat::copyTo(faiss::IndexFlat* index) const {
+
+     FAISS_ASSERT(data_);
+     FAISS_ASSERT(data_->getSize() == this->ntotal);
+-    index->codes.resize(this->ntotal * index->code_size);
++    const size_t bytes = this->ntotal * index->code_size;
++    if (OverwriteCodeBuffer::backs(index->codes)) {
++        // Copy-back replaces every code; allocate before releasing its owner.
++        index->codes = MaybeOwnedVector<uint8_t>(bytes);
++    } else {
++        index->codes.resize(bytes);
++    }
+
+     if (this->ntotal > 0) {
+         // FIXME: there is an extra GPU allocation here and copy if the flat
+diff --git a/faiss/gpu/impl/CuvsCagra.cu b/faiss/gpu/impl/CuvsCagra.cu
+index 2642e68..9811444 100644
+--- a/faiss/gpu/impl/CuvsCagra.cu
++++ b/faiss/gpu/impl/CuvsCagra.cu
+@@ -364,6 +364,9 @@ template <typename data_t>
+ void CuvsCagra<data_t>::reset() {
+     cuvs_index.reset();
+     host_to_device_dataset_.reset();
++    storage_ = nullptr;
++    n_ = 0;
++    dataset_owner_.reset();
+ }
+
+ template <typename data_t>
+diff --git a/faiss/gpu/impl/CuvsCagra.cuh b/faiss/gpu/impl/CuvsCagra.cuh
+index 3ad960b..64b3405 100644
+--- a/faiss/gpu/impl/CuvsCagra.cuh
++++ b/faiss/gpu/impl/CuvsCagra.cuh
+@@ -117,12 +117,18 @@ class CuvsCagra {
+
+     const data_t* get_training_dataset() const;
+
++    // copyTo can replace the CPU index that owns our borrowed training data.
++    void retain_training_data(std::shared_ptr<const void> owner) {
++        dataset_owner_ = std::move(owner);
++    }
++
+    private:
+     /// Collection of GPU resources that we use
+     GpuResources* resources_;
+
+     /// Training dataset
+     const data_t* storage_;
++    std::shared_ptr<const void> dataset_owner_;
+     int n_;
+
+     /// Expected dimensionality of the vectors
+diff --git a/faiss/gpu/test/TestGpuIndexCagra.cu b/faiss/gpu/test/TestGpuIndexCagra.cu
+index 1f94b6d..05d2346 100644
+--- a/faiss/gpu/test/TestGpuIndexCagra.cu
++++ b/faiss/gpu/test/TestGpuIndexCagra.cu
+@@ -22,9 +22,12 @@
+  */
+
+ #include <cuda_fp16.h>
++#include <faiss/IndexFlat.h>
+ #include <faiss/IndexHNSW.h>
+ #include <faiss/MetricType.h>
++#include <faiss/clone_index.h>
+ #include <faiss/gpu/GpuIndexCagra.h>
++#include <faiss/gpu/GpuIndexFlat.h>
+ #include <faiss/gpu/GpuResources.h>
+ #include <faiss/gpu/StandardGpuResources.h>
+ #include <faiss/gpu/test/TestUtils.h>
+@@ -473,6 +476,153 @@ void copyToTest(
+     }
+ }
+
++TEST(TestGpuIndexCagra, Float32_ExportVectorStorage) {
++    // A little over one copy block, including a partial final block.
++    constexpr int rows = 512;
++    constexpr int dim = 513;
++    const auto values = faiss::gpu::randVecs(rows, dim);
++    faiss::gpu::StandardGpuResources res;
++    faiss::gpu::GpuIndexCagraConfig config;
++    config.build_algo = faiss::gpu::graph_build_algo::NN_DESCENT;
++    config.graph_degree = 16;
++    config.intermediate_graph_degree = 32;
++    for (bool baseLevelOnly : {true, false}) {
++        SCOPED_TRACE(baseLevelOnly);
++        faiss::IndexHNSWCagra standard, overwrite;
++        standard.base_level_only = overwrite.base_level_only = baseLevelOnly;
++        {
++            auto input = values;
++            faiss::gpu::GpuIndexCagra gpu(&res, dim, faiss::METRIC_L2, config);
++            gpu.train(rows, input.data());
++            gpu.copyTo(&standard);
++            gpu.copyTo(&overwrite, faiss::gpu::CagraCpuStorage::Overwrite);
++        }
++        EXPECT_TRUE(dynamic_cast<faiss::IndexFlat&>(*standard.storage)
++                            .codes.is_owned);
++        EXPECT_FALSE(dynamic_cast<faiss::IndexFlat&>(*overwrite.storage)
++                             .codes.is_owned);
++        for (auto* index : {&standard, &overwrite}) {
++            ASSERT_EQ(index->ntotal, rows);
++            std::unique_ptr<faiss::Index> clone(
++                    faiss::clone_index(index->storage));
++            dynamic_cast<faiss::IndexFlat&>(*clone).get_xb()[0] += 1.0f;
++            std::vector<float> exported(values.size());
++            index->reconstruct_n(0, rows, exported.data());
++            EXPECT_EQ(exported, values);
++            if (!baseLevelOnly) {
++                index->add(1, values.data());
++                ASSERT_EQ(index->ntotal, rows + 1);
++                std::vector<float> tail(dim);
++                index->reconstruct(rows, tail.data());
++                EXPECT_TRUE(std::equal(tail.begin(), tail.end(), values.begin()));
++            }
++        }
++        if (baseLevelOnly) {
++            // The GPU index borrows its input. Replacing the owning CPU index
++            // must keep the original pages alive for another export.
++            std::weak_ptr<faiss::MaybeOwnedVectorOwner> inputOwner =
++                    dynamic_cast<faiss::IndexFlat&>(*overwrite.storage)
++                            .codes.owner;
++            faiss::gpu::GpuIndexCagra borrowed(&res, dim, faiss::METRIC_L2);
++            borrowed.copyFrom(&overwrite);
++            borrowed.copyTo(&overwrite, faiss::gpu::CagraCpuStorage::Overwrite);
++            EXPECT_FALSE(inputOwner.expired());
++            faiss::IndexHNSWCagra again;
++            again.base_level_only = true;
++            borrowed.copyTo(&again, faiss::gpu::CagraCpuStorage::Overwrite);
++            std::vector<float> exported(values.size());
++            borrowed.reset();
++            EXPECT_TRUE(inputOwner.expired());
++            again.reconstruct_n(0, rows, exported.data());
++            EXPECT_EQ(exported, values);
++
++            auto& donor = dynamic_cast<faiss::IndexFlat&>(*again.storage);
++            faiss::IndexFlatL2 recipient(dim);
++            recipient.merge_from(donor);
++            EXPECT_EQ(donor.ntotal, 0);
++            EXPECT_EQ(donor.codes.size(), 0);
++            EXPECT_EQ(recipient.ntotal, rows);
++            EXPECT_TRUE(std::equal(
++                    values.begin(), values.end(), recipient.get_xb()));
++            overwrite.reset();
++            EXPECT_EQ(overwrite.ntotal, 0);
++        }
++    }
++}
++
++TEST(TestGpuIndexCagra, Float32_ExportStorageGpuFlatCopyBack) {
++    constexpr int rows = 1024;
++    constexpr int dim = 32;
++    constexpr int extraRows = 32;
++    const auto values = faiss::gpu::randVecs(rows, dim);
++    const auto replacements = faiss::gpu::randVecs(rows + extraRows, dim);
++    faiss::gpu::StandardGpuResources res;
++    faiss::gpu::GpuIndexCagraConfig config;
++    config.build_algo = faiss::gpu::graph_build_algo::IVF_PQ;
++    config.graph_degree = 16;
++    config.intermediate_graph_degree = 32;
++    for (auto metric : {faiss::METRIC_L2, faiss::METRIC_INNER_PRODUCT}) {
++        SCOPED_TRACE(metric);
++        faiss::gpu::GpuIndexCagra cagra(&res, dim, metric, config);
++        cagra.train(rows, values.data());
++        for (auto mode :
++             {faiss::gpu::CagraCpuStorage::Standard,
++              faiss::gpu::CagraCpuStorage::Overwrite}) {
++            SCOPED_TRACE(static_cast<int>(mode));
++            for (int targetRows : {rows, rows / 2, rows + extraRows, 0}) {
++                SCOPED_TRACE(targetRows);
++                // Each copy-back must start with the requested export storage.
++                faiss::IndexHNSWCagra exported;
++                exported.base_level_only = true;
++                cagra.copyTo(&exported, mode);
++                auto* flat = dynamic_cast<faiss::IndexFlat*>(exported.storage);
++                ASSERT_NE(flat, nullptr);
++                ASSERT_EQ(flat->ntotal, rows);
++                ASSERT_EQ(
++                        flat->codes.is_owned,
++                        mode == faiss::gpu::CagraCpuStorage::Standard);
++                std::weak_ptr<faiss::MaybeOwnedVectorOwner> owner =
++                        flat->codes.owner;
++                if (mode == faiss::gpu::CagraCpuStorage::Overwrite) {
++                    ASSERT_FALSE(owner.expired());
++                }
++
++                faiss::gpu::GpuIndexFlatConfig flatConfig;
++                flatConfig.use_cuvs = false;
++                faiss::gpu::GpuIndexFlat gpuFlat(&res, flat, flatConfig);
++                std::vector<float> copied(values.size());
++                gpuFlat.reconstruct_n(0, rows, copied.data());
++                ASSERT_EQ(copied, values);
++                gpuFlat.reset();
++                if (targetRows != 0) {
++                    gpuFlat.add(targetRows, replacements.data());
++                }
++                gpuFlat.copyTo(flat);
++
++                // Only the flat storage is under test; resizing it does not
++                // rebuild the enclosing HNSW graph, so do not search that
++                // graph.
++                ASSERT_EQ(flat->ntotal, targetRows);
++                EXPECT_EQ(flat->d, dim);
++                EXPECT_EQ(flat->metric_type, metric);
++                EXPECT_EQ(flat->code_size, dim * sizeof(float));
++                EXPECT_TRUE(flat->codes.is_owned);
++                EXPECT_TRUE(owner.expired());
++                ASSERT_EQ(flat->codes.size(), targetRows * dim * sizeof(float));
++                if (targetRows != 0) {
++                    copied.resize(targetRows * dim);
++                    flat->reconstruct_n(0, targetRows, copied.data());
++                    EXPECT_TRUE(
++                            std::equal(
++                                    copied.begin(),
++                                    copied.end(),
++                                    replacements.begin()));
++                }
++            }
++        }
++    }
++}
++
+ TEST(TestGpuIndexCagra, Float32_CopyTo_L2) {
+     copyToTest(faiss::METRIC_L2, 0.98, false);
+ }
+diff --git a/faiss/impl/CodeBuffer.h b/faiss/impl/CodeBuffer.h
+new file mode 100644
+index 0000000..2bf3e67
+--- /dev/null
++++ b/faiss/impl/CodeBuffer.h
+@@ -0,0 +1,36 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the MIT license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++#pragma once
++
++#include <memory>
++
++#include <faiss/impl/maybe_owned_vector.h>
++
++namespace faiss {
++
++// Owns uninitialized flat codes for a conversion that overwrites every byte.
++// The owner also distinguishes this writable allocation from mmap-backed views.
++struct OverwriteCodeBuffer final : MaybeOwnedVectorOwner {
++    explicit OverwriteCodeBuffer(size_t n)
++            : data(std::make_unique_for_overwrite<uint8_t[]>(n)) {}
++
++    static MaybeOwnedVector<uint8_t> allocate(size_t n) {
++        auto owner = std::make_shared<OverwriteCodeBuffer>(n);
++        return MaybeOwnedVector<uint8_t>::create_view(
++                owner->data.get(), n, owner);
++    }
++
++    static bool backs(const MaybeOwnedVector<uint8_t>& codes) {
++        return !codes.is_owned &&
++                dynamic_cast<const OverwriteCodeBuffer*>(codes.owner.get());
++    }
++
++    std::unique_ptr<uint8_t[]> data;
++};
++
++} // namespace faiss
