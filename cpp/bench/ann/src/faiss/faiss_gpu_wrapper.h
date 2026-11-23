@@ -613,7 +613,7 @@ class faiss_gpu_cagra_hnsw : public faiss_gpu<T> {
   {
     this->build_index_->build(dataset, nrow);
     static_cast<faiss::gpu::GpuIndexCagra*>((build_index_->faiss_index()).get())
-      ->copyTo(search_index_.get());
+      ->copyTo(search_index_.get(), faiss::gpu::CagraCpuStorage::Overwrite);
   }
 
   void set_search_param(const search_param_base& param, const void* filter_bitset) override
