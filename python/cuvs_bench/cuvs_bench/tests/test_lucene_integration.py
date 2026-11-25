@@ -945,8 +945,13 @@ def test_large_cagra_queries_use_multi_partition_search_and_match_brute_force(
         )
 
 
-@pytest.mark.parametrize("helper_cache", ["writable", "unavailable"])
-def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path, helper_cache):
+@pytest.mark.parametrize(
+    "helper_state",
+    ["writable", "unavailable", "missing_source", "unreadable_source"],
+)
+def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(
+    tmp_path, helper_state, monkeypatch
+):
     """Prove the CPU control does not inherit a cuVS-capable process JVM."""
     child_flag = "CUVS_BENCH_LUCENE_CPU_PROBE"
     if child_flag not in os.environ:
@@ -957,12 +962,12 @@ def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path, helper_cache
         environment.pop("JAVA_LIBRARY_PATH", None)
         environment["CUDA_VISIBLE_DEVICES"] = "-1"
         cache = tmp_path / "cache"
-        if helper_cache == "unavailable":
+        if helper_state == "unavailable":
             cache.touch()
         environment["XDG_CACHE_HOME"] = str(cache)
         node = (
             f"{Path(__file__).resolve()}::"
-            f"test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts[{helper_cache}]"
+            f"test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts[{helper_state}]"
         )
         try:
             completed = subprocess.run(
@@ -991,6 +996,23 @@ def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path, helper_cache
         assert "1 passed" in completed.stdout
         return
 
+    source_failure = {
+        "missing_source": FileNotFoundError,
+        "unreadable_source": PermissionError,
+    }.get(helper_state)
+    if source_failure is not None:
+        from cuvs_bench.backends import _lucene_java
+
+        source = Path(_lucene_java.__file__).parent / "FloatQueryVector.java"
+        original_read_bytes = Path.read_bytes
+
+        def read_bytes(path):
+            if path == source:
+                raise source_failure(f"{helper_state} helper source")
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
     dataset, query_ids = _case(CPU_HNSW_ALGORITHM, 512)
     backend, index = _backend_and_index(
         tmp_path,
@@ -999,8 +1021,13 @@ def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path, helper_cache
         [{"num_candidates": 32}],
         include_cuvs=False,
     )
-    if helper_cache == "unavailable":
-        with pytest.warns(RuntimeWarning, match="CPU search helpers unavailable"):
+    if helper_state != "writable":
+        warning_match = (
+            helper_state
+            if source_failure
+            else "CPU search helpers unavailable"
+        )
+        with pytest.warns(RuntimeWarning, match=warning_match):
             build = backend.build(dataset, [index], force=True)
     else:
         build = backend.build(dataset, [index], force=True)
@@ -1013,10 +1040,13 @@ def test_cpu_hnsw_in_fresh_process_without_cuvs_artifacts(tmp_path, helper_cache
         result,
         query_count=len(dataset.query_vectors),
         requested_batch_size=2,
-        java_timing=helper_cache == "writable",
+        java_timing=helper_state == "writable",
     )
-    for field in ("bulk_hit_transfer_available", "bulk_query_vector_transfer_available"):
-        assert result.metadata[field] == (helper_cache == "writable")
+    for field in (
+        "bulk_hit_transfer_available",
+        "bulk_query_vector_transfer_available",
+    ):
+        assert result.metadata[field] == (helper_state == "writable")
     assert backend._get_runtime().artifact_provenance == {}
     np.testing.assert_array_equal(result.neighbors[:, 0], query_ids)
     assert all(len(set(row)) == len(row) for row in result.neighbors.tolist())

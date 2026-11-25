@@ -506,7 +506,9 @@ def _initialize_search_runtime(
             else:
                 search_jar = standalone_search_jar(lucene.CLASSPATH)
                 if search_jar is not None:
-                    vm_classpath = os.pathsep.join((str(search_jar), classpath))
+                    vm_classpath = os.pathsep.join(
+                        (str(search_jar), classpath)
+                    )
             environment = lucene.initVM(classpath=vm_classpath, vmargs=vmargs)
             environment = environment or lucene.getVMEnv()
             if environment is None:
@@ -1321,14 +1323,21 @@ class LuceneRuntime:
             classes = set(jar.namelist())
 
         def optional_bridge(class_name: str, interface: Any) -> Any | None:
-            if interface is None or class_name.replace(".", "/") + ".class" not in classes:
+            if (
+                interface is None
+                or class_name.replace(".", "/") + ".class" not in classes
+            ):
                 return None
-            return interface.cast_(self.Class.forName(class_name).newInstance())
+            return interface.cast_(
+                self.Class.forName(class_name).newInstance()
+            )
 
         self._java_hit_encoder = optional_bridge(
             _RANKED_SEARCH_HITS, getattr(function, "BiFunction", None)
         )
-        self._java_float_query = optional_bridge(_FLOAT_QUERY_VECTOR, self.Function)
+        self._java_float_query = optional_bridge(
+            _FLOAT_QUERY_VECTOR, self.Function
+        )
 
     def _load_java_search_timer(self) -> Any:
         """Load the thin-JAR timer through JCC's wrapped Function interface."""
@@ -2144,7 +2153,9 @@ class LuceneRuntime:
             and vector.dtype == np.dtype("<f4")
         ):
             packed = self.lucene.JArray("byte")(vector.tobytes())
-            return self.lucene.JArray("float").cast_(self._java_float_query.apply(packed))
+            return self.lucene.JArray("float").cast_(
+                self._java_float_query.apply(packed)
+            )
         return self._java_vector(vector)
 
     def _ranked_hits(self, reader: Any, top_docs: Any) -> list[SearchHit]:
@@ -2155,7 +2166,10 @@ class LuceneRuntime:
                 # BiFunction cannot throw a checked IOException. Restore the exception JCC
                 # would expose for the same DocValues operation on the ordinary path.
                 cause = error.getJavaException()
-                if cause.getClass().getName() == f"{_RANKED_SEARCH_HITS}$ReadFailure":
+                if (
+                    cause.getClass().getName()
+                    == f"{_RANKED_SEARCH_HITS}$ReadFailure"
+                ):
                     raise self.lucene.JavaError(cause.getCause()) from error
                 raise
             if packed is not None:
@@ -2342,7 +2356,8 @@ class LuceneRuntime:
                 ),
                 queries=tuple(query_timings),
                 bulk_hit_transfer_available=self._java_hit_encoder is not None,
-                bulk_query_vector_transfer_available=self._java_float_query is not None,
+                bulk_query_vector_transfer_available=self._java_float_query
+                is not None,
             ),
             document_count=document_count,
             dimensions=dimensions,

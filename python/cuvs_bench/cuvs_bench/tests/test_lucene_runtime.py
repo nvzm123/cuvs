@@ -207,7 +207,9 @@ def test_empty_bulk_result_is_distinct_from_fallback(packed):
     top = SimpleNamespace(scoreDocs=[])
     assert runtime._ranked_hits(reader, top) == []
     if packed is None:
-        runtime._materialize_hits.assert_called_once_with(reader, top.scoreDocs)
+        runtime._materialize_hits.assert_called_once_with(
+            reader, top.scoreDocs
+        )
     else:
         runtime._materialize_hits.assert_not_called()
 
