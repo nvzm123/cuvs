@@ -326,7 +326,7 @@ public class Util {
     int rows = data.length;
     int cols = rows > 0 ? data[0].length : 0;
     for (int r = 0; r < rows; r++) {
-      MemorySegment.copy(data[r], 0, memorySegment, C_FLOAT, (r * cols * C_FLOAT.byteSize()), cols);
+      MemorySegment.copy(data[r], 0, memorySegment, C_FLOAT, ((long) r * cols * C_FLOAT.byteSize()), cols);
     }
   }
 
