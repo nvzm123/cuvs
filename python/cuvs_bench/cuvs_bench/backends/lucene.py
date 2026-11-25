@@ -287,6 +287,8 @@ def _java_search_timing_metadata(
     metadata: dict[str, Any] = {
         "search_dispatch_kind": timing.search_dispatch_kind,
         "java_timing_available": java_available,
+        "bulk_hit_transfer_available": timing.bulk_hit_transfer_available,
+        "bulk_query_vector_transfer_available": timing.bulk_query_vector_transfer_available,
     }
     if not java_available:
         return metadata

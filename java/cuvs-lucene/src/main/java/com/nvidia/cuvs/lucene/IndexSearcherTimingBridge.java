@@ -48,7 +48,7 @@ public final class IndexSearcherTimingBridge
     try {
       topDocs = searcher.search(query, topK);
     } catch (IOException error) {
-      throw new UncheckedIOException("IndexSearcher.search failed", error);
+      throw new SearchFailure(error);
     }
     long elapsedNanos = System.nanoTime() - started;
 
@@ -56,6 +56,15 @@ public final class IndexSearcherTimingBridge
     response.put(TOP_DOCS_KEY, topDocs);
     response.put(ELAPSED_NANOS_KEY, elapsedNanos);
     return response;
+  }
+
+  // The Python bridge unwraps only this exception, preserving a reader's own unchecked failures.
+  private static final class SearchFailure extends UncheckedIOException {
+    private static final long serialVersionUID = 1L;
+
+    SearchFailure(IOException cause) {
+      super("IndexSearcher.search failed", cause);
+    }
   }
 
   private static <T> T requiredValue(

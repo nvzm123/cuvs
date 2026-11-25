@@ -110,6 +110,7 @@ class _FakeLucene:
 def _reset_jvm_state(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "_INITIALIZED_CLASSPATH",
+        "_INITIALIZED_SEARCH_JAR",
         "_INITIALIZED_VMARGS",
         "_INITIALIZED_ARTIFACT_PROVENANCE",
         "_INITIALIZED_ARTIFACT_TOKENS",
