@@ -86,6 +86,34 @@ public class TestAcceleratedHNSWUpperLayers extends LuceneTestCase {
   }
 
   @Test
+  public void testUpperLayerNeighborLookup() throws Throwable {
+    assumeTrue("cuVS not supported", isSupported());
+    try (CuVSMatrix base = CuVSMatrix.ofArray(new int[6][1]);
+        CuVSMatrix upper = CuVSMatrix.ofArray(new int[][] {{3}, {5}, {1}})) {
+      var adjacency = List.of(base, upper);
+      var sortedGraph =
+          new GPUBuiltHnswGraph(
+              6,
+              1,
+              List.of(new int[0], new int[] {1, 3, 5}),
+              adjacency,
+              /* sortedUpperLayerNodes= */ true);
+      assertEquals(3, sortedGraph.getNeighbors(1, 1).nodes()[0]);
+      assertEquals(5, sortedGraph.getNeighbors(1, 3).nodes()[0]);
+      assertEquals(1, sortedGraph.getNeighbors(1, 5).nodes()[0]);
+      assertNull(sortedGraph.getNeighbors(1, 2));
+
+      var customGraph =
+          new GPUBuiltHnswGraph(6, 1, List.of(new int[0], new int[] {5, 1, 5}), adjacency);
+      assertEquals(3, customGraph.getNeighbors(1, 5).nodes()[0]);
+      assertEquals(5, customGraph.getNeighbors(1, 1).nodes()[0]);
+      assertNull(customGraph.getNeighbors(1, 3));
+    } finally {
+      closeCuVSResourcesInstance();
+    }
+  }
+
+  @Test
   public void testLegacyListOverloadDescriptorIsPresent() throws Exception {
     Method method =
         AcceleratedHNSWUtils.class.getMethod(

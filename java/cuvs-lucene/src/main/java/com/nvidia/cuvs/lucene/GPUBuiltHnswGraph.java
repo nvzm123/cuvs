@@ -9,6 +9,7 @@ import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 import com.nvidia.cuvs.CuVSMatrix;
 import com.nvidia.cuvs.RowView;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.apache.lucene.util.hnsw.HnswGraph;
 import org.apache.lucene.util.hnsw.NeighborArray;
@@ -23,6 +24,7 @@ public class GPUBuiltHnswGraph extends HnswGraph {
   private final int size;
   private final int dimensions;
   private final int numLevels;
+  private final boolean sortedUpperLayerNodes;
 
   // Store layers data - each layer has its own nodes and adjacency lists
   private final List<int[]> layerNodes;
@@ -41,7 +43,17 @@ public class GPUBuiltHnswGraph extends HnswGraph {
    */
   public GPUBuiltHnswGraph(
       int size, int dimensions, List<int[]> layerNodes, List<CuVSMatrix> layerAdjacencies) {
+    this(size, dimensions, layerNodes, layerAdjacencies, false);
+  }
 
+  // The accelerated builder supplies strictly increasing node IDs for every upper layer.
+  GPUBuiltHnswGraph(
+      int size,
+      int dimensions,
+      List<int[]> layerNodes,
+      List<CuVSMatrix> layerAdjacencies,
+      boolean sortedUpperLayerNodes) {
+    this.sortedUpperLayerNodes = sortedUpperLayerNodes;
     this.size = size;
     this.dimensions = dimensions;
     this.numLevels = layerAdjacencies.size();
@@ -115,7 +127,11 @@ public class GPUBuiltHnswGraph extends HnswGraph {
       int[] nodes = layerNodes.get(level - 1);
       NeighborArray[] neighbors = layerNeighbors.get(level - 1);
 
-      // Find the index of this node in the layer
+      if (sortedUpperLayerNodes) {
+        int index = Arrays.binarySearch(nodes, node);
+        return index >= 0 ? neighbors[index] : null;
+      }
+      // The public constructor accepts node IDs in caller-supplied order.
       for (int i = 0; i < nodes.length; i++) {
         if (nodes[i] == node) {
           return neighbors[i];
