@@ -409,18 +409,24 @@ query preparation, the synchronous search call, and hit materialization. QPS
 uses the wall time for the entire serial query corpus, so it is not simply the
 reciprocal of mean latency. The raw result also reports narrower preparation,
 PyLucene search-dispatch, result-materialization, reader lifecycle, and NumPy
-conversion timings. `search_dispatch_kind` distinguishes direct PyLucene
-dispatch from the thin-JAR timing bridge. Compare timing results only when that
-value matches. Selecting the CPU and GPU algorithms together loads the bridge
-for both and provides a like-for-like dispatch-boundary comparison; the
-artifact-free CPU control remains useful but is not dispatch-identical.
+conversion timings.
 
-When the backend initializes from a validated cuvs-java and cuvs-lucene
-artifact pair, an additional `java_index_searcher_search` measurement uses
-`System.nanoTime()` around exactly `IndexSearcher.search(Query, int)` inside
-the JVM. This exact Java measurement is diagnostic and is unavailable to the
-artifact-free CPU control. The reported timing boundaries are nested rather
-than additive; summing parent and child values double-counts work.
+Standalone `lucene_cpu_hnsw` and the accelerated backend use the same PyLucene
+helpers to return ranked IDs and scores in bulk and to transfer eligible float32
+queries of at least 512 dimensions. The CPU runner compiles the three packaged
+Java sources against the installed PyLucene classes on first use with JDK 22.
+It caches the helper JAR under `$XDG_CACHE_HOME/cuvs-bench/pylucene` (by default
+`~/.cache/cuvs-bench/pylucene`). Setup takes place before the query timers.
+Selecting only `lucene_cpu_hnsw` requires neither CUDA nor the cuVS codec JARs.
+Runs configured with the cuVS JAR pair load the helpers provided by that pair.
+
+For matched client measurements, check `bulk_hit_transfer_available`,
+`bulk_query_vector_transfer_available`, `search_dispatch_kind` and
+`java_timing_available` in both results. When the Java timer is available it
+measures exactly `IndexSearcher.search(Query, int)` inside the JVM. If the CPU
+runner cannot prepare its helper JAR it emits a warning and uses the original
+per-hit transfer and direct dispatch. Java search time is nested within client
+latency.
 
 `backend_search_invocation_total_ms` measures one complete non-dry-run search
 invocation after argument validation and dry-run handling. A parameter sweep

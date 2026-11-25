@@ -110,6 +110,7 @@ class _FakeLucene:
 def _reset_jvm_state(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "_INITIALIZED_CLASSPATH",
+        "_INITIALIZED_SEARCH_JAR",
         "_INITIALIZED_VMARGS",
         "_INITIALIZED_ARTIFACT_PROVENANCE",
         "_INITIALIZED_ARTIFACT_TOKENS",
@@ -192,6 +193,25 @@ def test_float32_vectors_are_converted_to_a_jcc_compatible_sequence() -> None:
     assert all(type(value) is float for value in received_inputs[0])
     # Ensure the production function returns the converter's output object.
     assert converted is fake_converter_output_object
+
+
+@pytest.mark.parametrize("packed", [None, b""])
+def test_empty_bulk_result_is_distinct_from_fallback(packed):
+    runtime = object.__new__(LuceneRuntime)
+    runtime._java_hit_encoder = Mock()
+    runtime._java_hit_encoder.apply.return_value = packed
+    runtime.lucene = Mock()
+    runtime.lucene.JArray.return_value.cast_.return_value.bytes_ = b""
+    runtime._materialize_hits = Mock(return_value=[])
+    reader = object()
+    top = SimpleNamespace(scoreDocs=[])
+    assert runtime._ranked_hits(reader, top) == []
+    if packed is None:
+        runtime._materialize_hits.assert_called_once_with(
+            reader, top.scoreDocs
+        )
+    else:
+        runtime._materialize_hits.assert_not_called()
 
 
 def test_numeric_document_ids_preserve_score_order_across_leaves() -> None:

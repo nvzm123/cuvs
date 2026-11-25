@@ -6,9 +6,12 @@ package com.nvidia.cuvs.lucene;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Function;
@@ -16,8 +19,10 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.MultiReader;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.ByteBuffersDirectory;
 import org.junit.Test;
@@ -51,6 +56,31 @@ public class TestIndexSearcherTimingBridge {
         assertNotNull(elapsedNanos);
         assertTrue(elapsedNanos >= 0L);
       }
+    }
+  }
+
+  @Test
+  public void testCheckedSearchFailureCanBeRestoredByTheBinding() throws IOException {
+    var failure = new IOException("reader failed");
+    try (var reader = new MultiReader()) {
+      var searcher =
+          new IndexSearcher(reader) {
+            @Override
+            public TopDocs search(Query query, int topK) throws IOException {
+              throw failure;
+            }
+          };
+      var bridge = new IndexSearcherTimingBridge();
+      var wrapped =
+          assertThrows(
+              UncheckedIOException.class,
+              () ->
+                  bridge.apply(
+                      Map.of("searcher", searcher, "query", new MatchAllDocsQuery(), "top_k", 1)));
+      assertSame(failure, wrapped.getCause());
+      assertEquals(
+          IndexSearcherTimingBridge.class.getName() + "$SearchFailure",
+          wrapped.getClass().getName());
     }
   }
 

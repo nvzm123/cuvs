@@ -10,16 +10,19 @@ from __future__ import annotations
 import hashlib
 import importlib
 import os
+import struct
 import threading
 import time
 import zipfile
 from dataclasses import dataclass
+from itertools import starmap
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
 from ._lucene_compat import LUCENE_COMPATIBILITY, PERSISTED_CODEC_KINDS
+from ._lucene_java import standalone_search_jar
 from ._lucene_parameters import CUVS_BUILD_KEYS
 from ._lucene_runtime_config import (
     CUVS_LUCENE_ARTIFACT_ID,
@@ -87,6 +90,12 @@ _CODEC_SERVICE_DESCRIPTOR = "META-INF/services/org.apache.lucene.codecs.Codec"
 _INDEX_SEARCHER_TIMING_BRIDGE = (
     f"{_CUVS_LUCENE_PACKAGE}.IndexSearcherTimingBridge"
 )
+_TIMED_SEARCH_FAILURE = f"{_INDEX_SEARCHER_TIMING_BRIDGE}$SearchFailure"
+_RANKED_SEARCH_HITS = f"{_CUVS_LUCENE_PACKAGE}.RankedSearchHits"
+_FLOAT_QUERY_VECTOR = f"{_CUVS_LUCENE_PACKAGE}.FloatQueryVector"
+_HIT_RECORD = struct.Struct("<qf")
+# Short queries are cheaper to pass through the ordinary JCC float-array constructor.
+_MIN_BULK_QUERY_DIMENSIONS = 512
 _SEARCHER_REQUEST_KEY = "searcher"
 _QUERY_REQUEST_KEY = "query"
 _TOP_K_REQUEST_KEY = "top_k"
@@ -97,6 +106,7 @@ TIMED_BRIDGE_PYLUCENE_DISPATCH = "thin_jar_timing_bridge"
 
 _JVM_LOCK = threading.Lock()
 _INITIALIZED_CLASSPATH: str | None = None
+_INITIALIZED_SEARCH_JAR: Path | None = None
 _INITIALIZED_VMARGS: tuple[str, ...] | None = None
 _INITIALIZED_ARTIFACT_PROVENANCE: dict[str, str] | None = None
 _INITIALIZED_ARTIFACT_TOKENS: dict[str, tuple[int, ...]] | None = None
@@ -464,9 +474,16 @@ def initialize_pylucene(
     config: Mapping[str, Any],
 ) -> tuple[Any, dict[str, str], dict[str, tuple[int, ...]]]:
     """Start PyLucene once with an immutable, validated JVM configuration."""
+    lucene, provenance, tokens, _ = _initialize_search_runtime(config)
+    return lucene, provenance, tokens
+
+
+def _initialize_search_runtime(
+    config: Mapping[str, Any],
+) -> tuple[Any, dict[str, str], dict[str, tuple[int, ...]], Path | None]:
     global _INITIALIZED_ARTIFACT_PROVENANCE
     global _INITIALIZED_ARTIFACT_TOKENS
-    global _INITIALIZED_CLASSPATH, _INITIALIZED_VMARGS
+    global _INITIALIZED_CLASSPATH, _INITIALIZED_SEARCH_JAR, _INITIALIZED_VMARGS
     lucene = _load_pylucene()
     actual_version = str(getattr(lucene, "VERSION", "<missing>"))
     if actual_version != REQUIRED_PYLUCENE_VERSION:
@@ -479,22 +496,29 @@ def initialize_pylucene(
     vmargs = _vmargs(config)
     with _JVM_LOCK:
         environment = lucene.getVMEnv()
+        classpath, artifact_provenance, artifact_tokens = _classpath(
+            config, lucene, validate_artifacts=environment is None
+        )
         if environment is None:
-            classpath, artifact_provenance, artifact_tokens = _classpath(
-                config, lucene, validate_artifacts=True
-            )
-            environment = lucene.initVM(classpath=classpath, vmargs=vmargs)
+            vm_classpath = classpath
+            if artifact_provenance:
+                search_jar = Path(artifact_provenance["cuvs_lucene_jar_path"])
+            else:
+                search_jar = standalone_search_jar(lucene.CLASSPATH)
+                if search_jar is not None:
+                    vm_classpath = os.pathsep.join(
+                        (str(search_jar), classpath)
+                    )
+            environment = lucene.initVM(classpath=vm_classpath, vmargs=vmargs)
             environment = environment or lucene.getVMEnv()
             if environment is None:
                 raise RuntimeError("PyLucene did not return a JVM environment")
+            _INITIALIZED_SEARCH_JAR = search_jar
             _INITIALIZED_CLASSPATH = classpath
             _INITIALIZED_VMARGS = tuple(vmargs)
             _INITIALIZED_ARTIFACT_PROVENANCE = dict(artifact_provenance)
             _INITIALIZED_ARTIFACT_TOKENS = dict(artifact_tokens)
         else:
-            classpath, _unused_provenance, _unused_tokens = _classpath(
-                config, lucene, validate_artifacts=False
-            )
             if (
                 _INITIALIZED_CLASSPATH != classpath
                 or _INITIALIZED_VMARGS != tuple(vmargs)
@@ -504,11 +528,12 @@ def initialize_pylucene(
                     "different classpath or JVM arguments. Start a new process and "
                     "let cuVS Bench initialize PyLucene."
                 )
+            search_jar = _INITIALIZED_SEARCH_JAR
             artifact_provenance = dict(_INITIALIZED_ARTIFACT_PROVENANCE or {})
             artifact_tokens = dict(_INITIALIZED_ARTIFACT_TOKENS or {})
             _verify_artifact_tokens(artifact_tokens, artifact_provenance)
         environment.attachCurrentThread()
-    return lucene, artifact_provenance, artifact_tokens
+    return lucene, artifact_provenance, artifact_tokens, search_jar
 
 
 @dataclass(frozen=True)
@@ -1183,6 +1208,8 @@ class RuntimeSearchTiming:
     runtime_plan_wall_ns: int
     search_dispatch_kind: str
     queries: tuple[QueryTiming, ...]
+    bulk_hit_transfer_available: bool = False
+    bulk_query_vector_transfer_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -1195,6 +1222,9 @@ class RuntimeSearchResult:
 
 class LuceneRuntime:
     """Own the generated bindings and the narrow Lucene operations Bench uses."""
+
+    _java_hit_encoder: Any | None = None
+    _java_float_query: Any | None = None
 
     def __init__(self, lucene: Any):
         from java.lang import Boolean, Class, Double, Integer, Long, String
@@ -1275,15 +1305,39 @@ class LuceneRuntime:
 
     @classmethod
     def create(cls, config: Mapping[str, Any]) -> "LuceneRuntime":
-        lucene, artifact_provenance, artifact_tokens = initialize_pylucene(
-            config
+        lucene, artifact_provenance, artifact_tokens, search_jar = (
+            _initialize_search_runtime(config)
         )
         runtime = cls(lucene)
         runtime.artifact_provenance = artifact_provenance
         runtime._artifact_tokens = artifact_tokens
-        if artifact_provenance:
+        if search_jar is not None:
             runtime._java_search_timer = runtime._load_java_search_timer()
+            runtime._load_search_transfers(search_jar)
         return runtime
+
+    def _load_search_transfers(self, jar_path: str | Path) -> None:
+        from java.util import function
+
+        with zipfile.ZipFile(jar_path) as jar:
+            classes = set(jar.namelist())
+
+        def optional_bridge(class_name: str, interface: Any) -> Any | None:
+            if (
+                interface is None
+                or class_name.replace(".", "/") + ".class" not in classes
+            ):
+                return None
+            return interface.cast_(
+                self.Class.forName(class_name).newInstance()
+            )
+
+        self._java_hit_encoder = optional_bridge(
+            _RANKED_SEARCH_HITS, getattr(function, "BiFunction", None)
+        )
+        self._java_float_query = optional_bridge(
+            _FLOAT_QUERY_VECTOR, self.Function
+        )
 
     def _load_java_search_timer(self) -> Any:
         """Load the thin-JAR timer through JCC's wrapped Function interface."""
@@ -2013,7 +2067,13 @@ class LuceneRuntime:
         request.put(_SEARCHER_REQUEST_KEY, searcher)
         request.put(_QUERY_REQUEST_KEY, query)
         request.put(_TOP_K_REQUEST_KEY, self.Integer.valueOf(k))
-        raw_response = self._java_search_timer.apply(request)
+        try:
+            raw_response = self._java_search_timer.apply(request)
+        except self.lucene.JavaError as error:
+            failure = error.getJavaException()
+            if failure.getClass().getName() == _TIMED_SEARCH_FAILURE:
+                raise self.lucene.JavaError(failure.getCause()) from error
+            raise
         response = self.Map.cast_(raw_response)
         top_docs = self.TopDocs.cast_(response.get(_TOP_DOCS_RESPONSE_KEY))
         elapsed = self.Long.cast_(
@@ -2084,6 +2144,39 @@ class LuceneRuntime:
             for rank in range(len(ranked_score_docs_by_doc_id))
         ]
 
+    def _java_query_vector(self, vector: np.ndarray) -> Any:
+        if (
+            self._java_float_query is not None
+            and isinstance(vector, np.ndarray)
+            and vector.size >= _MIN_BULK_QUERY_DIMENSIONS
+            and vector.ndim == 1
+            and vector.dtype == np.dtype("<f4")
+        ):
+            packed = self.lucene.JArray("byte")(vector.tobytes())
+            return self.lucene.JArray("float").cast_(
+                self._java_float_query.apply(packed)
+            )
+        return self._java_vector(vector)
+
+    def _ranked_hits(self, reader: Any, top_docs: Any) -> list[SearchHit]:
+        if self._java_hit_encoder is not None:
+            try:
+                packed = self._java_hit_encoder.apply(reader, top_docs)
+            except self.lucene.JavaError as error:
+                # BiFunction cannot throw a checked IOException. Restore the exception JCC
+                # would expose for the same DocValues operation on the ordinary path.
+                cause = error.getJavaException()
+                if (
+                    cause.getClass().getName()
+                    == f"{_RANKED_SEARCH_HITS}$ReadFailure"
+                ):
+                    raise self.lucene.JavaError(cause.getCause()) from error
+                raise
+            if packed is not None:
+                data = self.lucene.JArray("byte").cast_(packed).bytes_
+                return list(starmap(SearchHit, _HIT_RECORD.iter_unpack(data)))
+        return self._materialize_hits(reader, top_docs.scoreDocs)
+
     def _search_one(
         self,
         searcher: Any,
@@ -2097,7 +2190,7 @@ class LuceneRuntime:
     ) -> tuple[list[SearchHit], QueryTiming]:
         client_started = time.perf_counter_ns()
         prepare_started = time.perf_counter_ns()
-        java_vector = self._java_vector(vector)
+        java_vector = self._java_query_vector(vector)
         if cagra_search_parameters is not None:
             query = self._configured_cagra_query(
                 java_vector, k, cagra_search_parameters
@@ -2117,7 +2210,7 @@ class LuceneRuntime:
         )
 
         materialization_started = time.perf_counter_ns()
-        hits = self._materialize_hits(reader, top_docs.scoreDocs)
+        hits = self._ranked_hits(reader, top_docs)
         result_materialization_ns = (
             time.perf_counter_ns() - materialization_started
         )
@@ -2262,6 +2355,9 @@ class LuceneRuntime:
                     else DIRECT_PYLUCENE_DISPATCH
                 ),
                 queries=tuple(query_timings),
+                bulk_hit_transfer_available=self._java_hit_encoder is not None,
+                bulk_query_vector_transfer_available=self._java_float_query
+                is not None,
             ),
             document_count=document_count,
             dimensions=dimensions,
