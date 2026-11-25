@@ -191,7 +191,8 @@ public class AcceleratedHNSWUtils {
       }
 
       // The graph eagerly copies all adjacency rows, so generated upper matrices can now close.
-      return new GPUBuiltHnswGraph(size, dimensions, layerNodes, layerAdjacencies);
+      return new GPUBuiltHnswGraph(
+          size, dimensions, layerNodes, layerAdjacencies, /* sortedUpperLayerNodes= */ true);
     } catch (Throwable t) {
       failure = t;
       throw t;
